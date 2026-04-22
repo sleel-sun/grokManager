@@ -1,20 +1,24 @@
-<img alt="Grok2API" src="https://github.com/user-attachments/assets/037a0a6e-7986-41cc-b4af-04df612ee886" />
+<img alt="grokManager" src="https://github.com/user-attachments/assets/037a0a6e-7986-41cc-b4af-04df612ee886" />
 
 [![Python](https://img.shields.io/badge/python-3.13%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.119%2B-009688?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
 [![Version](https://img.shields.io/badge/version-2.0.4.rc2-111827)](pyproject.toml)
 [![License](https://img.shields.io/badge/license-MIT-16a34a)](LICENSE)
 [![English](https://img.shields.io/badge/English-2563EB?logo=bookstack&logoColor=white)](docs/README.en.md)
-[![DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/chenyme/grok2api)
-[![项目文档](https://img.shields.io/badge/项目文档-0F766E?logo=readthedocs&logoColor=white)](https://blog.cheny.me/blog/posts/grok2api)
 
+
+# grokManager
 
 > [!NOTE]
-> 本项目仅供学习与研究交流。请务必遵循 Grok 的使用条款及当地法律法规，不得用于非法用途！二开与 PR 请保留原作者与前端标识。
+> 本项目仅供学习与研究交流。请务必遵循 Grok 的使用条款及当地法律法规，不得用于非法用途。
 
 <br>
 
-Grok2API 是一个基于 **FastAPI** 构建的 Grok 网关，支持将 Grok Web 能力以 OpenAI 兼容 API 的方式转换。核心特性：
+`grokManager` 是把原 `grok2api` 网关能力和 `grok-maintainer` 浏览器养号/注册能力合并后的统一仓库。它同时覆盖两种工作模式：
+- API Gateway：基于 **FastAPI** 的 Grok 网关，对外提供 OpenAI / Anthropic 兼容接口
+- Account Maintainer：基于浏览器自动化的账号注册与 token 回写工具，直接并入同一代码库
+
+核心特性：
 - OpenAI 兼容接口：`/v1/models`、`/v1/chat/completions`、`/v1/responses`、`/v1/images/generations`、`/v1/images/edits`、`/v1/videos`、`/v1/videos/{video_id}`、`/v1/videos/{video_id}/content`
 - Anthropic 兼容接口：`/v1/messages`
 - 支持流式与非流式对话、显式思考输出、函数工具结构透传，以及统一的 token / usage 统计
@@ -22,6 +26,27 @@ Grok2API 是一个基于 **FastAPI** 构建的 Grok 网关，支持将 Grok Web 
 - 支持本地缓存图片、视频与本地代理链接返回
 - 支持文生图、图像编辑、文生视频、图生视频
 - 内置 Admin 后台管理、Web Chat、Masonry 生图、ChatKit 语音页面
+- 内置 `app/maintainer/` 子模块，支持批量注册 Grok 账号并自动导入 token 池
+- 兼容旧版 token 写入方式 `/v1/admin/tokens`，同时支持新版 `/admin/api/tokens` 与 `/admin/api/tokens/add`
+
+<br>
+
+## 项目模式
+
+### 1. API Gateway
+
+对外提供统一的 API 网关能力：
+- OpenAI 兼容：适合 SDK、脚本、第三方工具直接接入
+- Anthropic 兼容：适合需要 `messages` 接口的客户端
+- Web 管理界面：适合维护账号池、配置、缓存和 Web Chat 页面
+
+### 2. Account Maintainer
+
+对内提供账号维护能力：
+- 浏览器注册 Grok 账号
+- 通过临时邮箱 Worker 自动收取验证码
+- 提取 `sso` token 并写入本地文件
+- 回写到本仓库的 Admin token 接口，形成“注册 -> 入池 -> 对外提供 API”的闭环
 
 <br>
 
@@ -30,12 +55,14 @@ Grok2API 是一个基于 **FastAPI** 构建的 Grok 网关，支持将 Grok Web 
 ```mermaid
 flowchart LR
     Client["Clients\nOpenAI SDK / curl / Browser"] --> API["FastAPI App"]
+    Maintainer["Maintainer\nBrowser Automation"] --> AdminAPI["Admin Token APIs"]
 
     subgraph Products["Products"]
         direction TB
         OpenAI["OpenAI APIs\n/v1/*"]
         Anthropic["Anthropic APIs\n/v1/messages"]
         Web["Web Products\n/admin /webui/*"]
+        AdminAPI["Token Import APIs\n/admin/api/tokens\n/v1/admin/tokens"]
     end
 
     subgraph Control["Control"]
@@ -64,6 +91,7 @@ flowchart LR
     API --> OpenAI
     API --> Anthropic
     API --> Web
+    API --> AdminAPI
 
     OpenAI --> Models
     OpenAI --> AccountDP
@@ -94,8 +122,8 @@ flowchart LR
 ### 本地部署
 
 ```bash
-git clone https://github.com/chenyme/grok2api
-cd grok2api
+git clone https://github.com/sleel-sun/grokManager.git
+cd grokManager
 cp .env.example .env
 uv sync
 uv run granian --interface asgi --host 0.0.0.0 --port 8000 --workers 1 app.main:app
@@ -104,19 +132,24 @@ uv run granian --interface asgi --host 0.0.0.0 --port 8000 --workers 1 app.main:
 ### Docker Compose
 
 ```bash
-git clone https://github.com/chenyme/grok2api
-cd grok2api
+git clone https://github.com/sleel-sun/grokManager.git
+cd grokManager
 cp .env.example .env
-docker compose up -d
+docker compose up -d --build
 ```
+
+首次用 Compose 部署时，建议至少先在 `.env` 里设置：
+- `GROK_APP_APP_KEY`
+- `GROK_APP_API_KEY`
+- `GROK_APP_APP_URL`
 
 ### Vercel
 
-[![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https://github.com/chenyme/grok2api&env=LOG_LEVEL,LOG_FILE_ENABLED,DATA_DIR,LOG_DIR,ACCOUNT_STORAGE,ACCOUNT_REDIS_URL,ACCOUNT_MYSQL_URL,ACCOUNT_POSTGRESQL_URL)
+[![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https://github.com/sleel-sun/grokManager&env=LOG_LEVEL,LOG_FILE_ENABLED,DATA_DIR,LOG_DIR,ACCOUNT_STORAGE,ACCOUNT_REDIS_URL,ACCOUNT_MYSQL_URL,ACCOUNT_POSTGRESQL_URL)
 
 ### Render
 
-[![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/chenyme/grok2api)
+[![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/sleel-sun/grokManager)
 
 ### 首次启动
 
@@ -136,6 +169,7 @@ uv sync --extra maintainer
 uv run grok2api-maintainer --count 5
 ```
 
+- 为兼容旧脚本，CLI 名称当前仍保留为 `grok2api-maintainer`
 - 默认输出目录：`${DATA_DIR}/maintainer/sso`
 - 默认日志目录：`${LOG_DIR}/maintainer`
 - 默认回写接口：`/v1/admin/tokens`，使用 `app.app_key` 作为 Bearer Token
@@ -165,7 +199,7 @@ uv run grok2api-maintainer --count 5
 | 范围 | 配置项 | 规则 |
 | :-- | :-- | :-- |
 | `/v1/*` | `app.api_key` | 为空则不额外鉴权 |
-| `/admin/*` | `app.app_key` | 默认值 `grok2api` |
+| `/admin/*` | `app.app_key` | 当前代码默认值仍为 `grok2api`，部署后建议立即修改 |
 | `/webui/*` | `app.webui_enabled`, `app.webui_key` | 默认关闭；`webui_key` 为空则不额外校验 |
 
 <br>
@@ -313,7 +347,7 @@ uv run grok2api-maintainer --count 5
 
 ```bash
 curl http://localhost:8000/v1/models \
-  -H "Authorization: Bearer $GROK2API_API_KEY"
+  -H "Authorization: Bearer $GROKMANAGER_API_KEY"
 ```
 
 <details>
@@ -339,7 +373,7 @@ curl http://localhost:8000/v1/models \
 ```bash
 curl http://localhost:8000/v1/chat/completions \
   -H "Content-Type: application/json" \
-  -H "Authorization: Bearer $GROK2API_API_KEY" \
+  -H "Authorization: Bearer $GROKMANAGER_API_KEY" \
   -d '{
     "model": "grok-4.20-auto",
     "stream": true,
@@ -356,7 +390,7 @@ curl http://localhost:8000/v1/chat/completions \
 ```bash
 curl http://localhost:8000/v1/chat/completions \
   -H "Content-Type: application/json" \
-  -H "Authorization: Bearer $GROK2API_API_KEY" \
+  -H "Authorization: Bearer $GROKMANAGER_API_KEY" \
   -d '{
     "model": "grok-imagine-image",
     "stream": true,
@@ -376,7 +410,7 @@ curl http://localhost:8000/v1/chat/completions \
 ```bash
 curl http://localhost:8000/v1/chat/completions \
   -H "Content-Type: application/json" \
-  -H "Authorization: Bearer $GROK2API_API_KEY" \
+  -H "Authorization: Bearer $GROKMANAGER_API_KEY" \
   -d '{
     "model": "grok-imagine-video",
     "stream": true,
@@ -428,7 +462,7 @@ curl http://localhost:8000/v1/chat/completions \
 ```bash
 curl http://localhost:8000/v1/responses \
   -H "Content-Type: application/json" \
-  -H "Authorization: Bearer $GROK2API_API_KEY" \
+  -H "Authorization: Bearer $GROKMANAGER_API_KEY" \
   -d '{
     "model": "grok-4.20-auto",
     "input": "解释一下量子隧穿",
@@ -468,7 +502,7 @@ curl http://localhost:8000/v1/responses \
 ```bash
 curl http://localhost:8000/v1/messages \
   -H "Content-Type: application/json" \
-  -H "Authorization: Bearer $GROK2API_API_KEY" \
+  -H "Authorization: Bearer $GROKMANAGER_API_KEY" \
   -d '{
     "model": "grok-4.20-auto",
     "stream": true,
@@ -513,7 +547,7 @@ curl http://localhost:8000/v1/messages \
 ```bash
 curl http://localhost:8000/v1/images/generations \
   -H "Content-Type: application/json" \
-  -H "Authorization: Bearer $GROK2API_API_KEY" \
+  -H "Authorization: Bearer $GROKMANAGER_API_KEY" \
   -d '{
     "model": "grok-imagine-image",
     "prompt": "一只在太空漂浮的猫",
@@ -547,7 +581,7 @@ curl http://localhost:8000/v1/images/generations \
 
 ```bash
 curl http://localhost:8000/v1/images/edits \
-  -H "Authorization: Bearer $GROK2API_API_KEY" \
+  -H "Authorization: Bearer $GROKMANAGER_API_KEY" \
   -F "model=grok-imagine-image-edit" \
   -F "prompt=把这张图变清晰一些" \
   -F "image[]=@/path/to/image.png" \
@@ -582,7 +616,7 @@ curl http://localhost:8000/v1/images/edits \
 
 ```bash
 curl http://localhost:8000/v1/videos \
-  -H "Authorization: Bearer $GROK2API_API_KEY" \
+  -H "Authorization: Bearer $GROKMANAGER_API_KEY" \
   -F "model=grok-imagine-video" \
   -F "prompt=霓虹雨夜街头，电影感慢镜头追拍" \
   -F "seconds=10" \
@@ -594,10 +628,10 @@ curl http://localhost:8000/v1/videos \
 
 ```bash
 curl http://localhost:8000/v1/videos/<video_id> \
-  -H "Authorization: Bearer $GROK2API_API_KEY"
+  -H "Authorization: Bearer $GROKMANAGER_API_KEY"
 
 curl -L http://localhost:8000/v1/videos/<video_id>/content \
-  -H "Authorization: Bearer $GROK2API_API_KEY" \
+  -H "Authorization: Bearer $GROKMANAGER_API_KEY" \
   -o result.mp4
 ```
 
@@ -624,8 +658,6 @@ curl -L http://localhost:8000/v1/videos/<video_id>/content \
 
 <br>
 
-## Star History
+## 说明
 
-[![Star History Chart](https://api.star-history.com/svg?repos=Chenyme/grok2api&type=Timeline)](https://star-history.com/#Chenyme/grok2api&Timeline)
-
-# grokManager
+当前仓库是在 `grok2api` 主服务基础上，合并 `grok-maintainer` 子工具后的新项目形态。README 已按统一仓库模式整理，但英文文档和部分脚本命名仍保留兼容层，后续可以继续逐步统一。
