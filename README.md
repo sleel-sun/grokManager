@@ -138,10 +138,19 @@ cp .env.example .env
 docker compose up -d --build
 ```
 
+这套 Compose 现在会一起拉起：
+- `grokmanager`：对外 API 服务
+- `maintainer`：后台注册/养号服务
+
 首次用 Compose 部署时，建议至少先在 `.env` 里设置：
 - `GROK_APP_APP_KEY`
 - `GROK_APP_API_KEY`
 - `GROK_APP_APP_URL`
+- `MAINTAINER_EMAIL_WORKER_DOMAIN`
+- `MAINTAINER_EMAIL_DOMAINS`
+- `MAINTAINER_EMAIL_ADMIN_PASSWORD`
+
+如果 maintainer 相关环境变量没填完整，`maintainer` 服务会保持启动但进入等待重试，不会把整套编排打挂。
 
 ### Vercel
 
@@ -166,14 +175,26 @@ docker compose up -d --build
 ```bash
 cp maintainer.config.example.json maintainer.config.json
 uv sync --extra maintainer
-uv run grok2api-maintainer --count 5
+uv run grokmanager-maintainer --count 5
 ```
 
-- 为兼容旧脚本，CLI 名称当前仍保留为 `grok2api-maintainer`
+- 新 CLI 名称：`grokmanager-maintainer`
+- 为兼容旧脚本，旧命令 `grok2api-maintainer` 仍可继续使用
 - 默认输出目录：`${DATA_DIR}/maintainer/sso`
 - 默认日志目录：`${LOG_DIR}/maintainer`
 - 默认回写接口：`/v1/admin/tokens`，使用 `app.app_key` 作为 Bearer Token
 - 兼容新后台接口：`/admin/api/tokens` 与 `/admin/api/tokens/add`
+
+### Compose 一体化启动
+
+当你使用 `docker compose up -d --build` 时，maintainer 会作为独立服务一起启动：
+- 自动等待 `grokmanager` 的 `/health`
+- 从环境变量生成运行时 `maintainer.config.json`
+- 按 `MAINTAINER_COUNT` 执行一批注册
+- 按 `MAINTAINER_INTERVAL_SEC` 循环执行下一批
+
+容器内默认回写地址是 `http://grokmanager:8000/v1/admin/tokens`。
+未显式设置 `MAINTAINER_API_TOKEN` 时，会先复用 `GROK_APP_APP_KEY`，两者都为空则兼容回退到默认后台密钥 `grok2api`。
 
 详细说明见 [app/maintainer/README.md](app/maintainer/README.md)。
 
