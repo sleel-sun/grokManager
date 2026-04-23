@@ -90,38 +90,76 @@ flowchart LR
 
 ## Quick Start
 
-### Local Deployment
+### Recommended Deployment Modes
+
+- `Docker Compose full stack`: recommended for production, starts both the API Gateway and the maintainer loop
+- `Docker Compose API-only`: starts only the gateway, suitable when you already manage tokens elsewhere
+- `Local uv run`: best for development and debugging
+- `Vercel / Render`: API Gateway only, no built-in browser maintainer
+
+### Local API Deployment
 
 ```bash
-git clone https://github.com/chenyme/grok2api
-cd grok2api
+git clone https://github.com/sleel-sun/grokManager.git
+cd grokManager
 cp .env.example .env
 uv sync
 uv run granian --interface asgi --host 0.0.0.0 --port 8000 --workers 1 app.main:app
 ```
 
-### Docker Compose
+### Docker Compose Full Stack
 
 ```bash
-git clone https://github.com/chenyme/grok2api
-cd grok2api
+git clone https://github.com/sleel-sun/grokManager.git
+cd grokManager
 cp .env.example .env
-docker compose up -d
+docker compose up -d --build
+```
+
+This Compose stack starts:
+- `grokmanager`: public API service
+- `maintainer`: background registration / account maintenance service
+
+If you only want the API service without the browser maintainer:
+
+```bash
+docker compose up -d --build grokmanager
+```
+
+For the first full-stack deployment, set at least:
+- `GROK_APP_APP_KEY`
+- `GROK_APP_API_KEY`
+- `GROK_APP_APP_URL`
+- `MAINTAINER_EMAIL_WORKER_DOMAIN`
+- `MAINTAINER_EMAIL_DOMAINS`
+- `MAINTAINER_EMAIL_ADMIN_PASSWORD`
+
+If maintainer-specific variables are incomplete, the `maintainer` container stays alive and retries later instead of crashing the whole stack.
+
+Useful operational commands:
+
+```bash
+docker compose ps
+docker compose logs -f grokmanager
+docker compose logs -f maintainer
 ```
 
 ### Vercel
 
-[![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https://github.com/chenyme/grok2api&env=LOG_LEVEL,LOG_FILE_ENABLED,DATA_DIR,LOG_DIR,ACCOUNT_STORAGE,ACCOUNT_REDIS_URL,ACCOUNT_MYSQL_URL,ACCOUNT_POSTGRESQL_URL)
+[![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https://github.com/sleel-sun/grokManager&env=LOG_LEVEL,LOG_FILE_ENABLED,DATA_DIR,LOG_DIR,ACCOUNT_STORAGE,ACCOUNT_REDIS_URL,ACCOUNT_MYSQL_URL,ACCOUNT_POSTGRESQL_URL)
 
 ### Render
 
-[![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/chenyme/grok2api)
+[![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/sleel-sun/grokManager)
+
+These cloud-entry options are for API Gateway mode only. Use Docker Compose if you need the integrated maintainer write-back loop.
 
 ### First Launch
 
 1. Change `app.app_key`
 2. Set `app.api_key`
 3. Set `app.app_url` otherwise image and video URLs may return `403 Forbidden`
+4. If you enable the maintainer, also set `MAINTAINER_EMAIL_WORKER_DOMAIN`, `MAINTAINER_EMAIL_DOMAINS`, and `MAINTAINER_EMAIL_ADMIN_PASSWORD`
 
 <br>
 
@@ -132,9 +170,11 @@ The browser-based `grok-maintainer` flow now lives inside this repository under 
 ```bash
 cp maintainer.config.example.json maintainer.config.json
 uv sync --extra maintainer
-uv run grok2api-maintainer --count 5
+uv run grokmanager-maintainer --count 5
 ```
 
+- New CLI name: `grokmanager-maintainer`
+- Legacy alias `grok2api-maintainer` still works for compatibility
 - Default token output: `${DATA_DIR}/maintainer/sso`
 - Default logs: `${LOG_DIR}/maintainer`
 - Default write-back endpoint: `/v1/admin/tokens` using `app.app_key` as Bearer token

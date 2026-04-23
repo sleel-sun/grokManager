@@ -119,7 +119,14 @@ flowchart LR
 
 ## 快速开始
 
-### 本地部署
+### 推荐部署方式
+
+- `Docker Compose 一体化部署`：推荐生产使用，同时拉起 API Gateway 和 maintainer，形成“注册 -> 入池 -> 对外 API”闭环
+- `Docker Compose API-only`：仅启动网关服务，适合你已经有独立 token 池或不需要浏览器注册器的场景
+- `本地 uv 部署`：适合开发、调试和单机运行 API 服务
+- `Vercel / Render`：仅建议用于 API Gateway 模式，不包含内置 maintainer
+
+### 本地 API 部署
 
 ```bash
 git clone https://github.com/sleel-sun/grokManager.git
@@ -129,7 +136,7 @@ uv sync
 uv run granian --interface asgi --host 0.0.0.0 --port 8000 --workers 1 app.main:app
 ```
 
-### Docker Compose
+### Docker Compose 一体化部署（推荐）
 
 ```bash
 git clone https://github.com/sleel-sun/grokManager.git
@@ -142,6 +149,12 @@ docker compose up -d --build
 - `grokmanager`：对外 API 服务
 - `maintainer`：后台注册/养号服务
 
+如果你只想启动 API 服务，不带浏览器 maintainer：
+
+```bash
+docker compose up -d --build grokmanager
+```
+
 首次用 Compose 部署时，建议至少先在 `.env` 里设置：
 - `GROK_APP_APP_KEY`
 - `GROK_APP_API_KEY`
@@ -152,6 +165,14 @@ docker compose up -d --build
 
 如果 maintainer 相关环境变量没填完整，`maintainer` 服务会保持启动但进入等待重试，不会把整套编排打挂。
 
+常用运维命令：
+
+```bash
+docker compose ps
+docker compose logs -f grokmanager
+docker compose logs -f maintainer
+```
+
 ### Vercel
 
 [![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https://github.com/sleel-sun/grokManager&env=LOG_LEVEL,LOG_FILE_ENABLED,DATA_DIR,LOG_DIR,ACCOUNT_STORAGE,ACCOUNT_REDIS_URL,ACCOUNT_MYSQL_URL,ACCOUNT_POSTGRESQL_URL)
@@ -160,11 +181,14 @@ docker compose up -d --build
 
 [![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/sleel-sun/grokManager)
 
+以上云平台入口仅覆盖 API Gateway，不会启动内置 maintainer。需要一体化注册/回写闭环时，请优先使用 Docker Compose。
+
 ### 首次启动
 
 1. 修改 `app.app_key`
 2. 设置 `app.api_key`
 3. 设置 `app.app_url`（否则图片、视频的链接会 403 无权访问）
+4. 若启用 maintainer，再补齐 `MAINTAINER_EMAIL_WORKER_DOMAIN`、`MAINTAINER_EMAIL_DOMAINS`、`MAINTAINER_EMAIL_ADMIN_PASSWORD`
 
 <br>
 
