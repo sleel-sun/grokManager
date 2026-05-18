@@ -318,12 +318,12 @@ async def _run_background(
             }
         )
     except Exception as exc:
-        logger.warning("maintainer web run failed: error={}", exc)
+        logger.exception("maintainer web run failed")
         _state.update(
             {
                 "running": False,
                 "status": "failed",
-                "message": str(exc),
+                "message": f"{type(exc).__name__}: {exc}",
                 "finished_at": int(time.time()),
             }
         )

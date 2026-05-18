@@ -5,6 +5,7 @@ import datetime
 import logging
 import os
 import secrets
+import shutil
 import sys
 import time
 from pathlib import Path
@@ -21,6 +22,7 @@ from .settings import (
     as_bool,
     get_config_path,
     load_config,
+    maintainer_browser_tmp_dir,
     maintainer_log_dir,
     maintainer_sso_dir,
     project_root,
@@ -30,6 +32,7 @@ from .settings import (
 
 
 SIGNUP_URL = "https://accounts.x.ai/sign-up?redirect=grok-com"
+DEFAULT_MIN_BROWSER_FREE_BYTES = 256 * 1024 * 1024
 
 browser = None
 page = None
@@ -116,6 +119,51 @@ def _discover_browser_path() -> str | None:
     return None
 
 
+def _resolve_browser_tmp_path() -> Path:
+    explicit = os.getenv("MAINTAINER_TMP_PATH", "").strip()
+    if explicit:
+        return Path(explicit).expanduser().resolve()
+    return maintainer_browser_tmp_dir()
+
+
+def _format_bytes(size: int) -> str:
+    value = float(size)
+    for unit in ("B", "KiB", "MiB", "GiB", "TiB"):
+        if value < 1024 or unit == "TiB":
+            return f"{value:.1f}{unit}" if unit != "B" else f"{int(value)}B"
+        value /= 1024
+    return f"{size}B"
+
+
+def _min_browser_free_bytes() -> int:
+    raw = os.getenv("MAINTAINER_MIN_BROWSER_FREE_BYTES", "").strip()
+    if not raw:
+        return DEFAULT_MIN_BROWSER_FREE_BYTES
+    try:
+        return max(0, int(raw))
+    except ValueError:
+        return DEFAULT_MIN_BROWSER_FREE_BYTES
+
+
+def _ensure_browser_storage_ready(path_like: str | os.PathLike[str]) -> Path:
+    path = Path(path_like).expanduser()
+    try:
+        path.mkdir(parents=True, exist_ok=True)
+        usage = shutil.disk_usage(path)
+    except OSError as exc:
+        raise RuntimeError(f"浏览器临时目录不可用: {path} ({exc})") from exc
+
+    min_free = _min_browser_free_bytes()
+    if usage.free < min_free:
+        raise RuntimeError(
+            "浏览器临时目录可用空间不足: "
+            f"{path} free={_format_bytes(usage.free)} required={_format_bytes(min_free)}。"
+            "请清理磁盘空间后重试，或设置 MAINTAINER_TMP_PATH 指向空间充足的目录。"
+        )
+
+    return path
+
+
 def _ensure_virtual_display() -> None:
     global _virtual_display
     if _virtual_display is not None:
@@ -149,12 +197,16 @@ def _stop_virtual_display() -> None:
 def _configure_browser_options() -> ChromiumOptions:
     opts = ChromiumOptions()
     opts.auto_port()
+    opts.set_tmp_path(str(_resolve_browser_tmp_path()))
     opts.set_timeouts(base=1)
     opts.add_extension(str(extension_dir()))
 
     browser_path = _discover_browser_path()
     if browser_path:
         opts.set_browser_path(browser_path)
+
+    opts.set_argument("--no-first-run")
+    opts.set_argument("--no-default-browser-check")
 
     if as_bool(os.getenv("MAINTAINER_HEADLESS"), default=False):
         opts.headless(True)
@@ -192,6 +244,7 @@ def resolve_user_path(path_like: str) -> Path:
 def start_browser():
     global browser, page
     _ensure_virtual_display()
+    _ensure_browser_storage_ready(co.tmp_path or _resolve_browser_tmp_path())
     browser = Chromium(co)
     tabs = browser.get_tabs()
     page = tabs[-1] if tabs else browser.new_tab()
