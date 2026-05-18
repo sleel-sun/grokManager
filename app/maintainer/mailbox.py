@@ -15,6 +15,26 @@ from .settings import as_bool, load_config, pick_conf
 
 
 _temp_email_cache: dict[str, str] = {}
+_EMAIL_RE = re.compile(r"[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}", re.IGNORECASE)
+_RECIPIENT_FIELD_NAMES = {
+    "address",
+    "delivered_to",
+    "email",
+    "envelope_to",
+    "mail_to",
+    "original_recipient",
+    "rcpt_to",
+    "recipient",
+    "recipients",
+    "to",
+}
+_RAW_RECIPIENT_HEADERS = {
+    "delivered-to",
+    "envelope-to",
+    "original-recipient",
+    "to",
+    "x-forwarded-to",
+}
 
 
 def get_email_and_token() -> tuple[str | None, str | None]:
@@ -57,8 +77,6 @@ def get_email_and_token() -> tuple[str | None, str | None]:
 
 
 def get_oai_code(dev_token: str, email: str, timeout: int = 120) -> str | None:
-    del email
-
     conf = load_config()
     worker_domain = str(pick_conf(conf, "email", "worker_domain", default="") or "")
     verify_ssl = as_bool(
@@ -75,6 +93,7 @@ def get_oai_code(dev_token: str, email: str, timeout: int = 120) -> str | None:
         session=session,
         worker_domain=worker_domain,
         cf_token=dev_token,
+        target_email=email,
         timeout=timeout,
     )
 
@@ -88,17 +107,23 @@ def wait_for_verification_code(
     session: requests.Session,
     worker_domain: str,
     cf_token: str,
+    target_email: str = "",
     timeout: int = 120,
 ) -> str | None:
     old_ids = set()
     old = fetch_emails(session, worker_domain, cf_token)
     if old:
-        old_ids = {item.get("id") for item in old if isinstance(item, dict) and "id" in item}
+        old_ids = {
+            item.get("id")
+            for item in old
+            if isinstance(item, dict)
+            and item.get("id") is not None
+            and mail_matches_target_email(item, target_email)
+        }
         for item in old:
             if not isinstance(item, dict):
                 continue
-            raw = str(item.get("raw") or "")
-            code = extract_verification_code(raw)
+            code = extract_verification_code_from_mail(item, target_email)
             if code:
                 return code
 
@@ -111,8 +136,7 @@ def wait_for_verification_code(
                     continue
                 if item.get("id") in old_ids:
                     continue
-                raw = str(item.get("raw") or "")
-                code = extract_verification_code(raw)
+                code = extract_verification_code_from_mail(item, target_email)
                 if code:
                     return code
         time.sleep(3)
@@ -188,6 +212,81 @@ def fetch_emails(
     except Exception:
         pass
     return []
+
+
+def normalise_email(email: str) -> str:
+    return str(email or "").strip().lower()
+
+
+def emails_from_value(value: Any) -> set[str]:
+    if value is None:
+        return set()
+    if isinstance(value, str):
+        return {match.group(0).lower() for match in _EMAIL_RE.finditer(value)}
+    if isinstance(value, dict):
+        emails: set[str] = set()
+        for nested in value.values():
+            emails.update(emails_from_value(nested))
+        return emails
+    if isinstance(value, (list, tuple, set)):
+        emails = set()
+        for nested in value:
+            emails.update(emails_from_value(nested))
+        return emails
+    return set()
+
+
+def recipient_emails_from_mail(mail: dict[str, Any]) -> set[str]:
+    recipients: set[str] = set()
+    for key, value in mail.items():
+        field_name = str(key).lower().replace("-", "_")
+        if field_name in _RECIPIENT_FIELD_NAMES:
+            recipients.update(emails_from_value(value))
+
+    headers = mail.get("headers")
+    if isinstance(headers, dict):
+        for key, value in headers.items():
+            if str(key).strip().lower() in _RAW_RECIPIENT_HEADERS:
+                recipients.update(emails_from_value(value))
+
+    raw = str(mail.get("raw") or "")
+    for line in raw.splitlines():
+        header, sep, value = line.partition(":")
+        if sep and header.strip().lower() in _RAW_RECIPIENT_HEADERS:
+            recipients.update(emails_from_value(value))
+
+    if recipients:
+        return recipients
+
+    return emails_from_value(raw)
+
+
+def mail_matches_target_email(mail: dict[str, Any], target_email: str) -> bool:
+    target = normalise_email(target_email)
+    if not target:
+        return True
+
+    recipients = recipient_emails_from_mail(mail)
+    if not recipients:
+        return True
+
+    return target in recipients
+
+
+def extract_verification_code_from_mail(
+    mail: dict[str, Any],
+    target_email: str = "",
+) -> str | None:
+    if not mail_matches_target_email(mail, target_email):
+        return None
+
+    content_parts = []
+    for key in ("raw", "text", "html", "body", "subject"):
+        value = mail.get(key)
+        if isinstance(value, str) and value.strip():
+            content_parts.append(value)
+
+    return extract_verification_code("\n".join(content_parts))
 
 
 def extract_verification_code(content: str) -> str | None:
