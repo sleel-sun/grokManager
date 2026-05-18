@@ -17,10 +17,10 @@ from app.platform.tokens import estimate_prompt_tokens, estimate_tokens, estimat
 from app.control.model.enums import ModeId
 from app.control.model.registry import resolve as resolve_model
 from app.control.account.enums import FeedbackKind
-from app.dataplane.reverse.protocol.xai_chat import classify_line, StreamAdapter
+from app.dataplane.reverse.protocol.xai_chat import classify_line
 from app.products._account_selection import reserve_account, selection_max_retries
 
-from .chat import _stream_chat, _extract_message, _resolve_image, _quota_sync, _fail_sync, _parse_retry_codes, _feedback_kind, _log_task_exception, _upstream_body_excerpt
+from .chat import _stream_chat, _extract_message, _resolve_image, _quota_sync, _fail_sync, _parse_retry_codes, _feedback_kind, _log_task_exception, _upstream_body_excerpt, _new_stream_adapter
 from .chat import _configured_retry_codes, _should_retry_upstream
 from ._format import (
     make_resp_id, build_resp_usage, make_resp_object, format_sse,
@@ -273,7 +273,7 @@ async def create(
             success = False
             _retry  = False
             fail_exc: BaseException | None = None
-            adapter           = StreamAdapter()
+            adapter           = _new_stream_adapter(spec)
             think_buf:  list[str] = []
             text_buf:   list[str] = []
             reasoning_started   = False
@@ -297,6 +297,7 @@ async def create(
                         mode_id   = ModeId(selected_mode_id),
                         message   = message,
                         files     = files,
+                        spec      = spec,
                         timeout_s = timeout_s,
                     ):
                         if tool_calls_emitted:
@@ -606,7 +607,7 @@ async def create(
     # -------------------------------------------------------------------------
     excluded: list[str] = []
     token    = ""
-    adapter  = StreamAdapter()
+    adapter  = _new_stream_adapter(spec)
     for attempt in range(max_retries + 1):
         acct, selected_mode_id = await reserve_account(
             directory,
@@ -621,7 +622,7 @@ async def create(
         success  = False
         _retry   = False
         fail_exc: BaseException | None = None
-        adapter  = StreamAdapter()   # fresh adapter per attempt
+        adapter  = _new_stream_adapter(spec)   # fresh adapter per attempt
 
         try:
             try:
@@ -630,6 +631,7 @@ async def create(
                     mode_id   = ModeId(selected_mode_id),
                     message   = message,
                     files     = files,
+                    spec      = spec,
                     timeout_s = timeout_s,
                 ):
                     event_type, data = classify_line(line)
