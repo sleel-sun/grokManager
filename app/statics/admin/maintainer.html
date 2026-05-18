@@ -139,8 +139,8 @@
 
             <div class="field">
               <label for="email-admin-password">邮箱 Worker 管理密码</label>
-              <input class="input" id="email-admin-password" name="email_admin_password" type="password" autocomplete="off" required>
-              <small>只会写入本机运行时配置文件，不会在状态接口和日志尾部返回。</small>
+              <input class="input" id="email-admin-password" name="email_admin_password" type="password" autocomplete="off">
+              <small id="password-hint">会保存到本机运行时配置文件；已保存后可留空沿用，不会在状态接口和日志尾部返回。</small>
             </div>
 
             <div class="inline">
@@ -175,6 +175,7 @@
 
             <div class="actions">
               <button class="btn-main" id="run-btn" type="submit">启动注册</button>
+              <button class="btn-soft" id="save-btn" type="button">保存配置</button>
               <span class="notice" id="available-hint"></span>
             </div>
           </form>
@@ -221,8 +222,10 @@
   <script>
 const form = document.getElementById('maintainer-form');
 const runBtn = document.getElementById('run-btn');
+const saveBtn = document.getElementById('save-btn');
 const refreshBtn = document.getElementById('refresh-btn');
 const availableHint = document.getElementById('available-hint');
+const passwordHint = document.getElementById('password-hint');
 const statePill = document.getElementById('state-pill');
 const tokenCount = document.getElementById('token-count');
 const outputPath = document.getElementById('output-path');
@@ -265,9 +268,32 @@ function renderStatus(data) {
     ? data.log_tail.join('\n')
     : '暂无日志';
   runBtn.disabled = !!data.running || !data.available;
+  saveBtn.disabled = !!data.running;
   availableHint.textContent = data.available
     ? (data.running ? '任务运行中，请等待完成。' : 'Maintainer 依赖可用。')
     : 'Maintainer 依赖未安装：请先执行 uv sync --extra maintainer。';
+}
+
+function renderSavedConfig(data) {
+  if (!data || typeof data !== 'object') return;
+  document.getElementById('worker-domain').value = data.email_worker_domain || '';
+  document.getElementById('email-domains').value = Array.isArray(data.email_domains)
+    ? data.email_domains.join(', ')
+    : '';
+  document.getElementById('email-admin-password').value = '';
+  document.getElementById('email-admin-password').placeholder = data.has_email_admin_password
+    ? '已保存，留空沿用'
+    : '请输入 Worker 管理密码';
+  passwordHint.textContent = data.has_email_admin_password
+    ? '已保存 Worker 管理密码；留空会沿用已保存值，输入新密码会覆盖。'
+    : '会保存到本机运行时配置文件；不会在状态接口和日志尾部返回。';
+  document.getElementById('count').value = data.count || 1;
+  document.getElementById('pool').value = data.pool || 'basic';
+  document.getElementById('headless').checked = !!data.headless;
+  document.getElementById('use-xvfb').checked = !!data.use_xvfb;
+  document.getElementById('no-sandbox').checked = !!data.no_sandbox;
+  document.getElementById('disable-dev-shm').checked = !!data.disable_dev_shm;
+  document.getElementById('window-size').value = data.window_size || '1440,900';
 }
 
 async function refreshStatus() {
@@ -275,6 +301,14 @@ async function refreshStatus() {
     renderStatus(await api('GET', '/maintainer/status'));
   } catch (err) {
     showToast(err.message || '状态刷新失败', 'error');
+  }
+}
+
+async function loadSavedConfig() {
+  try {
+    renderSavedConfig(await api('GET', '/maintainer/config'));
+  } catch (err) {
+    showToast(err.message || '配置加载失败', 'error');
   }
 }
 
@@ -299,9 +333,22 @@ form.addEventListener('submit', async (event) => {
   try {
     const data = await api('POST', '/maintainer/run', readPayload());
     renderStatus(data);
+    await loadSavedConfig();
     showToast('注册任务已启动', 'success');
   } catch (err) {
     showToast(err.message || '启动失败', 'error');
+  } finally {
+    await refreshStatus();
+  }
+});
+
+saveBtn.addEventListener('click', async () => {
+  saveBtn.disabled = true;
+  try {
+    renderSavedConfig(await api('POST', '/maintainer/config', readPayload()));
+    showToast('注册邮箱配置已保存', 'success');
+  } catch (err) {
+    showToast(err.message || '保存失败', 'error');
   } finally {
     await refreshStatus();
   }
@@ -318,6 +365,7 @@ refreshBtn.addEventListener('click', refreshStatus);
     location.href = '/admin/login';
     return;
   }
+  await loadSavedConfig();
   await refreshStatus();
   setInterval(refreshStatus, 3000);
 })();

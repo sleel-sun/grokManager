@@ -38,7 +38,7 @@ class MaintainerRunRequest(BaseModel):
     count: int = Field(default=1, ge=1, le=100)
     email_worker_domain: str = Field(min_length=1, max_length=253)
     email_domains: list[str] = Field(min_length=1, max_length=20)
-    email_admin_password: str = Field(min_length=1, max_length=4096)
+    email_admin_password: str = Field(default="", max_length=4096)
     pool: Literal["basic", "super", "heavy"] = "basic"
     headless: bool = False
     use_xvfb: bool = False
@@ -79,6 +79,11 @@ class MaintainerRunRequest(BaseModel):
             raise ValueError("window_size must look like 1440,900")
         return value
 
+    @field_validator("email_admin_password", mode="before")
+    @classmethod
+    def _coerce_admin_password(cls, value: Any) -> str:
+        return "" if value is None else str(value)
+
 
 _state: dict[str, Any] = {
     "running": False,
@@ -99,13 +104,27 @@ def build_runtime_config(
     *,
     base_url: str,
     admin_token: str,
+    existing_config: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build the config consumed by app.maintainer.runner."""
+    email_conf = (
+        existing_config.get("email", {})
+        if isinstance(existing_config, dict) and isinstance(existing_config.get("email"), dict)
+        else {}
+    )
+    saved_password = str(email_conf.get("admin_password") or "")
+    email_admin_password = req.email_admin_password or saved_password
+    if not email_admin_password:
+        raise ValidationError(
+            "Email Worker admin password is required",
+            param="email_admin_password",
+        )
+
     return {
         "email": {
             "worker_domain": req.email_worker_domain,
             "email_domains": list(req.email_domains),
-            "admin_password": req.email_admin_password,
+            "admin_password": email_admin_password,
             "verify_ssl": req.verify_ssl,
         },
         "api": {
@@ -116,6 +135,54 @@ def build_runtime_config(
             "verify_ssl": req.verify_ssl,
         },
         "run": {"count": req.count},
+        "web": {
+            "headless": req.headless,
+            "use_xvfb": req.use_xvfb,
+            "no_sandbox": req.no_sandbox,
+            "disable_dev_shm": req.disable_dev_shm,
+            "window_size": req.window_size,
+            "extract_numbers": req.extract_numbers,
+        },
+    }
+
+
+def build_saved_config_response(payload: dict[str, Any]) -> dict[str, Any]:
+    """Serialize saved maintainer config without exposing secret values."""
+    email_conf = payload.get("email") if isinstance(payload.get("email"), dict) else {}
+    api_conf = payload.get("api") if isinstance(payload.get("api"), dict) else {}
+    run_conf = payload.get("run") if isinstance(payload.get("run"), dict) else {}
+    web_conf = payload.get("web") if isinstance(payload.get("web"), dict) else {}
+
+    domains = email_conf.get("email_domains", email_conf.get("domains", []))
+    if isinstance(domains, str):
+        domains = [part.strip() for part in domains.split(",") if part.strip()]
+    if not isinstance(domains, list):
+        domains = []
+    domains = [str(item).strip() for item in domains if str(item or "").strip()]
+
+    try:
+        count = int(run_conf.get("count", 1) or 1)
+    except (TypeError, ValueError):
+        count = 1
+    count = min(max(count, 1), 100)
+
+    pool = str(api_conf.get("pool", "basic") or "basic").strip().lower()
+    if pool not in {"basic", "super", "heavy"}:
+        pool = "basic"
+
+    return {
+        "email_worker_domain": str(email_conf.get("worker_domain") or ""),
+        "email_domains": domains,
+        "has_email_admin_password": bool(email_conf.get("admin_password")),
+        "verify_ssl": bool(email_conf.get("verify_ssl", True)),
+        "pool": pool,
+        "count": count,
+        "headless": bool(web_conf.get("headless", False)),
+        "use_xvfb": bool(web_conf.get("use_xvfb", False)),
+        "no_sandbox": bool(web_conf.get("no_sandbox", False)),
+        "disable_dev_shm": bool(web_conf.get("disable_dev_shm", False)),
+        "window_size": str(web_conf.get("window_size") or "1440,900"),
+        "extract_numbers": bool(web_conf.get("extract_numbers", False)),
     }
 
 
@@ -137,8 +204,23 @@ def _job_dir() -> Path:
     return path
 
 
+def _runtime_config_path() -> Path:
+    return _job_dir() / "maintainer.config.json"
+
+
+def _read_runtime_config() -> dict[str, Any]:
+    path = _runtime_config_path()
+    if not path.exists():
+        return {}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
 def _write_runtime_config(payload: dict[str, Any]) -> Path:
-    path = _job_dir() / "maintainer.config.json"
+    path = _runtime_config_path()
     path.write_text(
         json.dumps(payload, ensure_ascii=False, indent=2),
         encoding="utf-8",
@@ -255,6 +337,29 @@ async def maintainer_status():
     return state
 
 
+@router.get("/config")
+async def maintainer_config_get():
+    return build_saved_config_response(_read_runtime_config())
+
+
+@router.post("/config")
+async def maintainer_config_save(req: MaintainerRunRequest, request: Request):
+    admin_token = config.get_str("app.app_key", "")
+    if not admin_token:
+        raise ValidationError("Admin app key is empty", param="app.app_key")
+
+    runtime_config = build_runtime_config(
+        req,
+        base_url=str(request.base_url),
+        admin_token=admin_token,
+        existing_config=_read_runtime_config(),
+    )
+    path = _write_runtime_config(runtime_config)
+    response = build_saved_config_response(runtime_config)
+    response["config_path"] = str(path)
+    return response
+
+
 @router.post("/run")
 async def maintainer_run(req: MaintainerRunRequest, request: Request):
     global _task
@@ -284,6 +389,7 @@ async def maintainer_run(req: MaintainerRunRequest, request: Request):
             req,
             base_url=str(request.base_url),
             admin_token=admin_token,
+            existing_config=_read_runtime_config(),
         )
         config_path = _write_runtime_config(runtime_config)
         output_path = _output_path()
@@ -308,6 +414,7 @@ async def maintainer_run(req: MaintainerRunRequest, request: Request):
 
 __all__ = [
     "MaintainerRunRequest",
+    "build_saved_config_response",
     "build_runtime_config",
     "redact_state",
     "router",
