@@ -1,6 +1,12 @@
+import base64
 import unittest
 
-from app.maintainer.mailbox import extract_verification_code, wait_for_verification_code
+from app.maintainer.mailbox import (
+    extract_verification_code,
+    extract_verification_code_from_mail,
+    fetch_emails,
+    wait_for_verification_code,
+)
 
 
 class FakeMailResponse:
@@ -16,8 +22,14 @@ class FakeMailResponse:
 class FakeMailSession:
     def __init__(self, rows):
         self._rows = rows
+        self.last_headers = None
+        self.last_params = None
+        self.last_url = None
 
-    def get(self, *args, **kwargs):
+    def get(self, url, **kwargs):
+        self.last_url = url
+        self.last_headers = kwargs.get("headers")
+        self.last_params = kwargs.get("params")
         return FakeMailResponse(self._rows)
 
 
@@ -70,6 +82,43 @@ Your one-time security code is AB9-CD2.
 """
 
         self.assertEqual(extract_verification_code(content), "AB9-CD2")
+
+    def test_fetch_emails_uses_admin_address_filter_when_available(self) -> None:
+        session = FakeMailSession([{"id": "mail-1"}])
+
+        rows = fetch_emails(
+            session=session,
+            worker_domain="mail.example.com",
+            cf_token="address-jwt",
+            target_email="target@example.com",
+            admin_password="worker-secret",
+        )
+
+        self.assertEqual(rows, [{"id": "mail-1"}])
+        self.assertEqual(session.last_url, "https://mail.example.com/admin/mails")
+        self.assertEqual(session.last_params["address"], "target@example.com")
+        self.assertEqual(session.last_headers["x-admin-auth"], "worker-secret")
+        self.assertNotIn("Authorization", session.last_headers)
+
+    def test_extract_verification_code_from_mail_decodes_raw_rfc822_body(self) -> None:
+        body = "Your one-time security code is ZX9-QW2."
+        raw = "\r\n".join(
+            [
+                "Subject: Verify your email",
+                "To: target@example.com",
+                "Content-Type: text/plain; charset=utf-8",
+                "Content-Transfer-Encoding: base64",
+                "",
+                base64.b64encode(body.encode()).decode(),
+            ]
+        )
+
+        code = extract_verification_code_from_mail(
+            {"source": raw, "to": [{"address": "target@example.com"}]},
+            target_email="target@example.com",
+        )
+
+        self.assertEqual(code, "ZX9-QW2")
 
 
 if __name__ == "__main__":

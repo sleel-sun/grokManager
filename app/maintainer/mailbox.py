@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from email import policy
+from email.parser import Parser
 import html
 import logging
 import random
@@ -97,6 +99,7 @@ def get_email_and_token() -> tuple[str | None, str | None]:
 def get_oai_code(dev_token: str, email: str, timeout: int = 120) -> str | None:
     conf = load_config()
     worker_domain = str(pick_conf(conf, "email", "worker_domain", default="") or "")
+    admin_password = str(pick_conf(conf, "email", "admin_password", default="") or "")
     verify_ssl = as_bool(
         pick_conf(conf, "email", "verify_ssl", default=True),
         default=True,
@@ -112,6 +115,7 @@ def get_oai_code(dev_token: str, email: str, timeout: int = 120) -> str | None:
         worker_domain=worker_domain,
         cf_token=dev_token,
         target_email=email,
+        admin_password=admin_password,
         timeout=timeout,
     )
 
@@ -126,10 +130,11 @@ def wait_for_verification_code(
     worker_domain: str,
     cf_token: str,
     target_email: str = "",
+    admin_password: str = "",
     timeout: int = 120,
 ) -> str | None:
     old_ids = set()
-    old = fetch_emails(session, worker_domain, cf_token)
+    old = fetch_emails(session, worker_domain, cf_token, target_email, admin_password)
     if old:
         old_ids = {
             item.get("id")
@@ -147,7 +152,7 @@ def wait_for_verification_code(
 
     start = time.time()
     while time.time() - start < timeout:
-        emails = fetch_emails(session, worker_domain, cf_token)
+        emails = fetch_emails(session, worker_domain, cf_token, target_email, admin_password)
         if emails:
             for item in emails:
                 if not isinstance(item, dict):
@@ -216,20 +221,67 @@ def fetch_emails(
     session: requests.Session,
     worker_domain: str,
     cf_token: str,
+    target_email: str = "",
+    admin_password: str = "",
 ) -> list[dict[str, Any]]:
+    if admin_password and target_email:
+        ok, rows = fetch_emails_request(
+            session=session,
+            url=f"https://{worker_domain}/admin/mails",
+            params={
+                "limit": 20,
+                "offset": 0,
+                "address": normalise_email(target_email),
+            },
+            headers={"x-admin-auth": admin_password},
+        )
+        if ok:
+            return rows
+
+    ok, rows = fetch_emails_request(
+        session=session,
+        url=f"https://{worker_domain}/api/mails",
+        params={"limit": 10, "offset": 0},
+        headers={"Authorization": f"Bearer {cf_token}"},
+    )
+    return rows if ok else []
+
+
+def fetch_emails_request(
+    session: requests.Session,
+    url: str,
+    params: dict[str, Any],
+    headers: dict[str, str],
+) -> tuple[bool, list[dict[str, Any]]]:
     try:
         res = session.get(
-            f"https://{worker_domain}/api/mails",
-            params={"limit": 10, "offset": 0},
-            headers={"Authorization": f"Bearer {cf_token}"},
+            url,
+            params=params,
+            headers={**headers, "Content-Type": "application/json"},
             timeout=30,
         )
         if res.status_code == 200:
-            rows = res.json().get("results", [])
-            return rows if isinstance(rows, list) else []
+            return True, normalise_mail_rows(res.json())
     except Exception:
         pass
-    return []
+    return False, []
+
+
+def normalise_mail_rows(payload: Any) -> list[dict[str, Any]]:
+    rows: Any = payload
+    if isinstance(payload, dict):
+        for key in ("results", "data", "mails", "items"):
+            candidate = payload.get(key)
+            if isinstance(candidate, list):
+                rows = candidate
+                break
+        else:
+            rows = []
+
+    if not isinstance(rows, list):
+        return []
+
+    return [item for item in rows if isinstance(item, dict)]
 
 
 def normalise_email(email: str) -> str:
@@ -267,7 +319,7 @@ def recipient_emails_from_mail(mail: dict[str, Any]) -> set[str]:
             if str(key).strip().lower() in _RAW_RECIPIENT_HEADERS:
                 recipients.update(emails_from_value(value))
 
-    raw = str(mail.get("raw") or "")
+    raw = raw_mail_source(mail)
     for line in raw.splitlines():
         header, sep, value = line.partition(":")
         if sep and header.strip().lower() in _RAW_RECIPIENT_HEADERS:
@@ -299,12 +351,58 @@ def extract_verification_code_from_mail(
         return None
 
     content_parts = []
-    for key in ("raw", "text", "html", "body", "subject"):
+    for key in ("text", "html", "body", "subject"):
         value = mail.get(key)
         if isinstance(value, str) and value.strip():
             content_parts.append(value)
+    content_parts.extend(parsed_rfc822_text_parts(raw_mail_source(mail)))
 
     return extract_verification_code("\n".join(content_parts))
+
+
+def raw_mail_source(mail: dict[str, Any]) -> str:
+    for key in ("raw", "source"):
+        value = mail.get(key)
+        if isinstance(value, str) and value.strip():
+            return value
+    return ""
+
+
+def parsed_rfc822_text_parts(raw: str) -> list[str]:
+    if not raw.strip():
+        return []
+
+    try:
+        message = Parser(policy=policy.default).parsestr(raw)
+    except Exception:
+        return [raw]
+
+    parts: list[str] = []
+    subject = message.get("subject")
+    if subject:
+        parts.append(str(subject))
+
+    for part in message.walk():
+        if part.is_multipart():
+            continue
+        content_type = part.get_content_type()
+        if content_type not in {"text/plain", "text/html"}:
+            continue
+        try:
+            content = part.get_content()
+        except Exception:
+            payload = part.get_payload(decode=True)
+            if isinstance(payload, bytes):
+                content = payload.decode(part.get_content_charset() or "utf-8", errors="replace")
+            else:
+                content = str(payload or "")
+        if content:
+            parts.append(str(content))
+
+    if not parts:
+        parts.append(raw)
+
+    return parts
 
 
 def extract_verification_code(content: str) -> str | None:
