@@ -1,0 +1,326 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Grok2API - 账号注册</title>
+  <link rel="icon" href="/favicon.ico?v={{APP_VERSION}}">
+  <link href="https://cdn.jsdelivr.net/npm/geist@1.0.0/dist/fonts/geist-sans/style.css" rel="stylesheet">
+  <link href="/static/css/app.css?v={{APP_VERSION}}" rel="stylesheet">
+  <style>
+    body { background:#FAF9F5; }
+    .page-hd { display:flex; justify-content:space-between; align-items:flex-start; gap:16px; margin-bottom:20px; }
+    .page-title { font-size:22px; font-weight:700; line-height:1.2; }
+    .page-sub { margin-top:6px; color:var(--fg-muted); font-size:13px; line-height:1.6; }
+    .grid { display:grid; grid-template-columns:minmax(0, 1.1fr) minmax(340px, .9fr); gap:16px; align-items:start; }
+    .card { background:#fff; border:1px solid #eee8dd; border-radius:18px; box-shadow:0 14px 30px rgba(40,32,20,.05); }
+    .card-hd { padding:18px 20px 12px; border-bottom:1px solid #f1eee8; }
+    .card-title { font-size:14px; font-weight:700; color:#222; }
+    .card-sub { margin-top:5px; font-size:12px; color:#8a8175; line-height:1.5; }
+    .card-body { padding:18px 20px 20px; }
+    .form-grid { display:grid; gap:14px; }
+    .field { display:grid; gap:7px; }
+    .field label { font-size:12px; font-weight:650; color:#4d463b; }
+    .field small { color:#968d81; font-size:11px; line-height:1.45; }
+    .input, .select {
+      height:38px;
+      border:1px solid #e5dfd5;
+      border-radius:12px;
+      padding:0 12px;
+      background:#fffdfa;
+      color:#25221d;
+      font:inherit;
+      outline:none;
+    }
+    .input:focus, .select:focus { border-color:#111; box-shadow:0 0 0 3px rgba(17,17,17,.08); }
+    .inline { display:grid; grid-template-columns:1fr 160px; gap:12px; }
+    .switch-row { display:flex; flex-wrap:wrap; gap:10px; }
+    .check {
+      display:inline-flex;
+      align-items:center;
+      gap:8px;
+      min-height:34px;
+      padding:0 10px;
+      border:1px solid #ece6dc;
+      border-radius:999px;
+      background:#fffdfa;
+      color:#4b443b;
+      font-size:12px;
+      font-weight:600;
+    }
+    .check input { accent-color:#111; }
+    .actions { display:flex; align-items:center; gap:10px; margin-top:18px; }
+    .btn-main {
+      height:38px;
+      padding:0 18px;
+      border-radius:999px;
+      background:#111;
+      color:#fff;
+      font-weight:700;
+      border:1px solid #111;
+    }
+    .btn-main:disabled { opacity:.45; cursor:not-allowed; }
+    .btn-soft {
+      height:38px;
+      padding:0 14px;
+      border-radius:999px;
+      border:1px solid #e7e1d8;
+      background:#fffdfa;
+      color:#4b443b;
+      font-weight:650;
+    }
+    .status-grid { display:grid; grid-template-columns:repeat(2, minmax(0, 1fr)); gap:10px; margin-bottom:14px; }
+    .status-tile { padding:14px; border-radius:14px; background:#fbf7ef; border:1px solid #f1e8da; }
+    .status-label { color:#92887b; font-size:11px; }
+    .status-value { margin-top:8px; font-size:18px; font-weight:750; color:#221f1a; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+    .status-pill {
+      display:inline-flex;
+      align-items:center;
+      height:26px;
+      padding:0 10px;
+      border-radius:999px;
+      background:#eee7dc;
+      color:#554b3f;
+      font-size:12px;
+      font-weight:700;
+    }
+    .status-pill.running { background:#111; color:#fff; }
+    .status-pill.completed { background:#e7f7df; color:#276018; }
+    .status-pill.failed { background:#fde6e0; color:#9b2d19; }
+    .log {
+      min-height:240px;
+      max-height:420px;
+      overflow:auto;
+      padding:14px;
+      border-radius:14px;
+      background:#171511;
+      color:#e9dfcf;
+      font:12px/1.55 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      white-space:pre-wrap;
+      word-break:break-word;
+    }
+    .notice { margin-top:14px; color:#8a8175; font-size:12px; line-height:1.6; }
+    @media (max-width: 900px) {
+      .grid { grid-template-columns:1fr; }
+      .inline { grid-template-columns:1fr; }
+    }
+  </style>
+</head>
+<body>
+  <div id="admin-header"></div>
+  <main class="main admin-main">
+    <div class="page-hd">
+      <div>
+        <div class="page-title">账号注册</div>
+        <div class="page-sub">通过内置 Account Maintainer 启动浏览器自动注册 xAI 账号，并把采集到的 SSO token 自动回写到账户池。</div>
+      </div>
+      <button class="btn-soft" id="refresh-btn" type="button">刷新状态</button>
+    </div>
+
+    <div class="grid">
+      <section class="card">
+        <div class="card-hd">
+          <div class="card-title">注册任务</div>
+          <div class="card-sub">需要先准备临时邮箱 Worker。任务启动后会在后台运行，同一时间只允许一个注册任务。</div>
+        </div>
+        <div class="card-body">
+          <form id="maintainer-form" class="form-grid">
+            <div class="field">
+              <label for="worker-domain">邮箱 Worker 域名</label>
+              <input class="input" id="worker-domain" name="email_worker_domain" placeholder="mail.example.com" autocomplete="off" required>
+              <small>只填域名，不要带 https://。对应 maintainer 配置里的 email.worker_domain。</small>
+            </div>
+
+            <div class="field">
+              <label for="email-domains">可用邮箱域名</label>
+              <input class="input" id="email-domains" name="email_domains" placeholder="example.com, mail.example.com" autocomplete="off" required>
+              <small>多个域名用英文逗号分隔。</small>
+            </div>
+
+            <div class="field">
+              <label for="email-admin-password">邮箱 Worker 管理密码</label>
+              <input class="input" id="email-admin-password" name="email_admin_password" type="password" autocomplete="off" required>
+              <small>只会写入本机运行时配置文件，不会在状态接口和日志尾部返回。</small>
+            </div>
+
+            <div class="inline">
+              <div class="field">
+                <label for="count">注册数量</label>
+                <input class="input" id="count" name="count" type="number" min="1" max="100" value="1" required>
+              </div>
+              <div class="field">
+                <label for="pool">写入账号池</label>
+                <select class="select" id="pool" name="pool">
+                  <option value="basic">basic</option>
+                  <option value="super">super</option>
+                  <option value="heavy">heavy</option>
+                </select>
+              </div>
+            </div>
+
+            <div class="field">
+              <label>浏览器运行参数</label>
+              <div class="switch-row">
+                <label class="check"><input id="headless" type="checkbox"> Headless</label>
+                <label class="check"><input id="use-xvfb" type="checkbox"> Xvfb</label>
+                <label class="check"><input id="no-sandbox" type="checkbox"> No sandbox</label>
+                <label class="check"><input id="disable-dev-shm" type="checkbox"> Disable /dev/shm</label>
+              </div>
+            </div>
+
+            <div class="field">
+              <label for="window-size">窗口尺寸</label>
+              <input class="input" id="window-size" value="1440,900" placeholder="1440,900">
+            </div>
+
+            <div class="actions">
+              <button class="btn-main" id="run-btn" type="submit">启动注册</button>
+              <span class="notice" id="available-hint"></span>
+            </div>
+          </form>
+        </div>
+      </section>
+
+      <section class="card">
+        <div class="card-hd">
+          <div class="card-title">运行状态</div>
+          <div class="card-sub">页面会自动轮询最新状态和日志尾部。</div>
+        </div>
+        <div class="card-body">
+          <div class="status-grid">
+            <div class="status-tile">
+              <div class="status-label">状态</div>
+              <div class="status-value"><span class="status-pill" id="state-pill">idle</span></div>
+            </div>
+            <div class="status-tile">
+              <div class="status-label">采集 token</div>
+              <div class="status-value" id="token-count">0</div>
+            </div>
+            <div class="status-tile">
+              <div class="status-label">输出文件</div>
+              <div class="status-value" id="output-path">-</div>
+            </div>
+            <div class="status-tile">
+              <div class="status-label">配置文件</div>
+              <div class="status-value" id="config-path">-</div>
+            </div>
+          </div>
+          <pre class="log" id="log-box">暂无日志</pre>
+          <div class="notice" id="state-message"></div>
+        </div>
+      </section>
+    </div>
+  </main>
+  <div id="site-footer"></div>
+
+  <script src="/static/js/i18n.js?v={{APP_VERSION}}"></script>
+  <script src="/static/js/auth.js?v={{APP_VERSION}}"></script>
+  <script src="/static/js/toast.js?v={{APP_VERSION}}"></script>
+  <script src="/static/js/admin-header.js?v={{APP_VERSION}}"></script>
+  <script src="/static/js/footer.js?v={{APP_VERSION}}"></script>
+  <script>
+const form = document.getElementById('maintainer-form');
+const runBtn = document.getElementById('run-btn');
+const refreshBtn = document.getElementById('refresh-btn');
+const availableHint = document.getElementById('available-hint');
+const statePill = document.getElementById('state-pill');
+const tokenCount = document.getElementById('token-count');
+const outputPath = document.getElementById('output-path');
+const configPath = document.getElementById('config-path');
+const logBox = document.getElementById('log-box');
+const stateMessage = document.getElementById('state-message');
+
+function waitI18n() {
+  return new Promise((resolve) => I18n.onReady(resolve));
+}
+
+async function api(method, path, body) {
+  const key = await adminKey.get();
+  const res = await fetch(ADMIN_API + path, {
+    method,
+    headers: { ...(body != null && { 'Content-Type': 'application/json' }), Authorization: `Bearer ${key}` },
+    ...(body != null && { body: JSON.stringify(body) }),
+  });
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    const message = data?.error?.message || data?.detail || `HTTP ${res.status}`;
+    throw new Error(message);
+  }
+  return res.json();
+}
+
+function setText(el, value) {
+  el.textContent = value == null || value === '' ? '-' : String(value);
+}
+
+function renderStatus(data) {
+  const status = data.status || 'idle';
+  statePill.textContent = status;
+  statePill.className = `status-pill ${status}`;
+  tokenCount.textContent = String(data.token_count || 0);
+  setText(outputPath, data.output_path);
+  setText(configPath, data.config_path);
+  setText(stateMessage, data.message);
+  logBox.textContent = Array.isArray(data.log_tail) && data.log_tail.length
+    ? data.log_tail.join('\n')
+    : '暂无日志';
+  runBtn.disabled = !!data.running || !data.available;
+  availableHint.textContent = data.available
+    ? (data.running ? '任务运行中，请等待完成。' : 'Maintainer 依赖可用。')
+    : 'Maintainer 依赖未安装：请先执行 uv sync --extra maintainer。';
+}
+
+async function refreshStatus() {
+  try {
+    renderStatus(await api('GET', '/maintainer/status'));
+  } catch (err) {
+    showToast(err.message || '状态刷新失败', 'error');
+  }
+}
+
+function readPayload() {
+  return {
+    count: Number(document.getElementById('count').value || 1),
+    email_worker_domain: document.getElementById('worker-domain').value.trim(),
+    email_domains: document.getElementById('email-domains').value.split(',').map((item) => item.trim()).filter(Boolean),
+    email_admin_password: document.getElementById('email-admin-password').value,
+    pool: document.getElementById('pool').value,
+    headless: document.getElementById('headless').checked,
+    use_xvfb: document.getElementById('use-xvfb').checked,
+    no_sandbox: document.getElementById('no-sandbox').checked,
+    disable_dev_shm: document.getElementById('disable-dev-shm').checked,
+    window_size: document.getElementById('window-size').value.trim() || '1440,900',
+  };
+}
+
+form.addEventListener('submit', async (event) => {
+  event.preventDefault();
+  runBtn.disabled = true;
+  try {
+    const data = await api('POST', '/maintainer/run', readPayload());
+    renderStatus(data);
+    showToast('注册任务已启动', 'success');
+  } catch (err) {
+    showToast(err.message || '启动失败', 'error');
+  } finally {
+    await refreshStatus();
+  }
+});
+
+refreshBtn.addEventListener('click', refreshStatus);
+
+(async () => {
+  await waitI18n();
+  await renderAdminHeader?.();
+  await renderSiteFooter?.();
+  const key = await adminKey.get();
+  if (!key || !await verifyKey(ADMIN_API + '/verify', key).catch(() => false)) {
+    location.href = '/admin/login';
+    return;
+  }
+  await refreshStatus();
+  setInterval(refreshStatus, 3000);
+})();
+  </script>
+</body>
+</html>

@@ -18,6 +18,7 @@
   },
   "header": {
     "account": "Account Management",
+    "maintainer": "Account Maintainer",
     "config": "Configuration Management",
     "cache": "Cache Management",
     "languageLabel": "Language",

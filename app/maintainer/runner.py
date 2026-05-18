@@ -11,6 +11,10 @@ from pathlib import Path
 
 from DrissionPage import Chromium, ChromiumOptions
 from DrissionPage.errors import PageDisconnectedError
+try:
+    from pyvirtualdisplay import Display
+except Exception:
+    Display = None
 
 from .mailbox import get_email_and_token, get_oai_code
 from .settings import (
@@ -29,6 +33,7 @@ SIGNUP_URL = "https://accounts.x.ai/sign-up?redirect=grok-com"
 
 browser = None
 page = None
+_virtual_display = None
 run_logger: logging.Logger | None = None
 
 
@@ -87,10 +92,89 @@ def warn_runtime_compatibility() -> None:
 ensure_stable_python_runtime()
 warn_runtime_compatibility()
 
-co = ChromiumOptions()
-co.auto_port()
-co.set_timeouts(base=1)
-co.add_extension(str(extension_dir()))
+
+def _running_in_container() -> bool:
+    return Path("/.dockerenv").exists()
+
+
+def _discover_browser_path() -> str | None:
+    explicit = (
+        os.getenv("CHROME_BIN", "").strip()
+        or os.getenv("CHROMIUM_BIN", "").strip()
+        or os.getenv("MAINTAINER_BROWSER_PATH", "").strip()
+    )
+    candidates = [
+        explicit,
+        "/usr/bin/chromium",
+        "/usr/bin/chromium-browser",
+        "/usr/bin/google-chrome",
+        "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+    ]
+    for candidate in candidates:
+        if candidate and Path(candidate).exists():
+            return candidate
+    return None
+
+
+def _ensure_virtual_display() -> None:
+    global _virtual_display
+    if _virtual_display is not None:
+        return
+    if os.getenv("DISPLAY") or as_bool(os.getenv("MAINTAINER_HEADLESS"), default=False):
+        return
+    if not as_bool(os.getenv("MAINTAINER_USE_XVFB"), default=_running_in_container()):
+        return
+    if Display is None:
+        raise RuntimeError(
+            "PyVirtualDisplay 不可用，无法在无 DISPLAY 环境下启动浏览器。"
+        )
+
+    width = int(os.getenv("MAINTAINER_DISPLAY_WIDTH", "1440"))
+    height = int(os.getenv("MAINTAINER_DISPLAY_HEIGHT", "900"))
+    _virtual_display = Display(visible=False, size=(width, height))
+    _virtual_display.start()
+
+
+def _stop_virtual_display() -> None:
+    global _virtual_display
+    if _virtual_display is None:
+        return
+    try:
+        _virtual_display.stop()
+    except Exception:
+        pass
+    _virtual_display = None
+
+
+def _configure_browser_options() -> ChromiumOptions:
+    opts = ChromiumOptions()
+    opts.auto_port()
+    opts.set_timeouts(base=1)
+    opts.add_extension(str(extension_dir()))
+
+    browser_path = _discover_browser_path()
+    if browser_path:
+        opts.set_browser_path(browser_path)
+
+    if as_bool(os.getenv("MAINTAINER_HEADLESS"), default=False):
+        opts.headless(True)
+
+    if as_bool(os.getenv("MAINTAINER_NO_SANDBOX"), default=_running_in_container()):
+        opts.set_argument("--no-sandbox")
+    if as_bool(
+        os.getenv("MAINTAINER_DISABLE_DEV_SHM"),
+        default=_running_in_container(),
+    ):
+        opts.set_argument("--disable-dev-shm-usage")
+
+    window_size = os.getenv("MAINTAINER_WINDOW_SIZE", "").strip()
+    if window_size:
+        opts.set_argument("--window-size", window_size)
+
+    return opts
+
+
+co = _configure_browser_options()
 
 
 def default_sso_file() -> Path:
@@ -107,6 +191,7 @@ def resolve_user_path(path_like: str) -> Path:
 
 def start_browser():
     global browser, page
+    _ensure_virtual_display()
     browser = Chromium(co)
     tabs = browser.get_tabs()
     page = tabs[-1] if tabs else browser.new_tab()
@@ -122,6 +207,7 @@ def stop_browser() -> None:
             pass
     browser = None
     page = None
+    _stop_virtual_display()
 
 
 def restart_browser() -> None:
@@ -866,7 +952,7 @@ return challengeInput ? String(challengeInput.value || '').trim() : 'not-found';
                 clicked = False
 
         if clicked:
-            print(f"[*] 已填写注册资料并点击完成注册: {given_name} {family_name} / {password}")
+            print(f"[*] 已填写注册资料并点击完成注册: {given_name} {family_name}")
             return {
                 "given_name": given_name,
                 "family_name": family_name,
@@ -1220,9 +1306,70 @@ def load_run_count() -> int:
     return 10
 
 
-def main() -> None:
-    global run_logger
+def run_batch(
+    *,
+    config_path: str | os.PathLike[str],
+    count: int,
+    output: str | os.PathLike[str] | None = None,
+    extract_numbers: bool = False,
+) -> list[str]:
+    """Run a maintainer registration batch and return collected SSO tokens."""
+    global run_logger, co
 
+    set_config_path(config_path)
+    co = _configure_browser_options()
+
+    config_path_obj = get_config_path()
+    if not config_path_obj.exists():
+        raise FileNotFoundError(
+            f"配置文件不存在: {config_path_obj}。请先从 maintainer.config.example.json 复制一份。"
+        )
+
+    output_path = resolve_user_path(str(output or default_sso_file()))
+    run_logger = setup_run_logger()
+    run_logger.info("配置文件: %s", config_path_obj)
+    run_logger.info("输出文件: %s", output_path)
+
+    collected_sso: list[str] = []
+    current_round = 0
+
+    try:
+        start_browser()
+        while True:
+            if count > 0 and current_round >= count:
+                break
+
+            current_round += 1
+            print(f"\n[*] 开始第 {current_round} 轮注册")
+
+            try:
+                result = run_single_registration(
+                    output_path,
+                    extract_numbers=extract_numbers,
+                )
+                collected_sso.append(result["sso"])
+            except KeyboardInterrupt:
+                print("\n[Info] 收到中断信号，停止后续轮次。")
+                break
+            except Exception as error:
+                print(f"[Error] 第 {current_round} 轮失败: {error}")
+            finally:
+                restart_browser()
+
+            if count == 0 or current_round < count:
+                time.sleep(2)
+
+    finally:
+        if collected_sso:
+            print(f"\n[*] 注册完成，推送 {len(collected_sso)} 个 token 到 API...")
+            push_sso_to_api(collected_sso)
+
+        stop_browser()
+
+    return collected_sso
+
+
+def main() -> None:
     pre_parser = argparse.ArgumentParser(add_help=False)
     pre_parser.add_argument("--config")
     pre_args, _ = pre_parser.parse_known_args()
@@ -1256,52 +1403,12 @@ def main() -> None:
     if args.config:
         set_config_path(args.config)
 
-    config_path = get_config_path()
-    if not config_path.exists():
-        raise FileNotFoundError(
-            f"配置文件不存在: {config_path}。请先从 maintainer.config.example.json 复制一份。"
-        )
-
-    output_path = resolve_user_path(args.output)
-    run_logger = setup_run_logger()
-    run_logger.info("配置文件: %s", config_path)
-    run_logger.info("输出文件: %s", output_path)
-
-    collected_sso: list[str] = []
-    current_round = 0
-
-    try:
-        start_browser()
-        while True:
-            if args.count > 0 and current_round >= args.count:
-                break
-
-            current_round += 1
-            print(f"\n[*] 开始第 {current_round} 轮注册")
-
-            try:
-                result = run_single_registration(
-                    output_path,
-                    extract_numbers=args.extract_numbers,
-                )
-                collected_sso.append(result["sso"])
-            except KeyboardInterrupt:
-                print("\n[Info] 收到中断信号，停止后续轮次。")
-                break
-            except Exception as error:
-                print(f"[Error] 第 {current_round} 轮失败: {error}")
-            finally:
-                restart_browser()
-
-            if args.count == 0 or current_round < args.count:
-                time.sleep(2)
-
-    finally:
-        if collected_sso:
-            print(f"\n[*] 注册完成，推送 {len(collected_sso)} 个 token 到 API...")
-            push_sso_to_api(collected_sso)
-
-        stop_browser()
+    run_batch(
+        config_path=get_config_path(),
+        count=args.count,
+        output=args.output,
+        extract_numbers=args.extract_numbers,
+    )
 
 
 if __name__ == "__main__":
