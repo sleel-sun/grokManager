@@ -8,7 +8,9 @@ import secrets
 import shutil
 import sys
 import time
+from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 
 from DrissionPage import Chromium, ChromiumOptions
 from DrissionPage.errors import PageDisconnectedError
@@ -1405,12 +1407,59 @@ def load_run_count() -> int:
     return 10
 
 
+def _progress_payload(
+    event: str,
+    *,
+    total_count: int,
+    completed_count: int,
+    token_count: int,
+    current_round: int = 0,
+    success: bool | None = None,
+    error: str = "",
+) -> dict[str, Any]:
+    total = max(0, int(total_count or 0))
+    completed = max(0, int(completed_count or 0))
+    if total:
+        completed = min(completed, total)
+    remaining = max(total - completed, 0) if total else 0
+    current = max(0, int(current_round or 0))
+    if total:
+        current = min(current, total)
+    payload: dict[str, Any] = {
+        "event": event,
+        "total_count": total,
+        "completed_count": completed,
+        "remaining_count": remaining,
+        "current_round": current,
+        "token_count": max(0, int(token_count or 0)),
+    }
+    if success is not None:
+        payload["success"] = success
+    if error:
+        payload["error"] = error
+    return payload
+
+
+def _emit_progress(
+    progress_callback: Callable[[dict[str, Any]], None] | None,
+    event: str,
+    **fields: Any,
+) -> None:
+    if progress_callback is None:
+        return
+    try:
+        progress_callback(_progress_payload(event, **fields))
+    except Exception as exc:
+        print(f"[Warn] 进度回调失败: {exc}")
+
+
 def run_batch(
     *,
     config_path: str | os.PathLike[str],
     count: int,
     output: str | os.PathLike[str] | None = None,
     extract_numbers: bool = False,
+    progress_callback: Callable[[dict[str, Any]], None] | None = None,
 ) -> list[str]:
     """Run a maintainer registration batch and return collected SSO tokens."""
     global run_logger, co
@@ -1433,6 +1482,14 @@ def run_batch(
     current_round = 0
 
     try:
+        _emit_progress(
+            progress_callback,
+            "batch_started",
+            total_count=count,
+            completed_count=0,
+            token_count=0,
+            current_round=0,
+        )
         start_browser()
         while True:
             if count > 0 and current_round >= count:
@@ -1440,19 +1497,42 @@ def run_batch(
 
             current_round += 1
             print(f"\n[*] 开始第 {current_round} 轮注册")
+            _emit_progress(
+                progress_callback,
+                "round_started",
+                total_count=count,
+                completed_count=current_round - 1,
+                token_count=len(collected_sso),
+                current_round=current_round,
+            )
 
+            round_success = False
+            round_error = ""
             try:
                 result = run_single_registration(
                     output_path,
                     extract_numbers=extract_numbers,
                 )
                 collected_sso.append(result["sso"])
+                round_success = True
             except KeyboardInterrupt:
                 print("\n[Info] 收到中断信号，停止后续轮次。")
+                round_error = "interrupted"
                 break
             except Exception as error:
                 print(f"[Error] 第 {current_round} 轮失败: {error}")
+                round_error = str(error)
             finally:
+                _emit_progress(
+                    progress_callback,
+                    "round_finished",
+                    total_count=count,
+                    completed_count=current_round,
+                    token_count=len(collected_sso),
+                    current_round=current_round,
+                    success=round_success,
+                    error=round_error,
+                )
                 restart_browser()
 
             if count == 0 or current_round < count:
@@ -1464,6 +1544,14 @@ def run_batch(
             push_sso_to_api(collected_sso)
 
         stop_browser()
+        _emit_progress(
+            progress_callback,
+            "batch_finished",
+            total_count=count,
+            completed_count=current_round,
+            token_count=len(collected_sso),
+            current_round=current_round,
+        )
 
     return collected_sso
 

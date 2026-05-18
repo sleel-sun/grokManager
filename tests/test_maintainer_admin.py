@@ -2,6 +2,7 @@ import unittest
 
 from app.products.web.admin.maintainer import (
     MaintainerRunRequest,
+    build_progress_fields,
     build_saved_config_response,
     build_runtime_config,
     redact_state,
@@ -95,6 +96,21 @@ class MaintainerAdminTests(unittest.TestCase):
         )
 
         self.assertEqual(cfg["email"]["admin_password"], "saved-worker-secret")
+
+    def test_progress_fields_include_remaining_count(self) -> None:
+        progress = build_progress_fields(
+            total_count=5,
+            completed_count=2,
+            token_count=1,
+            current_round=3,
+        )
+
+        self.assertEqual(progress["total_count"], 5)
+        self.assertEqual(progress["completed_count"], 2)
+        self.assertEqual(progress["remaining_count"], 3)
+        self.assertEqual(progress["current_round"], 3)
+        self.assertEqual(progress["token_count"], 1)
+        self.assertEqual(progress["progress_percent"], 40)
 
 
 if __name__ == "__main__":

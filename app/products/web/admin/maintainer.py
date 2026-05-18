@@ -91,6 +91,11 @@ _state: dict[str, Any] = {
     "message": "",
     "started_at": None,
     "finished_at": None,
+    "total_count": 0,
+    "completed_count": 0,
+    "remaining_count": 0,
+    "current_round": 0,
+    "progress_percent": 0,
     "token_count": 0,
     "config_path": "",
     "output_path": "",
@@ -194,6 +199,52 @@ def redact_state(state: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def build_progress_fields(
+    *,
+    total_count: int,
+    completed_count: int = 0,
+    token_count: int = 0,
+    current_round: int = 0,
+) -> dict[str, int]:
+    """Normalize batch progress fields for status responses."""
+    total = max(0, int(total_count or 0))
+    completed = max(0, int(completed_count or 0))
+    if total:
+        completed = min(completed, total)
+    remaining = max(total - completed, 0) if total else 0
+    current = max(0, int(current_round or 0))
+    if total:
+        current = min(current, total)
+    percent = int((completed / total) * 100) if total else 0
+    return {
+        "total_count": total,
+        "completed_count": completed,
+        "remaining_count": remaining,
+        "current_round": current,
+        "progress_percent": percent,
+        "token_count": max(0, int(token_count or 0)),
+    }
+
+
+def _progress_message(event: dict[str, Any], progress: dict[str, int]) -> str:
+    total = progress["total_count"]
+    completed = progress["completed_count"]
+    remaining = progress["remaining_count"]
+    current = progress["current_round"]
+    token_count = progress["token_count"]
+    name = str(event.get("event") or "")
+    total_label = str(total) if total else "?"
+    if name == "round_started":
+        return f"正在注册第 {current}/{total_label} 个，已完成 {completed} 个，剩余 {remaining} 个"
+    if name == "round_finished":
+        if event.get("success"):
+            return f"第 {current}/{total_label} 个注册完成，已完成 {completed} 个，剩余 {remaining} 个，已采集 {token_count} 个 token"
+        return f"第 {current}/{total_label} 个注册失败，已处理 {completed} 个，剩余 {remaining} 个，已采集 {token_count} 个 token"
+    if name == "batch_finished":
+        return f"注册任务收尾中，已处理 {completed} 个，剩余 {remaining} 个，已采集 {token_count} 个 token"
+    return f"注册任务已启动，共 {total_label} 个"
+
+
 def _maintainer_available() -> bool:
     return importlib.util.find_spec("DrissionPage") is not None
 
@@ -273,6 +324,7 @@ def _run_sync(
     count: int,
     extract_numbers: bool,
     env: dict[str, str],
+    progress_callback: Any = None,
 ) -> list[str]:
     previous = {key: os.environ.get(key) for key in _ENV_KEYS}
     try:
@@ -284,6 +336,7 @@ def _run_sync(
             count=count,
             output=str(output_path),
             extract_numbers=extract_numbers,
+            progress_callback=progress_callback,
         )
     finally:
         for key, value in previous.items():
@@ -299,6 +352,20 @@ async def _run_background(
     output_path: Path,
     env: dict[str, str],
 ) -> None:
+    def _on_progress(event: dict[str, Any]) -> None:
+        progress = build_progress_fields(
+            total_count=int(event.get("total_count") or req.count),
+            completed_count=int(event.get("completed_count") or 0),
+            token_count=int(event.get("token_count") or 0),
+            current_round=int(event.get("current_round") or 0),
+        )
+        _state.update(
+            {
+                **progress,
+                "message": _progress_message(event, progress),
+            }
+        )
+
     try:
         tokens = await asyncio.to_thread(
             _run_sync,
@@ -307,6 +374,13 @@ async def _run_background(
             req.count,
             req.extract_numbers,
             env,
+            _on_progress,
+        )
+        progress = build_progress_fields(
+            total_count=req.count,
+            completed_count=req.count,
+            token_count=len(tokens),
+            current_round=req.count,
         )
         _state.update(
             {
@@ -314,7 +388,7 @@ async def _run_background(
                 "status": "completed",
                 "message": f"注册任务完成，采集 {len(tokens)} 个 token",
                 "finished_at": int(time.time()),
-                "token_count": len(tokens),
+                **progress,
             }
         )
     except Exception as exc:
@@ -402,6 +476,12 @@ async def maintainer_run(req: MaintainerRunRequest, request: Request):
                 "message": "注册任务已启动",
                 "started_at": int(time.time()),
                 "finished_at": None,
+                **build_progress_fields(
+                    total_count=req.count,
+                    completed_count=0,
+                    token_count=0,
+                    current_round=0,
+                ),
                 "token_count": 0,
                 "config_path": str(config_path),
                 "output_path": str(output_path),
@@ -414,6 +494,7 @@ async def maintainer_run(req: MaintainerRunRequest, request: Request):
 
 __all__ = [
     "MaintainerRunRequest",
+    "build_progress_fields",
     "build_saved_config_response",
     "build_runtime_config",
     "redact_state",

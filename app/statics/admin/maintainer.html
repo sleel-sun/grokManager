@@ -73,6 +73,9 @@
     .status-tile { padding:14px; border-radius:14px; background:#fbf7ef; border:1px solid #f1e8da; }
     .status-label { color:#92887b; font-size:11px; }
     .status-value { margin-top:8px; font-size:18px; font-weight:750; color:#221f1a; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+    .progress-meter { margin:-2px 0 14px; display:flex; align-items:center; gap:10px; color:#82786a; font-size:12px; }
+    .progress-track { flex:1; height:8px; border-radius:999px; overflow:hidden; background:#eee7dc; }
+    .progress-fill { display:block; height:100%; width:0; border-radius:999px; background:#111; transition:width .25s ease; }
     .status-pill {
       display:inline-flex;
       align-items:center;
@@ -198,6 +201,14 @@
               <div class="status-value" id="token-count">0</div>
             </div>
             <div class="status-tile">
+              <div class="status-label">注册进度</div>
+              <div class="status-value" id="progress-count">0/0</div>
+            </div>
+            <div class="status-tile">
+              <div class="status-label">剩余数量</div>
+              <div class="status-value" id="remaining-count">0</div>
+            </div>
+            <div class="status-tile">
               <div class="status-label">输出文件</div>
               <div class="status-value" id="output-path">-</div>
             </div>
@@ -205,6 +216,10 @@
               <div class="status-label">配置文件</div>
               <div class="status-value" id="config-path">-</div>
             </div>
+          </div>
+          <div class="progress-meter" aria-label="注册进度">
+            <div class="progress-track"><span class="progress-fill" id="progress-fill"></span></div>
+            <span id="progress-percent">0%</span>
           </div>
           <pre class="log" id="log-box">暂无日志</pre>
           <div class="notice" id="state-message"></div>
@@ -228,6 +243,10 @@ const availableHint = document.getElementById('available-hint');
 const passwordHint = document.getElementById('password-hint');
 const statePill = document.getElementById('state-pill');
 const tokenCount = document.getElementById('token-count');
+const progressCount = document.getElementById('progress-count');
+const remainingCount = document.getElementById('remaining-count');
+const progressFill = document.getElementById('progress-fill');
+const progressPercent = document.getElementById('progress-percent');
 const outputPath = document.getElementById('output-path');
 const configPath = document.getElementById('config-path');
 const logBox = document.getElementById('log-box');
@@ -256,11 +275,32 @@ function setText(el, value) {
   el.textContent = value == null || value === '' ? '-' : String(value);
 }
 
+function clampNumber(value, min, max) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return min;
+  return Math.max(min, Math.min(max, number));
+}
+
 function renderStatus(data) {
   const status = data.status || 'idle';
+  const total = Math.max(0, Number(data.total_count || 0));
+  const completed = clampNumber(data.completed_count || 0, 0, total || Number.MAX_SAFE_INTEGER);
+  const remaining = data.remaining_count == null
+    ? Math.max(0, total - completed)
+    : Math.max(0, Number(data.remaining_count || 0));
+  const current = Math.max(0, Number(data.current_round || 0));
+  const percent = total > 0
+    ? clampNumber(data.progress_percent ?? Math.floor((completed / total) * 100), 0, 100)
+    : 0;
   statePill.textContent = status;
   statePill.className = `status-pill ${status}`;
   tokenCount.textContent = String(data.token_count || 0);
+  progressCount.textContent = total > 0
+    ? `${completed}/${total}${data.running && current ? `（第 ${current} 个）` : ''}`
+    : '0/0';
+  remainingCount.textContent = String(remaining);
+  progressFill.style.width = `${percent}%`;
+  progressPercent.textContent = `${percent}%`;
   setText(outputPath, data.output_path);
   setText(configPath, data.config_path);
   setText(stateMessage, data.message);
