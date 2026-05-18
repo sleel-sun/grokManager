@@ -107,6 +107,10 @@ def maintainer_sso_dir() -> Path:
     return data_path("maintainer", "sso")
 
 
+def maintainer_browser_tmp_dir() -> Path:
+    return data_path("maintainer", "browser_tmp")
+
+
 def extension_dir() -> Path:
     return _PACKAGE_DIR / "turnstilePatch"
 
@@ -123,6 +127,7 @@ __all__ = [
     "as_bool",
     "load_config",
     "load_json",
+    "maintainer_browser_tmp_dir",
     "maintainer_log_dir",
     "maintainer_sso_dir",
     "pick_conf",

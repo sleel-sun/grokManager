@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from email import policy
+from email.parser import Parser
+import html
 import logging
 import random
 import re
@@ -15,6 +18,43 @@ from .settings import as_bool, load_config, pick_conf
 
 
 _temp_email_cache: dict[str, str] = {}
+_EMAIL_RE = re.compile(r"[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}", re.IGNORECASE)
+_RECIPIENT_FIELD_NAMES = {
+    "address",
+    "delivered_to",
+    "email",
+    "envelope_to",
+    "mail_to",
+    "original_recipient",
+    "rcpt_to",
+    "recipient",
+    "recipients",
+    "to",
+}
+_RAW_RECIPIENT_HEADERS = {
+    "delivered-to",
+    "envelope-to",
+    "original-recipient",
+    "to",
+    "x-forwarded-to",
+}
+_CODE_LABEL_RE = re.compile(
+    r"(?:"
+    r"verification\s+code|"
+    r"security\s+code|"
+    r"one[-\s]?time(?:\s+security)?\s+code|"
+    r"confirmation\s+code|"
+    r"验证码|"
+    r"安全代码|"
+    r"一次性(?:安全)?代码"
+    r")",
+    re.IGNORECASE,
+)
+_CODE_CANDIDATE_RE = re.compile(
+    r"(?<![A-Z0-9])([A-Z0-9](?:[\s\-‐‑‒–—―ー]*[A-Z0-9]){5})(?![A-Z0-9])",
+    re.IGNORECASE,
+)
+_CODE_SEPARATOR_RE = re.compile(r"[\s\-‐‑‒–—―ー]+")
 
 
 def get_email_and_token() -> tuple[str | None, str | None]:
@@ -57,10 +97,9 @@ def get_email_and_token() -> tuple[str | None, str | None]:
 
 
 def get_oai_code(dev_token: str, email: str, timeout: int = 120) -> str | None:
-    del email
-
     conf = load_config()
     worker_domain = str(pick_conf(conf, "email", "worker_domain", default="") or "")
+    admin_password = str(pick_conf(conf, "email", "admin_password", default="") or "")
     verify_ssl = as_bool(
         pick_conf(conf, "email", "verify_ssl", default=True),
         default=True,
@@ -75,6 +114,8 @@ def get_oai_code(dev_token: str, email: str, timeout: int = 120) -> str | None:
         session=session,
         worker_domain=worker_domain,
         cf_token=dev_token,
+        target_email=email,
+        admin_password=admin_password,
         timeout=timeout,
     )
 
@@ -88,31 +129,37 @@ def wait_for_verification_code(
     session: requests.Session,
     worker_domain: str,
     cf_token: str,
+    target_email: str = "",
+    admin_password: str = "",
     timeout: int = 120,
 ) -> str | None:
     old_ids = set()
-    old = fetch_emails(session, worker_domain, cf_token)
+    old = fetch_emails(session, worker_domain, cf_token, target_email, admin_password)
     if old:
-        old_ids = {item.get("id") for item in old if isinstance(item, dict) and "id" in item}
+        old_ids = {
+            item.get("id")
+            for item in old
+            if isinstance(item, dict)
+            and item.get("id") is not None
+            and mail_matches_target_email(item, target_email)
+        }
         for item in old:
             if not isinstance(item, dict):
                 continue
-            raw = str(item.get("raw") or "")
-            code = extract_verification_code(raw)
+            code = extract_verification_code_from_mail(item, target_email)
             if code:
                 return code
 
     start = time.time()
     while time.time() - start < timeout:
-        emails = fetch_emails(session, worker_domain, cf_token)
+        emails = fetch_emails(session, worker_domain, cf_token, target_email, admin_password)
         if emails:
             for item in emails:
                 if not isinstance(item, dict):
                     continue
                 if item.get("id") in old_ids:
                     continue
-                raw = str(item.get("raw") or "")
-                code = extract_verification_code(raw)
+                code = extract_verification_code_from_mail(item, target_email)
                 if code:
                     return code
         time.sleep(3)
@@ -174,31 +221,251 @@ def fetch_emails(
     session: requests.Session,
     worker_domain: str,
     cf_token: str,
+    target_email: str = "",
+    admin_password: str = "",
 ) -> list[dict[str, Any]]:
+    if admin_password and target_email:
+        ok, rows = fetch_emails_request(
+            session=session,
+            url=f"https://{worker_domain}/admin/mails",
+            params={
+                "limit": 20,
+                "offset": 0,
+                "address": normalise_email(target_email),
+            },
+            headers={"x-admin-auth": admin_password},
+        )
+        if ok:
+            return rows
+
+    ok, rows = fetch_emails_request(
+        session=session,
+        url=f"https://{worker_domain}/api/mails",
+        params={"limit": 10, "offset": 0},
+        headers={"Authorization": f"Bearer {cf_token}"},
+    )
+    return rows if ok else []
+
+
+def fetch_emails_request(
+    session: requests.Session,
+    url: str,
+    params: dict[str, Any],
+    headers: dict[str, str],
+) -> tuple[bool, list[dict[str, Any]]]:
     try:
         res = session.get(
-            f"https://{worker_domain}/api/mails",
-            params={"limit": 10, "offset": 0},
-            headers={"Authorization": f"Bearer {cf_token}"},
+            url,
+            params=params,
+            headers={**headers, "Content-Type": "application/json"},
             timeout=30,
         )
         if res.status_code == 200:
-            rows = res.json().get("results", [])
-            return rows if isinstance(rows, list) else []
+            return True, normalise_mail_rows(res.json())
     except Exception:
         pass
-    return []
+    return False, []
+
+
+def normalise_mail_rows(payload: Any) -> list[dict[str, Any]]:
+    rows: Any = payload
+    if isinstance(payload, dict):
+        for key in ("results", "data", "mails", "items"):
+            candidate = payload.get(key)
+            if isinstance(candidate, list):
+                rows = candidate
+                break
+        else:
+            rows = []
+
+    if not isinstance(rows, list):
+        return []
+
+    return [item for item in rows if isinstance(item, dict)]
+
+
+def normalise_email(email: str) -> str:
+    return str(email or "").strip().lower()
+
+
+def emails_from_value(value: Any) -> set[str]:
+    if value is None:
+        return set()
+    if isinstance(value, str):
+        return {match.group(0).lower() for match in _EMAIL_RE.finditer(value)}
+    if isinstance(value, dict):
+        emails: set[str] = set()
+        for nested in value.values():
+            emails.update(emails_from_value(nested))
+        return emails
+    if isinstance(value, (list, tuple, set)):
+        emails = set()
+        for nested in value:
+            emails.update(emails_from_value(nested))
+        return emails
+    return set()
+
+
+def recipient_emails_from_mail(mail: dict[str, Any]) -> set[str]:
+    recipients: set[str] = set()
+    for key, value in mail.items():
+        field_name = str(key).lower().replace("-", "_")
+        if field_name in _RECIPIENT_FIELD_NAMES:
+            recipients.update(emails_from_value(value))
+
+    headers = mail.get("headers")
+    if isinstance(headers, dict):
+        for key, value in headers.items():
+            if str(key).strip().lower() in _RAW_RECIPIENT_HEADERS:
+                recipients.update(emails_from_value(value))
+
+    raw = raw_mail_source(mail)
+    for line in raw.splitlines():
+        header, sep, value = line.partition(":")
+        if sep and header.strip().lower() in _RAW_RECIPIENT_HEADERS:
+            recipients.update(emails_from_value(value))
+
+    if recipients:
+        return recipients
+
+    return emails_from_value(raw)
+
+
+def mail_matches_target_email(mail: dict[str, Any], target_email: str) -> bool:
+    target = normalise_email(target_email)
+    if not target:
+        return True
+
+    recipients = recipient_emails_from_mail(mail)
+    if not recipients:
+        return True
+
+    return target in recipients
+
+
+def extract_verification_code_from_mail(
+    mail: dict[str, Any],
+    target_email: str = "",
+) -> str | None:
+    if not mail_matches_target_email(mail, target_email):
+        return None
+
+    content_parts = []
+    for key in ("text", "html", "body", "subject"):
+        value = mail.get(key)
+        if isinstance(value, str) and value.strip():
+            content_parts.append(value)
+    content_parts.extend(parsed_rfc822_text_parts(raw_mail_source(mail)))
+
+    return extract_verification_code("\n".join(content_parts))
+
+
+def raw_mail_source(mail: dict[str, Any]) -> str:
+    for key in ("raw", "source"):
+        value = mail.get(key)
+        if isinstance(value, str) and value.strip():
+            return value
+    return ""
+
+
+def parsed_rfc822_text_parts(raw: str) -> list[str]:
+    if not raw.strip():
+        return []
+
+    try:
+        message = Parser(policy=policy.default).parsestr(raw)
+    except Exception:
+        return [raw]
+
+    parts: list[str] = []
+    subject = message.get("subject")
+    if subject:
+        parts.append(str(subject))
+
+    for part in message.walk():
+        if part.is_multipart():
+            continue
+        content_type = part.get_content_type()
+        if content_type not in {"text/plain", "text/html"}:
+            continue
+        try:
+            content = part.get_content()
+        except Exception:
+            payload = part.get_payload(decode=True)
+            if isinstance(payload, bytes):
+                content = payload.decode(part.get_content_charset() or "utf-8", errors="replace")
+            else:
+                content = str(payload or "")
+        if content:
+            parts.append(str(content))
+
+    if not parts:
+        parts.append(raw)
+
+    return parts
 
 
 def extract_verification_code(content: str) -> str | None:
-    patterns = [
-        r"([A-Z0-9]{3}-[A-Z0-9]{3})",
-        r"验证码[:：\s]*([A-Z0-9]{6,8})",
-        r"verification code[:：\s]*([A-Z0-9]{6,8})",
-        r"\b([A-Z0-9]{6,8})\b",
-    ]
-    for pattern in patterns:
-        match = re.search(pattern, content, re.IGNORECASE)
-        if match:
-            return match.group(1).upper()
+    searchable = normalise_verification_content(content)
+
+    for label in _CODE_LABEL_RE.finditer(searchable):
+        after = searchable[label.end() : label.end() + 400]
+        code = first_verification_candidate(after)
+        if code:
+            return code
+
+        before = searchable[max(0, label.start() - 120) : label.start()]
+        code = first_verification_candidate(before, reverse=True)
+        if code:
+            return code
+
     return None
+
+
+def normalise_verification_content(content: str) -> str:
+    text = html.unescape(str(content or ""))
+    text = re.sub(r"(?is)<(script|style)\b.*?</\1>", " ", text)
+    text = re.sub(r"(?s)<[^>]+>", " ", text)
+
+    lines = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            lines.append("")
+            continue
+        if stripped.startswith("--"):
+            continue
+        lines.append(stripped)
+
+    return "\n".join(lines)
+
+
+def first_verification_candidate(text: str, reverse: bool = False) -> str | None:
+    candidates = list(_CODE_CANDIDATE_RE.finditer(text))
+    if reverse:
+        candidates.reverse()
+
+    for match in candidates:
+        code = normalise_verification_candidate(match.group(1))
+        if code:
+            return code
+
+    return None
+
+
+def normalise_verification_candidate(candidate: str) -> str | None:
+    raw = str(candidate or "").strip()
+    value = _CODE_SEPARATOR_RE.sub("", raw).upper()
+    if len(value) != 6 or not value.isalnum():
+        return None
+
+    has_digit = any(ch.isdigit() for ch in value)
+    alpha_chars = [ch for ch in raw if ch.isalpha()]
+    alpha_is_upper = bool(alpha_chars) and all(ch.upper() == ch for ch in alpha_chars)
+    has_visible_separator = bool(_CODE_SEPARATOR_RE.search(raw))
+    if not (has_digit or alpha_is_upper or (has_visible_separator and alpha_is_upper)):
+        return None
+
+    if has_visible_separator:
+        return f"{value[:3]}-{value[3:]}"
+    return value
