@@ -33,6 +33,52 @@ from .settings import (
 
 SIGNUP_URL = "https://accounts.x.ai/sign-up?redirect=grok-com"
 DEFAULT_MIN_BROWSER_FREE_BYTES = 256 * 1024 * 1024
+GIVEN_NAME_POOL = (
+    "Aiden",
+    "Blake",
+    "Caleb",
+    "Dylan",
+    "Ethan",
+    "Felix",
+    "Gavin",
+    "Henry",
+    "Isaac",
+    "Jasper",
+    "Kai",
+    "Leo",
+    "Mason",
+    "Nolan",
+    "Owen",
+    "Parker",
+    "Quinn",
+    "Riley",
+    "Silas",
+    "Theo",
+    "Victor",
+    "Wyatt",
+)
+FAMILY_NAME_POOL = (
+    "Adams",
+    "Baker",
+    "Brooks",
+    "Carter",
+    "Cooper",
+    "Davis",
+    "Foster",
+    "Gray",
+    "Hayes",
+    "Hughes",
+    "King",
+    "Miller",
+    "Morgan",
+    "Parker",
+    "Reed",
+    "Stone",
+    "Turner",
+    "Walker",
+    "Wells",
+    "Young",
+)
 
 browser = None
 page = None
@@ -771,8 +817,8 @@ Object.defineProperty(MouseEvent.prototype, 'screenY', { value: screenY });
 
 
 def build_profile() -> tuple[str, str, str]:
-    given_name = "Neo"
-    family_name = "Lin"
+    given_name = secrets.choice(GIVEN_NAME_POOL)
+    family_name = secrets.choice(FAMILY_NAME_POOL)
     password = "N" + secrets.token_hex(4) + "!a7#" + secrets.token_urlsafe(6)
     return given_name, family_name, password
 
