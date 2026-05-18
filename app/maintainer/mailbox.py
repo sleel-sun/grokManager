@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import html
 import logging
 import random
 import re
@@ -35,6 +36,23 @@ _RAW_RECIPIENT_HEADERS = {
     "to",
     "x-forwarded-to",
 }
+_CODE_LABEL_RE = re.compile(
+    r"(?:"
+    r"verification\s+code|"
+    r"security\s+code|"
+    r"one[-\s]?time(?:\s+security)?\s+code|"
+    r"confirmation\s+code|"
+    r"验证码|"
+    r"安全代码|"
+    r"一次性(?:安全)?代码"
+    r")",
+    re.IGNORECASE,
+)
+_CODE_CANDIDATE_RE = re.compile(
+    r"(?<![A-Z0-9])([A-Z0-9](?:[\s\-‐‑‒–—―ー]*[A-Z0-9]){5})(?![A-Z0-9])",
+    re.IGNORECASE,
+)
+_CODE_SEPARATOR_RE = re.compile(r"[\s\-‐‑‒–—―ー]+")
 
 
 def get_email_and_token() -> tuple[str | None, str | None]:
@@ -290,14 +308,66 @@ def extract_verification_code_from_mail(
 
 
 def extract_verification_code(content: str) -> str | None:
-    patterns = [
-        r"([A-Z0-9]{3}-[A-Z0-9]{3})",
-        r"验证码[:：\s]*([A-Z0-9]{6,8})",
-        r"verification code[:：\s]*([A-Z0-9]{6,8})",
-        r"\b([A-Z0-9]{6,8})\b",
-    ]
-    for pattern in patterns:
-        match = re.search(pattern, content, re.IGNORECASE)
-        if match:
-            return match.group(1).upper()
+    searchable = normalise_verification_content(content)
+
+    for label in _CODE_LABEL_RE.finditer(searchable):
+        after = searchable[label.end() : label.end() + 400]
+        code = first_verification_candidate(after)
+        if code:
+            return code
+
+        before = searchable[max(0, label.start() - 120) : label.start()]
+        code = first_verification_candidate(before, reverse=True)
+        if code:
+            return code
+
     return None
+
+
+def normalise_verification_content(content: str) -> str:
+    text = html.unescape(str(content or ""))
+    text = re.sub(r"(?is)<(script|style)\b.*?</\1>", " ", text)
+    text = re.sub(r"(?s)<[^>]+>", " ", text)
+
+    lines = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            lines.append("")
+            continue
+        if stripped.startswith("--"):
+            continue
+        lines.append(stripped)
+
+    return "\n".join(lines)
+
+
+def first_verification_candidate(text: str, reverse: bool = False) -> str | None:
+    candidates = list(_CODE_CANDIDATE_RE.finditer(text))
+    if reverse:
+        candidates.reverse()
+
+    for match in candidates:
+        code = normalise_verification_candidate(match.group(1))
+        if code:
+            return code
+
+    return None
+
+
+def normalise_verification_candidate(candidate: str) -> str | None:
+    raw = str(candidate or "").strip()
+    value = _CODE_SEPARATOR_RE.sub("", raw).upper()
+    if len(value) != 6 or not value.isalnum():
+        return None
+
+    has_digit = any(ch.isdigit() for ch in value)
+    alpha_chars = [ch for ch in raw if ch.isalpha()]
+    alpha_is_upper = bool(alpha_chars) and all(ch.upper() == ch for ch in alpha_chars)
+    has_visible_separator = bool(_CODE_SEPARATOR_RE.search(raw))
+    if not (has_digit or alpha_is_upper or (has_visible_separator and alpha_is_upper)):
+        return None
+
+    if has_visible_separator:
+        return f"{value[:3]}-{value[3:]}"
+    return value

@@ -1,6 +1,6 @@
 import unittest
 
-from app.maintainer.mailbox import wait_for_verification_code
+from app.maintainer.mailbox import extract_verification_code, wait_for_verification_code
 
 
 class FakeMailResponse:
@@ -47,6 +47,29 @@ class MaintainerMailboxTests(unittest.TestCase):
         )
 
         self.assertEqual(code, "BBB222")
+
+    def test_extract_verification_code_ignores_mime_boundary_fragments(self) -> None:
+        content = """
+Content-Type: multipart/alternative; boundary="bound-mail-html"
+To: target@example.com
+Subject: Verify your email
+
+--bound-mail-html
+This message has not loaded the one-time security code yet.
+--bound-mail-html--
+"""
+
+        self.assertIsNone(extract_verification_code(content))
+
+    def test_extract_verification_code_reads_labeled_xai_code(self) -> None:
+        content = """
+To: target@example.com
+Subject: Your xAI verification code
+
+Your one-time security code is AB9-CD2.
+"""
+
+        self.assertEqual(extract_verification_code(content), "AB9-CD2")
 
 
 if __name__ == "__main__":
