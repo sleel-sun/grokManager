@@ -8,7 +8,7 @@ from typing import Any
 
 from app.control.model.spec import ModelSpec
 from app.dataplane.reverse.runtime.endpoint_table import (
-    CHAT, MEDIA_POST, WS_IMAGINE,
+    CHAT, CONSOLE_RESPONSES, MEDIA_POST, WS_IMAGINE,
 )
 from .types import ReversePlan, TransportKind
 
@@ -37,6 +37,15 @@ def build_plan(spec: ModelSpec, request: dict[str, Any] | None = None) -> Revers
     """
     endpoint, tkind = _resolve_endpoint(spec, request or {})
     defaults = _DEFAULTS.get(tkind, _DEFAULTS[TransportKind.HTTP_JSON])
+    origin = "https://grok.com"
+    referer = "https://grok.com/"
+    extra: dict[str, Any] = {}
+
+    if spec.uses_console_responses():
+        origin = "https://console.x.ai"
+        referer = "https://console.x.ai/"
+        extra["upstream_profile"] = spec.upstream_profile
+        extra["upstream_model"] = spec.upstream_model_name()
 
     return ReversePlan(
         endpoint        = endpoint,
@@ -45,6 +54,9 @@ def build_plan(spec: ModelSpec, request: dict[str, Any] | None = None) -> Revers
         mode_id         = int(spec.mode_id),
         timeout_s       = defaults["timeout_s"],
         content_type    = defaults["content_type"],
+        origin          = origin,
+        referer         = referer,
+        extra           = extra,
     )
 
 
@@ -59,6 +71,8 @@ def _resolve_endpoint(
     """Determine (endpoint_url, transport_kind) for the given capability."""
 
     if spec.is_chat():
+        if spec.uses_console_responses():
+            return CONSOLE_RESPONSES, TransportKind.HTTP_SSE
         return CHAT, TransportKind.HTTP_SSE
 
     if spec.is_image():

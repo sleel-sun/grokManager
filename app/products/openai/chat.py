@@ -21,6 +21,7 @@ from app.control.account.runtime import get_refresh_service
 from app.control.account.invalid_credentials import feedback_kind_for_error
 from app.control.model.registry import resolve as resolve_model
 from app.control.model.enums import ModeId
+from app.control.model.spec import ModelSpec
 from app.control.account.enums import FeedbackKind
 from app.dataplane.account.selector import current_strategy
 from app.dataplane.proxy.adapters.headers import build_http_headers
@@ -34,8 +35,13 @@ from app.dataplane.reverse.protocol.xai_chat import (
     classify_line,
     StreamAdapter,
 )
+from app.dataplane.reverse.protocol.xai_console import (
+    ConsoleResponsesStreamAdapter,
+    build_console_responses_payload,
+)
 from app.dataplane.reverse.protocol.xai_usage import is_invalid_credentials_error
-from app.dataplane.reverse.runtime.endpoint_table import CHAT
+from app.dataplane.reverse.planner import build_plan
+from app.dataplane.reverse.runtime.endpoint_table import CHAT, CONSOLE_RESPONSES
 from app.dataplane.reverse.transport.asset_upload import upload_from_input
 from app.dataplane.reverse.protocol.tool_prompt import (
     build_tool_system_prompt,
@@ -372,31 +378,59 @@ async def _stream_chat(
     message: str,
     files: list[str],
     *,
+    spec: ModelSpec | None = None,
     tool_overrides: dict | None = None,
     model_config_override: dict | None = None,
     request_overrides: dict | None = None,
     timeout_s: float = 120.0,
 ) -> AsyncGenerator[str, None]:
-    """Yield raw SSE lines from the Grok app-chat endpoint."""
+    """Yield raw SSE lines from the selected upstream chat endpoint."""
     proxy = await get_proxy_runtime()
     lease = await proxy.acquire()
-    attachments = await _prepare_file_attachments(token, files)
+    plan = build_plan(spec, request_overrides or {}) if spec else None
 
-    payload = build_chat_payload(
-        message=message,
-        mode_id=mode_id,
-        file_attachments=attachments,
-        tool_overrides=tool_overrides,
-        model_config_override=model_config_override,
-        request_overrides=request_overrides,
-    )
+    if spec and spec.uses_console_responses():
+        if files:
+            raise ValidationError(
+                "file attachments are not supported for console Responses-backed models",
+                param="messages",
+            )
+        endpoint = plan.endpoint if plan else CONSOLE_RESPONSES
+        origin = plan.origin if plan else "https://console.x.ai"
+        referer = plan.referer if plan else "https://console.x.ai/"
+        content_type = plan.content_type if plan else "application/json"
+        payload = build_console_responses_payload(
+            model=spec.upstream_model_name(),
+            message=message,
+            stream=True,
+            request_overrides=request_overrides,
+        )
+        transport_context = "Console Responses transport failed"
+        stream_context = "Console Responses stream read failed"
+    else:
+        endpoint = plan.endpoint if plan else CHAT
+        origin = plan.origin if plan else "https://grok.com"
+        referer = plan.referer if plan else "https://grok.com/"
+        content_type = plan.content_type if plan else "application/json"
+        attachments = await _prepare_file_attachments(token, files)
+        payload = build_chat_payload(
+            message=message,
+            mode_id=mode_id,
+            file_attachments=attachments,
+            tool_overrides=tool_overrides,
+            model_config_override=model_config_override,
+            request_overrides=request_overrides,
+        )
+        transport_context = "Chat transport failed"
+        stream_context = "Chat stream read failed"
+
     payload_bytes = orjson.dumps(payload)
 
     headers = build_http_headers(
         token,
-        content_type="application/json",
-        origin="https://grok.com",
-        referer="https://grok.com/",
+        content_type=content_type,
+        origin=origin,
+        referer=referer,
         lease=lease,
     )
     session_kwargs = build_session_kwargs(lease=lease)
@@ -404,7 +438,7 @@ async def _stream_chat(
     async with ResettableSession(**session_kwargs) as session:
         try:
             response = await session.post(
-                CHAT,
+                endpoint,
                 headers=headers,
                 data=payload_bytes,
                 timeout=timeout_s,
@@ -412,7 +446,7 @@ async def _stream_chat(
             )
         except Exception as exc:
             raise _transport_upstream_error(
-                exc, context="Chat transport failed"
+                exc, context=transport_context
             ) from exc
 
         if response.status_code != 200:
@@ -431,8 +465,17 @@ async def _stream_chat(
                 yield line
         except Exception as exc:
             raise _transport_upstream_error(
-                exc, context="Chat stream read failed"
+                exc, context=stream_context
             ) from exc
+
+
+def _new_stream_adapter(
+    spec: ModelSpec,
+) -> StreamAdapter | ConsoleResponsesStreamAdapter:
+    """Return a stream adapter matching the selected upstream protocol."""
+    if spec.uses_console_responses():
+        return ConsoleResponsesStreamAdapter()
+    return StreamAdapter()
 
 
 async def completions(
@@ -508,7 +551,7 @@ async def completions(
                 success = False
                 _retry = False
                 fail_exc: BaseException | None = None
-                adapter = StreamAdapter()
+                adapter = _new_stream_adapter(spec)
                 collected_annotations: list[dict] = []
 
                 try:
@@ -521,6 +564,7 @@ async def completions(
                             mode_id=ModeId(selected_mode_id),
                             message=message,
                             files=files,
+                            spec=spec,
                             tool_overrides=tool_overrides,
                             request_overrides=request_overrides,
                             timeout_s=timeout_s,
@@ -713,7 +757,7 @@ async def completions(
     # ── Non-streaming path ────────────────────────────────────────────────────
     excluded: list[str] = []
     token = ""
-    adapter = StreamAdapter()
+    adapter = _new_stream_adapter(spec)
     for attempt in range(max_retries + 1):
         acct, selected_mode_id = await reserve_account(
             directory,
@@ -728,7 +772,7 @@ async def completions(
         success = False
         _retry = False
         fail_exc: BaseException | None = None
-        adapter = StreamAdapter()  # fresh adapter per attempt
+        adapter = _new_stream_adapter(spec)  # fresh adapter per attempt
 
         try:
             try:
@@ -737,6 +781,7 @@ async def completions(
                     mode_id=ModeId(selected_mode_id),
                     message=message,
                     files=files,
+                    spec=spec,
                     tool_overrides=tool_overrides,
                     request_overrides=request_overrides,
                     timeout_s=timeout_s,

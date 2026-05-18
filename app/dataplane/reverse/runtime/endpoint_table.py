@@ -10,9 +10,13 @@ hosts (accounts.x.ai, grok.com with gRPC path), listed separately.
 
 BASE       = "https://grok.com"
 ASSETS_CDN = "https://assets.grok.com"
+CONSOLE_BASE = "https://console.x.ai"
 
 # ── App-chat (SSE streaming, new conversation) ──────────────────────────
 CHAT              = f"{BASE}/rest/app-chat/conversations/new"
+
+# ── xAI Console Responses (SSE streaming, SSO-authenticated) ─────────────
+CONSOLE_RESPONSES = f"{CONSOLE_BASE}/v1/responses"
 
 # ── Asset management ─────────────────────────────────────────────────────
 ASSETS_UPLOAD     = f"{BASE}/rest/app-chat/upload-file"        # POST (base64 upload)
@@ -44,8 +48,8 @@ LIVEKIT_TOKENS    = f"{BASE}/rest/livekit/tokens"              # POST
 
 
 __all__ = [
-    "BASE", "ASSETS_CDN",
-    "CHAT",
+    "BASE", "ASSETS_CDN", "CONSOLE_BASE",
+    "CHAT", "CONSOLE_RESPONSES",
     "ASSETS_UPLOAD", "ASSETS_LIST", "ASSETS_DELETE", "ASSETS_DOWNLOAD",
     "RATE_LIMITS",
     "ACCEPT_TOS", "NSFW_MGMT", "SET_BIRTH",

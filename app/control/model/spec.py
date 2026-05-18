@@ -20,6 +20,8 @@ class ModelSpec:
     ``public_name`` is the human-readable display name.
     ``prefer_best`` when True, reverses pool priority to try higher-tier
                     pools first (hard priority, not soft preference).
+    ``upstream_profile`` selects the reverse endpoint/protocol family.
+    ``upstream_model`` overrides the model string sent to that upstream.
     """
 
     model_name: str
@@ -29,6 +31,8 @@ class ModelSpec:
     enabled: bool
     public_name: str
     prefer_best: bool = False
+    upstream_profile: str = "grok_web"
+    upstream_model: str | None = None
 
     # --- convenience predicates ---
 
@@ -46,6 +50,14 @@ class ModelSpec:
 
     def is_voice(self) -> bool:
         return bool(self.capability & Capability.VOICE)
+
+    def upstream_model_name(self) -> str:
+        """Return the model identifier to send to the selected upstream."""
+        return self.upstream_model or self.model_name
+
+    def uses_console_responses(self) -> bool:
+        """Return whether this model should call console.x.ai Responses."""
+        return self.upstream_profile == "console_responses"
 
     def pool_name(self) -> str:
         """Return the canonical pool string for this tier."""
