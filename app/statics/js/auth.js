@@ -1,4 +1,4 @@
-/* Grok2API — Auth module */
+/* grokManager — Auth module */
 const ADMIN_API = '/admin/api';
 const WEBUI_API = '/webui/api';
 

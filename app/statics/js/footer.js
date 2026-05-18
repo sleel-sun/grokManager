@@ -29,18 +29,18 @@ window.renderSiteFooter = async function renderSiteFooter() {
     return node;
   };
 
-  const brand = link('Grok2API', 'https://github.com/chenyme/grok2api');
+  const brand = link('grokManager', 'https://github.com/sleel-sun/grokManager');
   footer.appendChild(brand);
 
   footer.appendChild(sep());
 
-  const author = link('@Chenyme', 'https://blog.cheny.me/');
+  const author = link('sleel-sun/grokManager', 'https://github.com/sleel-sun/grokManager');
   footer.appendChild(author);
 
   if (version) {
     footer.appendChild(sep());
 
-    const ver = link(`v${version}`, 'https://github.com/chenyme/grok2api/releases');
+    const ver = link(`v${version}`, 'https://github.com/sleel-sun/grokManager/releases');
     ver.className = 'site-footer-version';
     footer.appendChild(ver);
   }

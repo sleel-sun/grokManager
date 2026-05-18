@@ -4,12 +4,12 @@
     "connectionFailed": "Connection failed"
   },
   "login": {
-    "adminPageTitle": "Grok2API - Admin",
+    "adminPageTitle": "grokManager - Admin",
     "adminTitle": "Admin Panel",
     "adminSubtitle": "Enter admin password to continue",
     "adminPlaceholder": "Admin password",
     "continue": "Continue",
-    "webuiPageTitle": "Grok2API - WebUI",
+    "webuiPageTitle": "grokManager - WebUI",
     "webuiTitle": "WebUI",
     "webuiSubtitle": "Enter access key",
     "webuiPlaceholder": "Access Key",
@@ -43,7 +43,7 @@
       "chatkit": "ChatKit"
     },
     "chat": {
-      "pageTitle": "Grok2API - WebChat",
+      "pageTitle": "grokManager - WebChat",
       "sidebarTitle": "Chats",
       "newChat": "New Chat",
       "toggleSidebar": "Toggle sidebar",
@@ -89,7 +89,7 @@
       }
     },
     "chatkit": {
-      "pageTitle": "Grok2API - ChatKit",
+      "pageTitle": "grokManager - ChatKit",
       "voiceLabel": "Voice",
       "personalityLabel": "Personality",
       "instructionLabel": "Prompt",
@@ -116,7 +116,7 @@
       "invalidToken": "Voice token response invalid"
     },
     "masonry": {
-      "pageTitle": "Grok2API - Masonry",
+      "pageTitle": "grokManager - Masonry",
       "title": "Masonry",
       "qualitySpeed": "Speed",
       "qualityQuality": "Quality",
@@ -147,9 +147,9 @@
     }
   },
   "account": {
-    "pageTitle": "Grok2API - Accounts",
+    "pageTitle": "grokManager - Accounts",
     "pageHeading": "Account Management",
-    "pageSubtitle": "Manage the xAI account pool, quota posture, and runtime state used by Grok2API.",
+    "pageSubtitle": "Manage the xAI account pool, quota posture, and runtime state used by grokManager.",
     "actionImport": "Import Accounts",
     "actionAdd": "Add Account",
     "actionImportShort": "Import",
@@ -298,9 +298,9 @@
     }
   },
   "config": {
-    "pageTitle": "Grok2API - Configuration Management",
+    "pageTitle": "grokManager - Configuration Management",
     "pageHeading": "Configuration Management",
-    "pageSubtitle": "Manage Grok2API runtime parameters and default service behavior.",
+    "pageSubtitle": "Manage grokManager runtime parameters and default service behavior.",
     "resetShort": "Reset",
     "saveShort": "Save",
     "resetChanges": "Reset Changes",
@@ -615,7 +615,7 @@
     }
   },
   "cache": {
-    "pageTitle": "Grok2API - Cache Management",
+    "pageTitle": "grokManager - Cache Management",
     "pageHeading": "Cache Management",
     "pageSubtitle": "View and manage local cache files, storage limits, and online account assets.",
     "sectionOverview": "Overview",

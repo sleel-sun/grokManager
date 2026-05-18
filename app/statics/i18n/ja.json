@@ -4,12 +4,12 @@
     "connectionFailed": "接続に失敗しました"
   },
   "login": {
-    "adminPageTitle": "Grok2API - 管理",
+    "adminPageTitle": "grokManager - 管理",
     "adminTitle": "管理パネル",
     "adminSubtitle": "続行するには管理者パスワードを入力してください",
     "adminPlaceholder": "管理者パスワード",
     "continue": "続行",
-    "webuiPageTitle": "Grok2API - WebUI",
+    "webuiPageTitle": "grokManager - WebUI",
     "webuiTitle": "WebUI",
     "webuiSubtitle": "アクセスキーを入力してください",
     "webuiPlaceholder": "アクセスキー",
@@ -23,7 +23,7 @@
       "chatkit": "ChatKit"
     },
     "chat": {
-      "pageTitle": "Grok2API - WebChat",
+      "pageTitle": "grokManager - WebChat",
       "sidebarTitle": "チャット",
       "newChat": "新しいチャット",
       "toggleSidebar": "サイドバーを切り替え",
@@ -69,7 +69,7 @@
       }
     },
     "chatkit": {
-      "pageTitle": "Grok2API - ChatKit",
+      "pageTitle": "grokManager - ChatKit",
       "voiceLabel": "音声",
       "personalityLabel": "性格",
       "speedLabel": "速度",
@@ -95,7 +95,7 @@
       "invalidToken": "音声トークンの応答が無効です"
     },
     "masonry": {
-      "pageTitle": "Grok2API - Masonry",
+      "pageTitle": "grokManager - Masonry",
       "title": "Masonry",
       "qualitySpeed": "速度",
       "qualityQuality": "品質",
@@ -145,9 +145,9 @@
     "versionClose": "閉じる"
   },
   "account": {
-    "pageTitle": "Grok2API - アカウント",
+    "pageTitle": "grokManager - アカウント",
     "pageHeading": "アカウント管理",
-    "pageSubtitle": "Grok2API で使用する xAI アカウントプール、クォータ状況、実行状態を管理します。",
+    "pageSubtitle": "grokManager で使用する xAI アカウントプール、クォータ状況、実行状態を管理します。",
     "actionImport": "アカウントをインポート",
     "actionAdd": "アカウントを追加",
     "actionImportShort": "インポート",
@@ -296,9 +296,9 @@
     }
   },
   "config": {
-    "pageTitle": "Grok2API - 構成管理",
+    "pageTitle": "grokManager - 構成管理",
     "pageHeading": "構成管理",
-    "pageSubtitle": "Grok2API のランタイム設定とサービス既定動作を管理します。",
+    "pageSubtitle": "grokManager のランタイム設定とサービス既定動作を管理します。",
     "resetShort": "リセット",
     "saveShort": "保存",
     "resetChanges": "変更をリセット",
@@ -432,7 +432,7 @@
     }
   },
   "cache": {
-    "pageTitle": "Grok2API - キャッシュ管理",
+    "pageTitle": "grokManager - キャッシュ管理",
     "pageHeading": "キャッシュ管理",
     "pageSubtitle": "ローカルキャッシュファイル、容量上限、オンラインアセットを確認・管理します。",
     "sectionOverview": "概要",

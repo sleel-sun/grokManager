@@ -12,7 +12,7 @@ import aiohttp
 
 from app.platform.meta import get_project_version
 
-_RELEASES_URL = "https://api.github.com/repos/chenyme/grok2api/releases"
+_RELEASES_URL = "https://api.github.com/repos/sleel-sun/grokManager/releases"
 _CACHE_TTL_SECONDS = 86400.0
 _ERROR_TTL_SECONDS = 300.0
 _LOCK = asyncio.Lock()
@@ -113,7 +113,7 @@ async def _fetch_latest_release() -> dict[str, Any]:
     timeout = aiohttp.ClientTimeout(total=10)
     headers = {
         "Accept": "application/vnd.github+json",
-        "User-Agent": "grok2api-update-check",
+        "User-Agent": "grokManager-update-check",
     }
     async with aiohttp.ClientSession(timeout=timeout) as session:
         async with session.get(_RELEASES_URL, headers=headers, params={"per_page": "100"}) as response:

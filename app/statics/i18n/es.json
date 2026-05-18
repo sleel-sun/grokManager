@@ -4,12 +4,12 @@
     "connectionFailed": "Error de conexión"
   },
   "login": {
-    "adminPageTitle": "Grok2API - Administración",
+    "adminPageTitle": "grokManager - Administración",
     "adminTitle": "Panel de Administración",
     "adminSubtitle": "Introduzca la contraseña de administrador para continuar",
     "adminPlaceholder": "Contraseña de administrador",
     "continue": "Continuar",
-    "webuiPageTitle": "Grok2API - WebUI",
+    "webuiPageTitle": "grokManager - WebUI",
     "webuiTitle": "WebUI",
     "webuiSubtitle": "Introduzca la clave de acceso",
     "webuiPlaceholder": "Clave de acceso",
@@ -23,7 +23,7 @@
       "chatkit": "ChatKit"
     },
     "chat": {
-      "pageTitle": "Grok2API - WebChat",
+      "pageTitle": "grokManager - WebChat",
       "sidebarTitle": "Chats",
       "newChat": "Nuevo chat",
       "toggleSidebar": "Alternar barra lateral",
@@ -69,7 +69,7 @@
       }
     },
     "chatkit": {
-      "pageTitle": "Grok2API - ChatKit",
+      "pageTitle": "grokManager - ChatKit",
       "voiceLabel": "Voz",
       "personalityLabel": "Personalidad",
       "speedLabel": "Velocidad",
@@ -95,7 +95,7 @@
       "invalidToken": "Respuesta de token de voz no válida"
     },
     "masonry": {
-      "pageTitle": "Grok2API - Masonry",
+      "pageTitle": "grokManager - Masonry",
       "title": "Masonry",
       "qualitySpeed": "Velocidad",
       "qualityQuality": "Calidad",
@@ -145,9 +145,9 @@
     "versionClose": "Cerrar"
   },
   "account": {
-    "pageTitle": "Grok2API - Cuentas",
+    "pageTitle": "grokManager - Cuentas",
     "pageHeading": "Gestión de Cuentas",
-    "pageSubtitle": "Administre el pool de cuentas de xAI, la postura de cuota y el estado operativo utilizado por Grok2API.",
+    "pageSubtitle": "Administre el pool de cuentas de xAI, la postura de cuota y el estado operativo utilizado por grokManager.",
     "actionImport": "Importar cuentas",
     "actionAdd": "Agregar cuenta",
     "actionImportShort": "Importar",
@@ -296,9 +296,9 @@
     }
   },
   "config": {
-    "pageTitle": "Grok2API - Gestión de Configuración",
+    "pageTitle": "grokManager - Gestión de Configuración",
     "pageHeading": "Gestión de Configuración",
-    "pageSubtitle": "Administre los parámetros de ejecución de Grok2API y el comportamiento predeterminado del servicio.",
+    "pageSubtitle": "Administre los parámetros de ejecución de grokManager y el comportamiento predeterminado del servicio.",
     "resetShort": "Restablecer",
     "saveShort": "Guardar",
     "resetChanges": "Restablecer cambios",
@@ -432,7 +432,7 @@
     }
   },
   "cache": {
-    "pageTitle": "Grok2API - Gestión de Caché",
+    "pageTitle": "grokManager - Gestión de Caché",
     "pageHeading": "Gestión de Caché",
     "pageSubtitle": "Vea y gestione los archivos de caché local, los límites de almacenamiento y los activos en línea de las cuentas.",
     "sectionOverview": "Resumen",

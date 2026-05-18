@@ -10,8 +10,8 @@ window.renderAdminHeader = async function renderAdminHeader() {
       return 'v1';
     }
   })();
-  const HEADER_HTML_CACHE_KEY = `grok2api.admin_header_html.${scriptVersion}`;
-  const META_VERSION_CACHE_KEY = `grok2api.meta_version.${scriptVersion}`;
+  const HEADER_HTML_CACHE_KEY = `grokManager.admin_header_html.${scriptVersion}`;
+  const META_VERSION_CACHE_KEY = `grokManager.meta_version.${scriptVersion}`;
   let appVersion = '';
   let updateInfo = null;
   let updateStatus = 'idle';
@@ -579,10 +579,10 @@ window.renderAdminHeader = async function renderAdminHeader() {
       <header class="admin-header">
         <div class="admin-header-inner">
           <div class="admin-brand-wrap">
-            <a href="https://github.com/chenyme/grok2api" target="_blank" rel="noopener" class="admin-brand-link">
-              <span class="admin-brand">Grok2API</span>
+            <a href="https://github.com/sleel-sun/grokManager" target="_blank" rel="noopener" class="admin-brand-link">
+              <span class="admin-brand">grokManager</span>
             </a>
-            <a href="https://blog.cheny.me/" target="_blank" rel="noopener" class="admin-username" id="hd-user">@Chenyme</a>
+            <a href="https://github.com/sleel-sun/grokManager" target="_blank" rel="noopener" class="admin-username" id="hd-user">sleel-sun/grokManager</a>
           </div>
           <nav class="admin-nav">
             <a href="/admin/account" class="admin-nav-link" data-nav="/admin/account" data-i18n="header.account">账户管理</a>

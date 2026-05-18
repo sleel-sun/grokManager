@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title data-i18n="cache.pageTitle">Grok2API - 缓存管理</title>
+  <title data-i18n="cache.pageTitle">grokManager - 缓存管理</title>
   <link rel="icon" href="/favicon.ico?v={{APP_VERSION}}">
   <link href="https://cdn.jsdelivr.net/npm/geist@1.0.0/dist/fonts/geist-sans/style.css" rel="stylesheet">
   <link href="/static/css/app.css?v={{APP_VERSION}}" rel="stylesheet">
@@ -654,7 +654,7 @@ function updateAssetSummary(view = getAssetView()) {
 }
 
 function applyCacheI18n() {
-  document.title = tr('cache.pageTitle', null, 'Grok2API - 缓存管理');
+  document.title = tr('cache.pageTitle', null, 'grokManager - 缓存管理');
   document.querySelectorAll('#page-size-sel option').forEach((opt) => {
     opt.textContent = tr('cache.pageSizeOption', { n: opt.value }, `${opt.value} / 页`);
   });

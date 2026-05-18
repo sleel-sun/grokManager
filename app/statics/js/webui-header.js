@@ -10,8 +10,8 @@ window.renderWebuiHeader = async function renderWebuiHeader() {
       return 'v1';
     }
   })();
-  const HEADER_HTML_CACHE_KEY = `grok2api.webui_header_html.${scriptVersion}`;
-  const META_VERSION_CACHE_KEY = `grok2api.meta_version.${scriptVersion}`;
+  const HEADER_HTML_CACHE_KEY = `grokManager.webui_header_html.${scriptVersion}`;
+  const META_VERSION_CACHE_KEY = `grokManager.meta_version.${scriptVersion}`;
   let appVersion = '';
 
   const readSessionCache = (key) => {
@@ -168,10 +168,10 @@ window.renderWebuiHeader = async function renderWebuiHeader() {
       <header class="admin-header webui-header-bar">
         <div class="admin-header-inner webui-header-inner">
           <div class="admin-brand-wrap">
-            <a href="https://github.com/chenyme/grok2api" target="_blank" rel="noopener" class="admin-brand-link">
-              <span class="admin-brand">Grok2API</span>
+            <a href="https://github.com/sleel-sun/grokManager" target="_blank" rel="noopener" class="admin-brand-link">
+              <span class="admin-brand">grokManager</span>
             </a>
-            <a href="https://blog.cheny.me/" target="_blank" rel="noopener" class="admin-username" id="hd-user">@Chenyme</a>
+            <a href="https://github.com/sleel-sun/grokManager" target="_blank" rel="noopener" class="admin-username" id="hd-user">sleel-sun/grokManager</a>
           </div>
           <nav class="admin-nav">
             <a href="/webui/chat" class="admin-nav-link" data-nav="/webui/chat" data-i18n="webui.header.chat">聊天</a>
