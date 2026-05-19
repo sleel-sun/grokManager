@@ -35,7 +35,7 @@ _SECRET_KEYS = {"email_admin_password", "api_token", "admin_password", "token"}
 
 
 class MaintainerRunRequest(BaseModel):
-    count: int = Field(default=1, ge=1, le=100)
+    count: int = Field(default=1, ge=0)
     email_worker_domain: str = Field(min_length=1, max_length=253)
     email_domains: list[str] = Field(min_length=1, max_length=20)
     email_admin_password: str = Field(default="", max_length=4096)
@@ -166,10 +166,11 @@ def build_saved_config_response(payload: dict[str, Any]) -> dict[str, Any]:
     domains = [str(item).strip() for item in domains if str(item or "").strip()]
 
     try:
-        count = int(run_conf.get("count", 1) or 1)
+        raw_count = run_conf.get("count", 1)
+        count = int(1 if raw_count in (None, "") else raw_count)
     except (TypeError, ValueError):
         count = 1
-    count = min(max(count, 1), 100)
+    count = max(count, 0)
 
     pool = str(api_conf.get("pool", "basic") or "basic").strip().lower()
     if pool not in {"basic", "super", "heavy"}:

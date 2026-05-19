@@ -34,6 +34,32 @@ class MaintainerAdminTests(unittest.TestCase):
         self.assertEqual(cfg["api"]["pool"], "basic")
         self.assertTrue(cfg["api"]["append"])
 
+    def test_run_request_allows_unlimited_and_large_registration_counts(self) -> None:
+        unlimited = MaintainerRunRequest(
+            count=0,
+            email_worker_domain="mail.example.com",
+            email_domains=["example.com"],
+            email_admin_password="worker-secret",
+            pool="basic",
+        )
+        large_batch = MaintainerRunRequest(
+            count=250,
+            email_worker_domain="mail.example.com",
+            email_domains=["example.com"],
+            email_admin_password="worker-secret",
+            pool="basic",
+        )
+
+        self.assertEqual(unlimited.count, 0)
+        self.assertEqual(large_batch.count, 250)
+
+    def test_saved_config_response_preserves_unlimited_and_large_counts(self) -> None:
+        unlimited = build_saved_config_response({"run": {"count": 0}})
+        large_batch = build_saved_config_response({"run": {"count": 250}})
+
+        self.assertEqual(unlimited["count"], 0)
+        self.assertEqual(large_batch["count"], 250)
+
     def test_redact_state_hides_secret_values(self) -> None:
         redacted = redact_state(
             {

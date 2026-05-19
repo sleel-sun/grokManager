@@ -12,9 +12,40 @@ uv sync --extra maintainer
 ## 启动
 
 ```bash
-uv run grok2api-maintainer --count 5
+uv run grokmanager-maintainer --count 5
 uv run python -m app.maintainer --count 0
 ```
+
+## Compose 一体化运行
+
+`docker-compose.yml` 已内置独立的 `maintainer` 服务。执行：
+
+```bash
+docker compose up -d --build
+```
+
+会同时启动：
+- `grokmanager` API 服务
+- `maintainer` 后台服务
+
+Compose 模式下，maintainer 默认：
+- 等待 `http://grokmanager:8000/health`
+- 从 `.env` 中的 `MAINTAINER_*` 环境变量生成运行时配置
+- 把 token 回写到 `http://grokmanager:8000/v1/admin/tokens`
+- 通过 `MAINTAINER_INTERVAL_SEC` 周期性重复运行
+- 默认把自动生成的配置写到容器内临时路径，不落宿主持久卷
+- 未显式设置 `MAINTAINER_API_TOKEN` 时，会先复用 `GROK_APP_APP_KEY`，两者都为空则回退到默认后台密钥 `grok2api`
+
+必填环境变量：
+- `MAINTAINER_EMAIL_WORKER_DOMAIN`
+- `MAINTAINER_EMAIL_DOMAINS`
+- `MAINTAINER_EMAIL_ADMIN_PASSWORD`
+
+常用可调参数：
+- `MAINTAINER_COUNT`
+- `MAINTAINER_INTERVAL_SEC`
+- `MAINTAINER_HEADLESS`
+- `MAINTAINER_USE_XVFB`
 
 ## 配置文件
 

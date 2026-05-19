@@ -128,6 +128,7 @@ class FrameEvent:
     - ``image``     — generated image final URL   (content = full URL, image_id = upstream UUID)
     - ``image_progress`` — generated image progress (content = percent string, image_id = upstream UUID)
     - ``annotation`` — url citation annotation   (annotation_data = annotation dict)
+    - ``tool_call``  — native Responses function call (tool_call = ParsedToolCall)
     - ``soft_stop`` — stream end signal
     - ``skip``      — filtered frame, do nothing
     """
@@ -137,6 +138,7 @@ class FrameEvent:
     message_tag: str = ""
     message_step_id: int | None = None
     annotation_data: dict | None = None
+    tool_call: Any | None = None
 
 
 # ---------------------------------------------------------------------------

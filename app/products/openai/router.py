@@ -117,15 +117,27 @@ async def _safe_sse(stream: AsyncIterable[str]) -> AsyncGenerator[str, None]:
         async for chunk in stream:
             yield chunk
     except AppError as exc:
-        payload = orjson.dumps({"error": exc.to_dict()["error"]}).decode()
+        payload = orjson.dumps(_openai_error_payload(exc)).decode()
         yield f"event: error\ndata: {payload}\n\n"
         yield "data: [DONE]\n\n"
     except Exception as exc:
-        payload = orjson.dumps(
-            {"error": {"message": str(exc), "type": "server_error"}}
-        ).decode()
+        payload = orjson.dumps(_openai_error_payload(exc)).decode()
         yield f"event: error\ndata: {payload}\n\n"
         yield "data: [DONE]\n\n"
+
+
+def _unwrap_single_exception_group(exc: BaseException) -> BaseException:
+    """Expose the real error from single-failure TaskGroup wrappers."""
+    while isinstance(exc, BaseExceptionGroup) and len(exc.exceptions) == 1:
+        exc = exc.exceptions[0]
+    return exc
+
+
+def _openai_error_payload(exc: BaseException) -> dict:
+    exc = _unwrap_single_exception_group(exc)
+    if isinstance(exc, AppError):
+        return {"error": exc.to_dict()["error"]}
+    return {"error": {"message": str(exc), "type": "server_error"}}
 
 
 _SSE_HEADERS = {
@@ -344,27 +356,25 @@ async def chat_completions_endpoint(req: ChatCompletionRequest):
     except AppError:
         raise
     except Exception as exc:
+        exposed_exc = _unwrap_single_exception_group(exc)
         logger.exception(
             "chat completions endpoint failed: model={} stream={} error={}",
             req.model,
             is_stream,
-            exc,
+            exposed_exc,
         )
         # Video failures must surface their real HTTP status code so downstream
         # billing gateways (e.g. New API) don't misread an SSE-wrapped error as a
         # successful 200 response.
+        if isinstance(exposed_exc, AppError):
+            raise exposed_exc from exc
         if spec.is_video():
             raise
         if is_stream:
-            _err_msg = str(
-                exc
-            )  # capture before Python clears the except-scope variable
+            _payload = orjson.dumps(_openai_error_payload(exposed_exc)).decode()
 
             async def _err_stream():
-                payload = orjson.dumps(
-                    {"error": {"message": _err_msg, "type": "server_error"}}
-                ).decode()
-                yield f"event: error\ndata: {payload}\n\n"
+                yield f"event: error\ndata: {_payload}\n\n"
                 yield "data: [DONE]\n\n"
 
             return StreamingResponse(
@@ -394,6 +404,7 @@ async def _safe_sse_responses(stream) -> AsyncGenerator[str, None]:
     except Exception as exc:
         from app.platform.errors import AppError
 
+        exc = _unwrap_single_exception_group(exc)
         if isinstance(exc, AppError):
             err = exc.to_dict()["error"]
         else:

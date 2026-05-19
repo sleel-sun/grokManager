@@ -35,6 +35,7 @@ maintainer = [
 ]
 
 [project.scripts]
+grokmanager-maintainer = "app.maintainer.runner:main"
 grok2api-maintainer = "app.maintainer.runner:main"
 
 [dependency-groups]

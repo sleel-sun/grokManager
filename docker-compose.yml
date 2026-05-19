@@ -4,6 +4,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      target: api-runtime
     image: ${GROKMANAGER_IMAGE:-grokmanager:local}
     ports:
       - "${HOST_PORT:-8000}:${SERVER_PORT:-8000}"
@@ -37,6 +38,46 @@ services:
       # ACCOUNT_REDIS_URL: Redis DSN when ACCOUNT_STORAGE=redis
       # ACCOUNT_MYSQL_URL: MySQL DSN when ACCOUNT_STORAGE=mysql
       # ACCOUNT_POSTGRESQL_URL: PostgreSQL DSN when ACCOUNT_STORAGE=postgresql
+    volumes:
+      - ./data:/app/data
+      - ./logs:/app/logs
+    restart: unless-stopped
+
+  maintainer:
+    container_name: grokmanager-maintainer
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: maintainer-runtime
+    image: ${GROKMANAGER_MAINTAINER_IMAGE:-grokmanager-maintainer:local}
+    depends_on:
+      grokmanager:
+        condition: service_healthy
+    environment:
+      TZ: ${TZ:-Asia/Shanghai}
+      DATA_DIR: /app/data
+      LOG_DIR: /app/logs
+      GROK_APP_APP_KEY: ${GROK_APP_APP_KEY:-}
+      GROK_MAINTAINER_CONFIG: ${GROK_MAINTAINER_CONFIG:-/tmp/maintainer.config.json}
+      MAINTAINER_ENABLED: ${MAINTAINER_ENABLED:-true}
+      MAINTAINER_COUNT: ${MAINTAINER_COUNT:-1}
+      MAINTAINER_INTERVAL_SEC: ${MAINTAINER_INTERVAL_SEC:-1800}
+      MAINTAINER_RETRY_SEC: ${MAINTAINER_RETRY_SEC:-60}
+      MAINTAINER_API_HEALTH_URL: ${MAINTAINER_API_HEALTH_URL:-http://grokmanager:8000/health}
+      MAINTAINER_API_ENDPOINT: ${MAINTAINER_API_ENDPOINT:-http://grokmanager:8000/v1/admin/tokens}
+      MAINTAINER_API_TOKEN: ${MAINTAINER_API_TOKEN:-}
+      MAINTAINER_API_APPEND: ${MAINTAINER_API_APPEND:-true}
+      MAINTAINER_API_POOL: ${MAINTAINER_API_POOL:-basic}
+      MAINTAINER_API_VERIFY_SSL: ${MAINTAINER_API_VERIFY_SSL:-true}
+      MAINTAINER_EMAIL_WORKER_DOMAIN: ${MAINTAINER_EMAIL_WORKER_DOMAIN:-}
+      MAINTAINER_EMAIL_DOMAINS: ${MAINTAINER_EMAIL_DOMAINS:-}
+      MAINTAINER_EMAIL_ADMIN_PASSWORD: ${MAINTAINER_EMAIL_ADMIN_PASSWORD:-}
+      MAINTAINER_EMAIL_VERIFY_SSL: ${MAINTAINER_EMAIL_VERIFY_SSL:-true}
+      MAINTAINER_HEADLESS: ${MAINTAINER_HEADLESS:-false}
+      MAINTAINER_USE_XVFB: ${MAINTAINER_USE_XVFB:-true}
+      MAINTAINER_NO_SANDBOX: ${MAINTAINER_NO_SANDBOX:-true}
+      MAINTAINER_DISABLE_DEV_SHM: ${MAINTAINER_DISABLE_DEV_SHM:-true}
+      MAINTAINER_WINDOW_SIZE: ${MAINTAINER_WINDOW_SIZE:-1440,900}
     volumes:
       - ./data:/app/data
       - ./logs:/app/logs

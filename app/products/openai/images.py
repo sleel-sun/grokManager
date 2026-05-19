@@ -242,9 +242,8 @@ async def generate(
     """Generate images.
 
     Routes to the appropriate backend based on model:
-      grok-imagine-image-lite  → chat endpoint (no aspect-ratio control, all pools)
-      grok-imagine-image       → WebSocket speed mode (super+)
-      grok-imagine-image-pro   → WebSocket quality mode (super+)
+      grok-imagine-image-lite  → app-chat imageGen path
+      grok-imagine-image/pro   → app-chat imageGen path, with non-streaming WS fallback
 
     Returns:
       Non-streaming: OpenAI images.generations dict, or chat dict if chat_format=True.
@@ -259,15 +258,39 @@ async def generate(
     if _acct_dir is None:
         raise RateLimitError("Account directory not initialised")
 
-    # Lite model: chat-based generation (no WS, ignores aspect_ratio).
+    # App-chat is the primary image path. The legacy Imagine WebSocket endpoint
+    # is kept only as a fallback because Grok has deprecated it intermittently.
     if model in _LITE_IMAGE_MODELS:
-        return await _generate_lite(
+        return await _generate_app_chat(
+            model           = model,
             spec            = spec,
             prompt          = prompt,
             n               = n,
             response_format = response_format,
             stream          = stream,
             chat_format     = chat_format,
+            enable_nsfw     = enable_nsfw,
+        )
+
+    try:
+        return await _generate_app_chat(
+            model           = model,
+            spec            = spec,
+            prompt          = prompt,
+            n               = n,
+            response_format = response_format,
+            stream          = stream,
+            chat_format     = chat_format,
+            enable_nsfw     = enable_nsfw,
+        )
+    except UpstreamError as exc:
+        if _is_rate_limit_error(exc):
+            raise
+        logger.warning(
+            "app-chat image generation failed; falling back to ws_imagine: model={} status={} error={}",
+            model,
+            exc.status,
+            exc.message,
         )
 
     acct = await _acct_dir.reserve_any(
@@ -442,27 +465,33 @@ async def generate(
 
 
 # ---------------------------------------------------------------------------
-# Lite image generation (chat-based, no WS, no aspect-ratio control)
+# App-chat image generation (primary path, no aspect-ratio control)
 # ---------------------------------------------------------------------------
 
-async def _generate_lite(
+
+def _is_rate_limit_error(exc: UpstreamError) -> bool:
+    if exc.status == 429:
+        return True
+    text = f"{exc.message} {exc.details.get('body', '')}".lower()
+    return "rate_limit" in text or "rate limit" in text
+
+
+async def _generate_app_chat(
     *,
+    model:           str,
     spec:            ModelSpec,
     prompt:          str,
     n:               int,
     response_format: str,
     stream:          bool,
     chat_format:     bool,
+    enable_nsfw:     bool = True,
 ) -> dict | AsyncGenerator[str, None]:
-    """Generate images via the chat endpoint (Aurora model path).
-
-    Does not support aspect ratio or quality control.  All account pools
-    can serve this model.
-    """
+    """Generate images through app-chat with the imageGen tool override."""
     response_id = make_response_id()
     cfg         = get_config()
     timeout_s   = cfg.get_float("chat.timeout", 120.0)
-    logger.debug("lite image fan-out started: request_count={} mode={}", n, spec.mode_id.name.lower())
+    logger.debug("app-chat image fan-out started: request_count={} mode={}", n, spec.mode_id.name.lower())
 
     if stream:
         async def _sse_stream() -> AsyncGenerator[str, None]:
@@ -484,6 +513,7 @@ async def _generate_lite(
                     n=n,
                     timeout_s=timeout_s,
                     response_format=response_format,
+                    enable_nsfw=enable_nsfw,
                     progress_cb=_progress,
                 )
             )
@@ -525,6 +555,7 @@ async def _generate_lite(
         n=n,
         timeout_s=timeout_s,
         response_format=response_format,
+        enable_nsfw=enable_nsfw,
         progress_cb=lambda idx, progress: _lite_progress_updates(
             idx=idx,
             progress=progress,
@@ -538,7 +569,7 @@ async def _generate_lite(
         content = "\n\n".join(image.markdown_value for image in images)
         reasoning = "\n".join(reasoning_updates) if reasoning_updates else None
         return make_chat_response(
-            spec.model_name,
+            model,
             content,
             prompt_content=prompt,
             response_id=response_id,
@@ -865,6 +896,7 @@ async def _stream_lite_generate(
     message:     str,
     mode_id:     ModeId,
     *,
+    enable_nsfw: bool = True,
     timeout_s: float = 120.0,
 ) -> AsyncGenerator[str, None]:
     proxy   = await get_proxy_runtime()
@@ -873,7 +905,11 @@ async def _stream_lite_generate(
         message           = f"Drawing: {message}",
         mode_id           = mode_id,
         file_attachments  = [],
-        request_overrides = {"imageGenerationCount": 2},
+        tool_overrides    = {"imageGen": True},
+        request_overrides = {
+            "imageGenerationCount": 2,
+            "enableNsfw": enable_nsfw,
+        },
     )
     headers = build_http_headers(token, lease=lease)
     kwargs  = build_session_kwargs(lease=lease)
@@ -903,6 +939,7 @@ async def _run_lite_request(
     prompt:    str,
     timeout_s: float,
     response_format: str,
+    enable_nsfw: bool = True,
     progress_cb: Callable[[int], Awaitable[None]] | None = None,
 ) -> _ImageOutput:
     from app.dataplane.account import _directory as _acct_dir
@@ -927,6 +964,7 @@ async def _run_lite_request(
             token,
             prompt,
             spec.mode_id,
+            enable_nsfw=enable_nsfw,
             timeout_s=timeout_s,
         ):
             ev_type, data = classify_line(line)
@@ -972,6 +1010,7 @@ async def _run_lite_batch(
     n: int,
     timeout_s: float,
     response_format: str,
+    enable_nsfw: bool = True,
     progress_cb: Callable[[int, int], Awaitable[None]] | None = None,
 ) -> list[_ImageOutput]:
     results: list[_ImageOutput | None] = [None] * n
@@ -982,6 +1021,7 @@ async def _run_lite_batch(
             prompt=prompt,
             timeout_s=timeout_s,
             response_format=response_format,
+            enable_nsfw=enable_nsfw,
             progress_cb=None if progress_cb is None else lambda progress: progress_cb(idx, progress),
         )
 

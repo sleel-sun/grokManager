@@ -149,7 +149,8 @@
             <div class="inline">
               <div class="field">
                 <label for="count">注册数量</label>
-                <input class="input" id="count" name="count" type="number" min="1" max="100" value="1" required>
+                <input class="input" id="count" name="count" type="number" min="0" value="1" required>
+                <small>不设上限；填 0 表示持续注册，直到手动停止服务或任务失败。</small>
               </div>
               <div class="field">
                 <label for="pool">写入账号池</label>

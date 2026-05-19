@@ -379,6 +379,8 @@ async def _stream_chat(
     files: list[str],
     *,
     spec: ModelSpec | None = None,
+    tools: list[dict] | None = None,
+    tool_choice: Any = None,
     tool_overrides: dict | None = None,
     model_config_override: dict | None = None,
     request_overrides: dict | None = None,
@@ -403,6 +405,8 @@ async def _stream_chat(
             model=spec.upstream_model_name(),
             message=message,
             stream=True,
+            tools=tools,
+            tool_choice=tool_choice,
             request_overrides=request_overrides,
         )
         transport_context = "Console Responses transport failed"
@@ -528,8 +532,9 @@ async def completions(
     tool_names: list[str] = []
     if tools:
         tool_names = extract_tool_names(tools)
-        tool_prompt = build_tool_system_prompt(tools, tool_choice)
-        message = inject_into_message(message, tool_prompt)
+        if not spec.uses_console_responses():
+            tool_prompt = build_tool_system_prompt(tools, tool_choice)
+            message = inject_into_message(message, tool_prompt)
     tool_overrides: dict | None = None
 
     # ── Streaming path ────────────────────────────────────────────────────────
@@ -559,12 +564,15 @@ async def completions(
                         ended = False
                         sieve = ToolSieve(tool_names)
                         tool_calls_emitted = False
+                        native_tool_call_count = 0
                         async for line in _stream_chat(
                             token=token,
                             mode_id=ModeId(selected_mode_id),
                             message=message,
                             files=files,
                             spec=spec,
+                            tools=tools if spec.uses_console_responses() else None,
+                            tool_choice=tool_choice,
                             tool_overrides=tool_overrides,
                             request_overrides=request_overrides,
                             timeout_s=timeout_s,
@@ -578,7 +586,25 @@ async def completions(
                             for ev in events:
                                 if tool_calls_emitted:
                                     break  # already sent [DONE], drop remaining events
+                                if ev.kind == "tool_call" and ev.tool_call is not None:
+                                    tc = ev.tool_call
+                                    if tool_names and tc.name not in tool_names:
+                                        continue
+                                    chunk = make_tool_call_chunk(
+                                        response_id,
+                                        model,
+                                        native_tool_call_count,
+                                        tc.call_id,
+                                        tc.name,
+                                        tc.arguments,
+                                        is_first=True,
+                                    )
+                                    native_tool_call_count += 1
+                                    yield f"data: {orjson.dumps(chunk).decode()}\n\n"
+                                    continue
                                 if ev.kind == "text":
+                                    if native_tool_call_count:
+                                        continue
                                     if tool_names:
                                         safe_text, parsed_calls = sieve.feed(ev.content)
                                         if safe_text:
@@ -627,10 +653,44 @@ async def completions(
                                 elif ev.kind == "annotation" and ev.annotation_data:
                                     collected_annotations.append(ev.annotation_data)
                                 elif ev.kind == "soft_stop":
+                                    if native_tool_call_count:
+                                        done_chunk = make_tool_call_done_chunk(
+                                            response_id, model
+                                        )
+                                        yield f"data: {orjson.dumps(done_chunk).decode()}\n\n"
+                                        yield "data: [DONE]\n\n"
+                                        tool_calls_emitted = True
+                                        success = True
+                                        logger.info(
+                                            "chat stream native tool_calls: attempt={}/{} model={} call_count={}",
+                                            attempt + 1,
+                                            max_retries + 1,
+                                            model,
+                                            native_tool_call_count,
+                                        )
                                     ended = True
                                     break
                             if ended:
                                 break
+
+                        if (
+                            native_tool_call_count
+                            and not tool_calls_emitted
+                        ):
+                            done_chunk = make_tool_call_done_chunk(
+                                response_id, model
+                            )
+                            yield f"data: {orjson.dumps(done_chunk).decode()}\n\n"
+                            yield "data: [DONE]\n\n"
+                            tool_calls_emitted = True
+                            success = True
+                            logger.info(
+                                "chat stream native tool_calls: attempt={}/{} model={} call_count={}",
+                                attempt + 1,
+                                max_retries + 1,
+                                model,
+                                native_tool_call_count,
+                            )
 
                         if not tool_calls_emitted and tool_names:
                             # Stream ended — flush sieve for any buffered XML
@@ -782,6 +842,8 @@ async def completions(
                     message=message,
                     files=files,
                     spec=spec,
+                    tools=tools if spec.uses_console_responses() else None,
+                    tool_choice=tool_choice,
                     tool_overrides=tool_overrides,
                     request_overrides=request_overrides,
                     timeout_s=timeout_s,
@@ -867,6 +929,27 @@ async def completions(
 
     # ── Tool call detection (non-streaming) ──────────────────────────────────
     if tool_names:
+        native_calls = [
+            tc
+            for tc in getattr(adapter, "tool_calls", [])
+            if not tool_names or tc.name in tool_names
+        ]
+        if native_calls:
+            logger.info(
+                "chat request native tool_calls: attempt={}/{} model={} call_count={}",
+                attempt + 1,
+                max_retries + 1,
+                model,
+                len(native_calls),
+            )
+            pt = estimate_prompt_tokens(message)
+            return make_tool_call_response(
+                model,
+                native_calls,
+                prompt_content=message,
+                response_id=response_id,
+                usage=build_usage(pt, estimate_tool_call_tokens(native_calls)),
+            )
         parse_result = parse_tool_calls(full_text, tool_names)
         if parse_result.calls:
             logger.info(
