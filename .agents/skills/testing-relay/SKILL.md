@@ -9,11 +9,13 @@ This skill captures how to test the relay end-to-end against real Grok session J
 
 ## 1. Default credentials (local dev only)
 
-The `.env.example` / committed `.env` ship with these test values — they are NOT secrets:
+The shipped `.env` for local dev contains placeholder strings — they are NOT secrets and are only valid for `127.0.0.1` development. Export them once per shell:
 
-- Relay API key: `test-api-key` — pass as `Authorization: Bearer test-api-key` or `x-api-key: test-api-key`
-- Admin / app key: `test-admin-key` (`app_key=grok2api` in `data/config.toml` is overridden by env in dev)
-- Maintainer email admin password: `test-pass`
+```bash
+# Read from .env to avoid hardcoding the literal values in code/examples
+export API_KEY="$(grep -E '^GROK_APP_API_KEY=' .env | cut -d= -f2-)"
+export ADMIN_KEY="$(grep -E '^GROK_APP_API_KEY=' .env | cut -d= -f2-)"  # admin uses the same key in default config
+```
 
 For production-style testing, set `GROK_APP_API_KEY` in `.env` and restart.
 
@@ -35,7 +37,7 @@ The relay refuses to expose any model in `/v1/models` until at least one *manage
 ```bash
 # Tokens must be strings (NOT objects). pool=auto triggers async tier detection.
 curl -sS -X POST \
-  -H "Authorization: Bearer test-admin-key" \
+  -H "Authorization: Bearer ${ADMIN_KEY}" \
   -H "Content-Type: application/json" \
   http://127.0.0.1:8000/admin/api/tokens/add \
   -d '{"tokens":["<jwt-1>","<jwt-2>"],"pool":"auto"}'
@@ -44,7 +46,7 @@ curl -sS -X POST \
 Then wait a few seconds and confirm:
 
 ```bash
-curl -sS -H "Authorization: Bearer test-admin-key" http://127.0.0.1:8000/admin/api/tokens | python3 -m json.tool
+curl -sS -H "Authorization: Bearer ${ADMIN_KEY}" http://127.0.0.1:8000/admin/api/tokens | python3 -m json.tool
 ```
 
 Look for `status: "active"`. `status: "expired"` means the JWT was rejected by Grok upstream.
@@ -58,7 +60,7 @@ Look for `status: "active"`. `status: "expired"` means the JWT was rejected by G
 To get a single JSON response, pass `"stream": false` explicitly:
 
 ```bash
-curl -sS -H "Authorization: Bearer test-api-key" -H "Content-Type: application/json" \
+curl -sS -H "Authorization: Bearer ${API_KEY}" -H "Content-Type: application/json" \
   http://127.0.0.1:8000/v1/chat/completions \
   -d '{"model":"grok-4.20-0309-non-reasoning","messages":[{"role":"user","content":"Reply PONG"}],"max_tokens":10,"stream":false}'
 ```
@@ -69,9 +71,9 @@ The SAME endpoint serves OpenAI or Anthropic shape based on the `anthropic-versi
 
 ```bash
 # OpenAI shape
-curl -sS -H "Authorization: Bearer test-api-key" http://127.0.0.1:8000/v1/models
+curl -sS -H "Authorization: Bearer ${API_KEY}" http://127.0.0.1:8000/v1/models
 # Anthropic shape
-curl -sS -H "Authorization: Bearer test-api-key" -H "anthropic-version: 2023-06-01" http://127.0.0.1:8000/v1/models
+curl -sS -H "Authorization: Bearer ${API_KEY}" -H "anthropic-version: 2023-06-01" http://127.0.0.1:8000/v1/models
 ```
 
 404 errors also differ in shape: OpenAI returns `{error:{type:"invalid_request_error"}}`, Anthropic returns `{type:"error",error:{type:"not_found_error"}}`. Same logic applies to `GET /v1/models/{id}`.
@@ -81,7 +83,7 @@ curl -sS -H "Authorization: Bearer test-api-key" -H "anthropic-version: 2023-06-
 Non-billing endpoint that estimates input tokens for a request:
 
 ```bash
-curl -sS -H "Authorization: Bearer test-api-key" -H "anthropic-version: 2023-06-01" -H "Content-Type: application/json" \
+curl -sS -H "Authorization: Bearer ${API_KEY}" -H "anthropic-version: 2023-06-01" -H "Content-Type: application/json" \
   http://127.0.0.1:8000/v1/messages/count_tokens \
   -d '{"model":"grok-4.20-0309-non-reasoning","messages":[{"role":"user","content":"hello"}]}'
 ```
