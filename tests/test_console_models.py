@@ -25,17 +25,15 @@ class ConsoleModelRoutingTests(unittest.TestCase):
         self.assertEqual(plan.referer, "https://console.x.ai/")
         self.assertEqual(plan.extra["upstream_model"], "grok-4.3")
 
-    def test_grok_42_reasoning_alias_uses_console_responses_route(self) -> None:
-        spec = resolve("grok-4.2reasoning")
-
-        self.assertEqual(spec.tier, Tier.BASIC)
-        self.assertEqual(spec.mode_id, ModeId.EXPERT)
-        self.assertTrue(spec.uses_console_responses())
-        self.assertEqual(spec.upstream_model_name(), "grok-4.2-reasoning")
-
-        plan = build_plan(spec, {})
-        self.assertEqual(plan.endpoint, CONSOLE_RESPONSES)
-        self.assertEqual(plan.extra["upstream_model"], "grok-4.2-reasoning")
+    def test_grok_42_reasoning_is_not_registered(self) -> None:
+        # grok-4.2-reasoning / grok-4.2reasoning were stale registry entries:
+        # xAI Console returns 404 for those model names (no "4.2" line exists
+        # on the xAI roadmap; releases went 4.20 -> 4.3). They must no longer
+        # be exposed via /v1/models or resolvable via the registry.
+        with self.assertRaises(ValueError):
+            resolve("grok-4.2-reasoning")
+        with self.assertRaises(ValueError):
+            resolve("grok-4.2reasoning")
 
     def test_build_console_responses_payload(self) -> None:
         payload = build_console_responses_payload(
