@@ -33,8 +33,6 @@ MODELS: tuple[ModelSpec, ...] = (
     ModelSpec("grok-4.20-heavy",                        ModeId.HEAVY,    Tier.HEAVY, Capability.CHAT,       True, "Grok 4.20 Heavy",         prefer_best=True),
 
     # === xAI Console Responses via Grok SSO (basic/free pool first) ==========
-    ModelSpec("grok-4.2-reasoning",                     ModeId.EXPERT,   Tier.BASIC, Capability.CHAT,       True, "Grok 4.2 Reasoning",     upstream_profile="console_responses", upstream_model="grok-4.2-reasoning"),
-    ModelSpec("grok-4.2reasoning",                      ModeId.EXPERT,   Tier.BASIC, Capability.CHAT,       True, "Grok 4.2 Reasoning",     upstream_profile="console_responses", upstream_model="grok-4.2-reasoning"),
     ModelSpec("grok-4.3",                               ModeId.AUTO,     Tier.BASIC, Capability.CHAT,       True, "Grok 4.3",               upstream_profile="console_responses", upstream_model="grok-4.3"),
 
     # === grok-4.3 (grok-420-computer-use-sa) ==================================
