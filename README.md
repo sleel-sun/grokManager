@@ -20,7 +20,7 @@
 
 核心特性：
 - OpenAI 兼容接口：`/v1/models`、`/v1/chat/completions`、`/v1/responses`、`/v1/images/generations`、`/v1/images/edits`、`/v1/videos`、`/v1/videos/{video_id}`、`/v1/videos/{video_id}/content`
-- Anthropic 兼容接口：`/v1/messages`
+- Anthropic 兼容接口：`/v1/messages`、`/v1/messages/count_tokens`；`/v1/models` 在收到 `anthropic-version` 请求头时自动返回 Anthropic 格式
 - 支持流式与非流式对话、显式思考输出、函数工具结构透传，以及统一的 token / usage 统计
 - 支持多账号池、层级选号、失败反馈、额度同步与自动维护
 - 支持本地缓存图片、视频与本地代理链接返回
@@ -372,6 +372,7 @@ uv run grokmanager-maintainer --count 5
 | `POST /v1/chat/completions` | 是 | 对话 / 图像 / 视频统一入口 |
 | `POST /v1/responses` | 是 | OpenAI Responses API 兼容子集 |
 | `POST /v1/messages` | 是 | Anthropic Messages API 兼容接口 |
+| `POST /v1/messages/count_tokens` | 是 | Anthropic Count Message Tokens 兼容接口（预估输入 token） |
 | `POST /v1/images/generations` | 是 | 独立图像生成接口 |
 | `POST /v1/images/edits` | 是 | 独立图像编辑接口 |
 | `POST /v1/videos` | 是 | 异步视频任务创建 |
@@ -581,6 +582,29 @@ curl http://localhost:8000/v1/messages \
 
 <br>
 </details>
+
+<br>
+</details>
+
+<details>
+<summary><code>POST /v1/messages/count_tokens</code></summary>
+<br>
+
+```bash
+curl http://localhost:8000/v1/messages/count_tokens \
+  -H "Content-Type: application/json" \
+  -H "x-api-key: $GROKMANAGER_API_KEY" \
+  -H "anthropic-version: 2023-06-01" \
+  -d '{
+    "model": "grok-4.20-auto",
+    "system": "You are a helpful assistant.",
+    "messages": [
+      {"role": "user", "content": "用三句话解释量子隧穿"}
+    ]
+  }'
+```
+
+请求体与 `/v1/messages` 完全一致（同时支持 `system`、`tools`、`tool_choice` 等可选字段），响应返回 `{"input_tokens": N}`，用于在调用前估算输入 token 用量。
 
 <br>
 </details>
