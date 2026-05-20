@@ -7,7 +7,7 @@ import mimetypes
 from typing import Annotated, AsyncGenerator, AsyncIterable, Literal
 
 import orjson
-from fastapi import APIRouter, Depends, File, Form, Query, Request, UploadFile
+from fastapi import APIRouter, Depends, File, Form, Header, Query, Request, UploadFile
 from fastapi.responses import JSONResponse, StreamingResponse, FileResponse
 
 from app.control.account.state_machine import is_manageable
@@ -58,34 +58,97 @@ def _model_available_for_pools(spec: ModelSpec, pools: frozenset[str]) -> bool:
 # ---------------------------------------------------------------------------
 
 
+def _is_anthropic_client(anthropic_version: str | None) -> bool:
+    """Anthropic SDKs always send ``anthropic-version`` on every request.
+
+    OpenAI SDKs never do. Using header presence as a content-negotiation hint
+    lets us serve Anthropic-format model listings on the shared ``/v1/models``
+    path without breaking existing OpenAI clients.
+    """
+    return bool(anthropic_version and anthropic_version.strip())
+
+
+def _openai_model_payload(spec: ModelSpec, created: int) -> dict:
+    return {
+        "id": spec.model_name,
+        "object": "model",
+        "created": created,
+        "owned_by": "xai",
+        "name": spec.public_name,
+    }
+
+
+def _anthropic_model_payload(spec: ModelSpec, created: int) -> dict:
+    """Return Anthropic-format model entry (see Anthropic List Models API).
+
+    Anthropic represents timestamps as ISO-8601 strings and uses
+    ``display_name`` / ``type: "model"`` instead of OpenAI's ``name`` /
+    ``object: "model"``.
+    """
+    from datetime import datetime, timezone
+
+    return {
+        "type": "model",
+        "id": spec.model_name,
+        "display_name": spec.public_name,
+        "created_at": datetime.fromtimestamp(created, tz=timezone.utc).isoformat().replace("+00:00", "Z"),
+    }
+
+
 @router.get("/models", tags=[_TAG_MODELS], dependencies=[Depends(verify_api_key)])
-async def list_models(request: Request):
+async def list_models(
+    request: Request,
+    anthropic_version: str | None = Header(default=None, alias="anthropic-version"),
+):
     import time
 
     pools = await _available_pools(request)
-    models = [
+    created = int(time.time())
+    available = [m for m in model_registry.list_enabled() if _model_available_for_pools(m, pools)]
+
+    if _is_anthropic_client(anthropic_version):
+        data = [_anthropic_model_payload(m, created) for m in available]
+        return JSONResponse(
+            {
+                "data": data,
+                "has_more": False,
+                "first_id": data[0]["id"] if data else None,
+                "last_id": data[-1]["id"] if data else None,
+            }
+        )
+
+    return JSONResponse(
         {
-            "id": m.model_name,
-            "object": "model",
-            "created": int(time.time()),
-            "owned_by": "xai",
-            "name": m.public_name,
+            "object": "list",
+            "data": [_openai_model_payload(m, created) for m in available],
         }
-        for m in model_registry.list_enabled()
-        if _model_available_for_pools(m, pools)
-    ]
-    return JSONResponse({"object": "list", "data": models})
+    )
 
 
 @router.get(
     "/models/{model_id}", tags=[_TAG_MODELS], dependencies=[Depends(verify_api_key)]
 )
-async def get_model_endpoint(model_id: str, request: Request):
+async def get_model_endpoint(
+    model_id: str,
+    request: Request,
+    anthropic_version: str | None = Header(default=None, alias="anthropic-version"),
+):
     import time
 
     spec = model_registry.get(model_id)
     pools = await _available_pools(request)
     if spec is None or not _model_available_for_pools(spec, pools):
+        if _is_anthropic_client(anthropic_version):
+            return JSONResponse(
+                {
+                    "type": "error",
+                    "error": {
+                        "type": "not_found_error",
+                        "message": f"Model {model_id!r} not found",
+                    },
+                },
+                status_code=404,
+            )
         return JSONResponse(
             {
                 "error": {
@@ -95,15 +158,11 @@ async def get_model_endpoint(model_id: str, request: Request):
             },
             status_code=404,
         )
-    return JSONResponse(
-        {
-            "id": spec.model_name,
-            "object": "model",
-            "created": int(time.time()),
-            "owned_by": "xai",
-            "name": spec.public_name,
-        }
-    )
+
+    created = int(time.time())
+    if _is_anthropic_client(anthropic_version):
+        return JSONResponse(_anthropic_model_payload(spec, created))
+    return JSONResponse(_openai_model_payload(spec, created))
 
 
 # ---------------------------------------------------------------------------
