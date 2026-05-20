@@ -3,12 +3,14 @@ from __future__ import annotations
 import argparse
 import datetime
 import logging
+import multiprocessing as mp
 import os
 import secrets
 import shutil
 import sys
 import time
 from pathlib import Path
+from typing import Any, Callable
 
 from DrissionPage import Chromium, ChromiumOptions
 from DrissionPage.errors import PageDisconnectedError
@@ -1359,14 +1361,55 @@ def load_run_count() -> int:
     return 10
 
 
+def _wait_while_paused(
+    pause_check: Callable[[], bool] | None,
+    stop_check: Callable[[], bool] | None,
+    *,
+    poll_interval: float = 0.5,
+) -> bool:
+    """Block while ``pause_check`` reports a paused state.
+
+    Returns ``True`` if the caller should stop entirely (stop signal raised),
+    ``False`` otherwise. When ``pause_check`` is ``None`` this is a no-op.
+    """
+    if pause_check is None:
+        return bool(stop_check and stop_check())
+
+    announced = False
+    while pause_check():
+        if stop_check and stop_check():
+            return True
+        if not announced:
+            announced = True
+            print("[Pause] 注册流程已暂停，等待恢复信号……")
+            if run_logger:
+                run_logger.info("注册流程已暂停，等待恢复信号")
+        time.sleep(poll_interval)
+
+    if announced:
+        print("[Pause] 收到恢复信号，继续执行。")
+        if run_logger:
+            run_logger.info("收到恢复信号，继续执行")
+
+    return bool(stop_check and stop_check())
+
+
 def run_batch(
     *,
     config_path: str | os.PathLike[str],
     count: int,
     output: str | os.PathLike[str] | None = None,
     extract_numbers: bool = False,
+    pause_check: Callable[[], bool] | None = None,
+    stop_check: Callable[[], bool] | None = None,
 ) -> list[str]:
-    """Run a maintainer registration batch and return collected SSO tokens."""
+    """Run a maintainer registration batch and return collected SSO tokens.
+
+    ``pause_check`` and ``stop_check`` are optional callables consulted between
+    rounds. When ``pause_check()`` returns truthy, the loop waits (without
+    starting a new round) until it returns falsy again. When ``stop_check()``
+    returns truthy, the loop exits gracefully after the current round.
+    """
     global run_logger, co
 
     set_config_path(config_path)
@@ -1387,9 +1430,26 @@ def run_batch(
     current_round = 0
 
     try:
+        if stop_check and stop_check():
+            return collected_sso
+        if _wait_while_paused(pause_check, stop_check):
+            return collected_sso
+
         start_browser()
         while True:
             if count > 0 and current_round >= count:
+                break
+
+            if stop_check and stop_check():
+                print("\n[Info] 收到停止信号，退出注册循环。")
+                if run_logger:
+                    run_logger.info("收到停止信号，退出注册循环")
+                break
+
+            if _wait_while_paused(pause_check, stop_check):
+                print("\n[Info] 暂停期间收到停止信号，退出注册循环。")
+                if run_logger:
+                    run_logger.info("暂停期间收到停止信号，退出注册循环")
                 break
 
             current_round += 1
@@ -1422,6 +1482,180 @@ def run_batch(
     return collected_sso
 
 
+def _worker_entry(
+    worker_id: int,
+    config_path_str: str,
+    count: int,
+    output_str: str,
+    extract_numbers: bool,
+    env_overrides: dict[str, str],
+    pause_event: Any,
+    stop_event: Any,
+    result_queue: Any,
+) -> None:
+    """Subprocess entry point for one registration worker.
+
+    Imported as a top-level function so it is picklable by ``spawn``.
+    Each worker isolates its browser temp directory under
+    ``MAINTAINER_TMP_PATH/worker_<id>`` to avoid Chromium user-data-dir
+    collisions when multiple browsers run concurrently.
+    """
+    try:
+        for key, val in env_overrides.items():
+            if val is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = str(val)
+
+        base_tmp = os.environ.get("MAINTAINER_TMP_PATH", "").strip()
+        base_path = Path(base_tmp).expanduser() if base_tmp else maintainer_browser_tmp_dir()
+        worker_tmp = base_path / f"worker_{worker_id}"
+        worker_tmp.mkdir(parents=True, exist_ok=True)
+        os.environ["MAINTAINER_TMP_PATH"] = str(worker_tmp)
+
+        def _is_paused() -> bool:
+            return pause_event is not None and not pause_event.is_set()
+
+        def _is_stopped() -> bool:
+            return stop_event is not None and stop_event.is_set()
+
+        tokens = run_batch(
+            config_path=config_path_str,
+            count=count,
+            output=output_str or None,
+            extract_numbers=extract_numbers,
+            pause_check=_is_paused if pause_event is not None else None,
+            stop_check=_is_stopped if stop_event is not None else None,
+        )
+        result_queue.put((worker_id, list(tokens), None))
+    except BaseException as exc:  # noqa: BLE001 - cross-process boundary
+        try:
+            result_queue.put((worker_id, [], f"{type(exc).__name__}: {exc}"))
+        except Exception:
+            pass
+
+
+def _split_count(count: int, workers: int) -> list[int]:
+    if workers <= 0:
+        return []
+    if count <= 0:
+        # ``count == 0`` means "loop forever". Each worker gets the same
+        # sentinel; the stop signal is the only way out.
+        return [0] * workers
+    per_worker = count // workers
+    remainder = count % workers
+    shares = [per_worker + (1 if i < remainder else 0) for i in range(workers)]
+    return [share for share in shares if share > 0]
+
+
+def _build_worker_output(base: Path, worker_id: int) -> Path:
+    suffix = base.suffix or ".txt"
+    return base.with_name(f"{base.stem}.w{worker_id}{suffix}")
+
+
+def run_batch_parallel(
+    *,
+    config_path: str | os.PathLike[str],
+    count: int,
+    workers: int = 1,
+    output: str | os.PathLike[str] | None = None,
+    extract_numbers: bool = False,
+    pause_check: Callable[[], bool] | None = None,
+    stop_check: Callable[[], bool] | None = None,
+    pause_event: Any = None,
+    stop_event: Any = None,
+    env_overrides: dict[str, str] | None = None,
+) -> list[str]:
+    """Run registration either sequentially (workers <= 1) or in parallel.
+
+    Parallel mode spawns ``workers`` child processes (start method ``spawn``)
+    that each maintain their own browser instance. ``pause_event`` / ``stop_event``
+    must be ``multiprocessing.synchronize.Event`` objects when ``workers > 1``
+    so they can be shared with child processes.
+    """
+    workers = max(1, int(workers))
+
+    if workers == 1:
+        if pause_check is None and pause_event is not None:
+            pause_check = lambda: not pause_event.is_set()  # noqa: E731
+        if stop_check is None and stop_event is not None:
+            stop_check = lambda: stop_event.is_set()  # noqa: E731
+        return run_batch(
+            config_path=config_path,
+            count=count,
+            output=output,
+            extract_numbers=extract_numbers,
+            pause_check=pause_check,
+            stop_check=stop_check,
+        )
+
+    if pause_event is None or stop_event is None:
+        raise ValueError(
+            "run_batch_parallel requires multiprocessing pause_event and stop_event when workers > 1"
+        )
+
+    shares = _split_count(count, workers)
+    if not shares:
+        return []
+
+    base_output = resolve_user_path(str(output or default_sso_file()))
+    config_path_str = str(config_path)
+
+    ctx = mp.get_context("spawn")
+    result_queue: Any = ctx.Queue()
+
+    processes: list[Any] = []
+    for i, share in enumerate(shares):
+        worker_output = _build_worker_output(base_output, i)
+        p = ctx.Process(
+            target=_worker_entry,
+            args=(
+                i,
+                config_path_str,
+                share,
+                str(worker_output),
+                bool(extract_numbers),
+                dict(env_overrides or {}),
+                pause_event,
+                stop_event,
+                result_queue,
+            ),
+            daemon=False,
+        )
+        processes.append(p)
+
+    for p in processes:
+        p.start()
+
+    try:
+        for p in processes:
+            p.join()
+    except KeyboardInterrupt:
+        stop_event.set()
+        if not pause_event.is_set():
+            pause_event.set()
+        for p in processes:
+            p.join()
+        raise
+
+    all_tokens: list[str] = []
+    errors: list[str] = []
+    while True:
+        try:
+            worker_id, tokens, error = result_queue.get_nowait()
+        except Exception:
+            break
+        if error:
+            errors.append(f"worker#{worker_id}: {error}")
+            print(f"[Warn] Worker {worker_id} 失败: {error}")
+        all_tokens.extend(tokens)
+
+    if errors:
+        print(f"[Warn] 并发注册存在 {len(errors)} 个 worker 异常")
+
+    return all_tokens
+
+
 def main() -> None:
     pre_parser = argparse.ArgumentParser(add_help=False)
     pre_parser.add_argument("--config")
@@ -1442,6 +1676,12 @@ def main() -> None:
         help=f"执行轮数，0 表示无限循环（默认读取配置文件 run.count，当前 {config_count}）",
     )
     parser.add_argument(
+        "--workers",
+        type=int,
+        default=1,
+        help="并发 worker 数量（1 为顺序运行，>1 会起多个子进程同时跑浏览器）",
+    )
+    parser.add_argument(
         "--output",
         default=str(default_sso_file()),
         help="sso 输出 txt 路径",
@@ -1456,12 +1696,27 @@ def main() -> None:
     if args.config:
         set_config_path(args.config)
 
-    run_batch(
-        config_path=get_config_path(),
-        count=args.count,
-        output=args.output,
-        extract_numbers=args.extract_numbers,
-    )
+    if args.workers and args.workers > 1:
+        ctx = mp.get_context("spawn")
+        pause_event = ctx.Event()
+        pause_event.set()
+        stop_event = ctx.Event()
+        run_batch_parallel(
+            config_path=get_config_path(),
+            count=args.count,
+            workers=args.workers,
+            output=args.output,
+            extract_numbers=args.extract_numbers,
+            pause_event=pause_event,
+            stop_event=stop_event,
+        )
+    else:
+        run_batch(
+            config_path=get_config_path(),
+            count=args.count,
+            output=args.output,
+            extract_numbers=args.extract_numbers,
+        )
 
 
 if __name__ == "__main__":

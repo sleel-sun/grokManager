@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import importlib.util
 import json
+import multiprocessing as mp
 import os
 import re
 import time
@@ -36,6 +37,7 @@ _SECRET_KEYS = {"email_admin_password", "api_token", "admin_password", "token"}
 
 class MaintainerRunRequest(BaseModel):
     count: int = Field(default=1, ge=1, le=100)
+    workers: int = Field(default=1, ge=1, le=8)
     email_worker_domain: str = Field(min_length=1, max_length=253)
     email_domains: list[str] = Field(min_length=1, max_length=20)
     email_admin_password: str = Field(default="", max_length=4096)
@@ -87,6 +89,7 @@ class MaintainerRunRequest(BaseModel):
 
 _state: dict[str, Any] = {
     "running": False,
+    "paused": False,
     "status": "idle",
     "message": "",
     "started_at": None,
@@ -94,9 +97,61 @@ _state: dict[str, Any] = {
     "token_count": 0,
     "config_path": "",
     "output_path": "",
+    "workers": 1,
 }
 _task: asyncio.Task | None = None
 _lock = asyncio.Lock()
+
+
+class _MaintainerController:
+    """Pause/stop signalling shared between request handlers and the worker(s).
+
+    Uses ``multiprocessing.Event`` so the same controller instance can drive
+    both single-thread (``workers=1``) and multi-process (``workers>1``)
+    registration runs. ``pause_event`` is *set* when running and *cleared*
+    when paused — matching :func:`app.maintainer.runner.run_batch_parallel`.
+    """
+
+    def __init__(self) -> None:
+        ctx = mp.get_context("spawn")
+        self._pause_event = ctx.Event()
+        self._pause_event.set()
+        self._stop_event = ctx.Event()
+
+    @property
+    def pause_event(self) -> Any:
+        return self._pause_event
+
+    @property
+    def stop_event(self) -> Any:
+        return self._stop_event
+
+    def is_paused(self) -> bool:
+        return not self._pause_event.is_set()
+
+    def is_stopped(self) -> bool:
+        return self._stop_event.is_set()
+
+    def pause(self) -> None:
+        self._pause_event.clear()
+
+    def resume(self) -> None:
+        self._pause_event.set()
+
+    def stop(self) -> None:
+        self._stop_event.set()
+        # Releasing pause guarantees any worker sleeping in the pause loop
+        # wakes up immediately and observes the stop signal.
+        self._pause_event.set()
+
+    def reset(self) -> None:
+        if not self._pause_event.is_set():
+            self._pause_event.set()
+        if self._stop_event.is_set():
+            self._stop_event.clear()
+
+
+_controller = _MaintainerController()
 
 
 def build_runtime_config(
@@ -134,7 +189,7 @@ def build_runtime_config(
             "pool": req.pool,
             "verify_ssl": req.verify_ssl,
         },
-        "run": {"count": req.count},
+        "run": {"count": req.count, "workers": req.workers},
         "web": {
             "headless": req.headless,
             "use_xvfb": req.use_xvfb,
@@ -166,6 +221,12 @@ def build_saved_config_response(payload: dict[str, Any]) -> dict[str, Any]:
         count = 1
     count = min(max(count, 1), 100)
 
+    try:
+        workers = int(run_conf.get("workers", 1) or 1)
+    except (TypeError, ValueError):
+        workers = 1
+    workers = min(max(workers, 1), 8)
+
     pool = str(api_conf.get("pool", "basic") or "basic").strip().lower()
     if pool not in {"basic", "super", "heavy"}:
         pool = "basic"
@@ -177,6 +238,7 @@ def build_saved_config_response(payload: dict[str, Any]) -> dict[str, Any]:
         "verify_ssl": bool(email_conf.get("verify_ssl", True)),
         "pool": pool,
         "count": count,
+        "workers": workers,
         "headless": bool(web_conf.get("headless", False)),
         "use_xvfb": bool(web_conf.get("use_xvfb", False)),
         "no_sandbox": bool(web_conf.get("no_sandbox", False)),
@@ -271,19 +333,26 @@ def _run_sync(
     config_path: Path,
     output_path: Path,
     count: int,
+    workers: int,
     extract_numbers: bool,
     env: dict[str, str],
+    pause_event: Any,
+    stop_event: Any,
 ) -> list[str]:
     previous = {key: os.environ.get(key) for key in _ENV_KEYS}
     try:
         os.environ.update(env)
-        from app.maintainer.runner import run_batch
+        from app.maintainer.runner import run_batch_parallel
 
-        return run_batch(
+        return run_batch_parallel(
             config_path=str(config_path),
             count=count,
+            workers=workers,
             output=str(output_path),
             extract_numbers=extract_numbers,
+            pause_event=pause_event,
+            stop_event=stop_event,
+            env_overrides=env if workers > 1 else None,
         )
     finally:
         for key, value in previous.items():
@@ -298,6 +367,7 @@ async def _run_background(
     config_path: Path,
     output_path: Path,
     env: dict[str, str],
+    controller: _MaintainerController,
 ) -> None:
     try:
         tokens = await asyncio.to_thread(
@@ -305,14 +375,25 @@ async def _run_background(
             config_path,
             output_path,
             req.count,
+            req.workers,
             req.extract_numbers,
             env,
+            controller.pause_event,
+            controller.stop_event,
         )
+        stopped = controller.is_stopped()
+        if stopped:
+            status = "stopped"
+            message = f"注册任务已停止，已采集 {len(tokens)} 个 token"
+        else:
+            status = "completed"
+            message = f"注册任务完成，采集 {len(tokens)} 个 token"
         _state.update(
             {
                 "running": False,
-                "status": "completed",
-                "message": f"注册任务完成，采集 {len(tokens)} 个 token",
+                "paused": False,
+                "status": status,
+                "message": message,
                 "finished_at": int(time.time()),
                 "token_count": len(tokens),
             }
@@ -322,11 +403,14 @@ async def _run_background(
         _state.update(
             {
                 "running": False,
+                "paused": False,
                 "status": "failed",
                 "message": f"{type(exc).__name__}: {exc}",
                 "finished_at": int(time.time()),
             }
         )
+    finally:
+        controller.reset()
 
 
 @router.get("/status")
@@ -334,6 +418,8 @@ async def maintainer_status():
     state = redact_state(dict(_state))
     state["available"] = _maintainer_available()
     state["log_tail"] = _log_tail()
+    state["paused"] = bool(state.get("paused")) or _controller.is_paused()
+    state["stop_requested"] = _controller.is_stopped()
     return state
 
 
@@ -395,9 +481,12 @@ async def maintainer_run(req: MaintainerRunRequest, request: Request):
         output_path = _output_path()
         env = _env_for_request(req, config_path)
 
+        _controller.reset()
+
         _state.update(
             {
                 "running": True,
+                "paused": False,
                 "status": "running",
                 "message": "注册任务已启动",
                 "started_at": int(time.time()),
@@ -405,10 +494,56 @@ async def maintainer_run(req: MaintainerRunRequest, request: Request):
                 "token_count": 0,
                 "config_path": str(config_path),
                 "output_path": str(output_path),
+                "workers": req.workers,
             }
         )
-        _task = asyncio.create_task(_run_background(req, config_path, output_path, env))
+        _task = asyncio.create_task(
+            _run_background(req, config_path, output_path, env, _controller)
+        )
 
+    return redact_state(dict(_state))
+
+
+def _require_running() -> None:
+    if _task is None or _task.done():
+        raise AppError(
+            "Maintainer task is not running",
+            kind=ErrorKind.VALIDATION,
+            code="maintainer_not_running",
+            status=409,
+        )
+
+
+@router.post("/pause")
+async def maintainer_pause():
+    async with _lock:
+        _require_running()
+        _controller.pause()
+        _state["paused"] = True
+        _state["status"] = "paused"
+        _state["message"] = "注册任务已暂停，当前轮结束后不会启动新轮"
+    return redact_state(dict(_state))
+
+
+@router.post("/resume")
+async def maintainer_resume():
+    async with _lock:
+        _require_running()
+        _controller.resume()
+        _state["paused"] = False
+        _state["status"] = "running"
+        _state["message"] = "注册任务已恢复"
+    return redact_state(dict(_state))
+
+
+@router.post("/stop")
+async def maintainer_stop():
+    async with _lock:
+        _require_running()
+        _controller.stop()
+        _state["paused"] = False
+        _state["status"] = "stopping"
+        _state["message"] = "已发出停止信号，等待当前轮结束后退出"
     return redact_state(dict(_state))
 
 
@@ -418,4 +553,5 @@ __all__ = [
     "build_runtime_config",
     "redact_state",
     "router",
+    "_MaintainerController",
 ]
