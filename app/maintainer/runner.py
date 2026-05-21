@@ -1411,6 +1411,7 @@ def run_batch(
     extract_numbers: bool = False,
     pause_check: Callable[[], bool] | None = None,
     stop_check: Callable[[], bool] | None = None,
+    progress_callback: Callable[[str, dict[str, Any]], None] | None = None,
 ) -> list[str]:
     """Run a maintainer registration batch and return collected SSO tokens.
 
@@ -1418,8 +1419,33 @@ def run_batch(
     rounds. When ``pause_check()`` returns truthy, the loop waits (without
     starting a new round) until it returns falsy again. When ``stop_check()``
     returns truthy, the loop exits gracefully after the current round.
+
+    ``progress_callback`` is an optional callable invoked with ``(event_name,
+    payload)`` for key transitions in the registration loop so callers (notably
+    the parallel orchestrator) can stream interleaved progress lines to the
+    UI. Events emitted:
+
+    - ``"started"`` — batch entered, payload contains ``count``.
+    - ``"browser_started"`` — Chromium boot succeeded.
+    - ``"round_start"`` — round entering, payload contains ``round``.
+    - ``"round_done"`` — round succeeded, payload contains ``round``,
+      ``sso_tail`` (last 4 chars), ``elapsed_s``.
+    - ``"round_failed"`` — round raised, payload contains ``round``,
+      ``error``, ``elapsed_s``.
+    - ``"finished"`` — batch about to return, payload contains ``token_count``.
+
+    The callback runs in the worker process; exceptions are swallowed so a
+    broken hook never aborts a registration loop.
     """
     global run_logger, co
+
+    def _emit(event: str, payload: dict[str, Any] | None = None) -> None:
+        if progress_callback is None:
+            return
+        try:
+            progress_callback(event, dict(payload or {}))
+        except Exception:
+            pass
 
     set_config_path(config_path)
     co = _configure_browser_options()
@@ -1437,6 +1463,7 @@ def run_batch(
 
     collected_sso: list[str] = []
     current_round = 0
+    _emit("started", {"count": count})
 
     try:
         if stop_check and stop_check():
@@ -1445,6 +1472,7 @@ def run_batch(
             return collected_sso
 
         start_browser()
+        _emit("browser_started", {})
         while True:
             if count > 0 and current_round >= count:
                 break
@@ -1463,6 +1491,8 @@ def run_batch(
 
             current_round += 1
             print(f"\n[*] 开始第 {current_round} 轮注册")
+            _emit("round_start", {"round": current_round})
+            round_started_at = time.monotonic()
 
             try:
                 result = run_single_registration(
@@ -1470,11 +1500,35 @@ def run_batch(
                     extract_numbers=extract_numbers,
                 )
                 collected_sso.append(result["sso"])
+                _emit(
+                    "round_done",
+                    {
+                        "round": current_round,
+                        "sso_tail": str(result.get("sso", ""))[-4:],
+                        "elapsed_s": round(time.monotonic() - round_started_at, 1),
+                    },
+                )
             except KeyboardInterrupt:
                 print("\n[Info] 收到中断信号，停止后续轮次。")
+                _emit(
+                    "round_failed",
+                    {
+                        "round": current_round,
+                        "error": "KeyboardInterrupt",
+                        "elapsed_s": round(time.monotonic() - round_started_at, 1),
+                    },
+                )
                 break
             except Exception as error:
                 print(f"[Error] 第 {current_round} 轮失败: {error}")
+                _emit(
+                    "round_failed",
+                    {
+                        "round": current_round,
+                        "error": f"{type(error).__name__}: {error}",
+                        "elapsed_s": round(time.monotonic() - round_started_at, 1),
+                    },
+                )
             finally:
                 restart_browser()
 
@@ -1487,6 +1541,7 @@ def run_batch(
             push_sso_to_api(collected_sso)
 
         stop_browser()
+        _emit("finished", {"token_count": len(collected_sso)})
 
     return collected_sso
 
@@ -1501,6 +1556,7 @@ def _worker_entry(
     pause_event: Any,
     stop_event: Any,
     result_queue: Any,
+    progress_queue: Any = None,
 ) -> None:
     """Subprocess entry point for one registration worker.
 
@@ -1510,7 +1566,25 @@ def _worker_entry(
     collisions when multiple browsers run concurrently. The per-worker run
     log is opened with ``label=f"w{worker_id}"`` so concurrent workers do not
     overwrite each other's log files.
+
+    When ``progress_queue`` is provided, the worker forwards every
+    :func:`run_batch` progress event as a
+    ``(worker_id, event_name, payload)`` tuple plus an initial ``"alive"``
+    event the moment the subprocess starts executing. The orchestrator drains
+    this queue so the UI can show per-worker progress as it happens (and so
+    we can prove on the orchestrator log that all workers are doing real work
+    concurrently instead of one-after-another).
     """
+    def _emit(event: str, payload: dict[str, Any] | None = None) -> None:
+        if progress_queue is None:
+            return
+        try:
+            progress_queue.put((int(worker_id), str(event), dict(payload or {})))
+        except Exception:
+            pass
+
+    _emit("alive", {"pid": os.getpid()})
+
     try:
         for key, val in env_overrides.items():
             if val is None:
@@ -1538,9 +1612,11 @@ def _worker_entry(
             extract_numbers=extract_numbers,
             pause_check=_is_paused if pause_event is not None else None,
             stop_check=_is_stopped if stop_event is not None else None,
+            progress_callback=_emit if progress_queue is not None else None,
         )
         result_queue.put((worker_id, list(tokens), None))
     except BaseException as exc:  # noqa: BLE001 - cross-process boundary
+        _emit("worker_failed", {"error": f"{type(exc).__name__}: {exc}"})
         try:
             result_queue.put((worker_id, [], f"{type(exc).__name__}: {exc}"))
         except Exception:
@@ -1585,6 +1661,7 @@ def run_batch_parallel(
     stop_event: Any = None,
     env_overrides: dict[str, str] | None = None,
     spawned_workers_callback: Callable[[int], None] | None = None,
+    progress_callback: Callable[[int, str, dict[str, Any]], None] | None = None,
 ) -> list[str]:
     """Run registration either sequentially (workers <= 1) or in parallel.
 
@@ -1646,6 +1723,7 @@ def run_batch_parallel(
 
     ctx = mp.get_context("spawn")
     result_queue: Any = ctx.Queue()
+    progress_queue: Any = ctx.Queue()
 
     processes: list[Any] = []
     for i, share in enumerate(shares):
@@ -1662,10 +1740,47 @@ def run_batch_parallel(
                 pause_event,
                 stop_event,
                 result_queue,
+                progress_queue,
             ),
             daemon=False,
         )
         processes.append(p)
+
+    import threading
+
+    drain_stop = threading.Event()
+
+    def _drain_progress() -> None:
+        """Consume worker progress events and write interleaved log lines.
+
+        Each line includes the wall-clock timestamp the orchestrator received
+        the event, so a viewer scrolling the orchestrator log can tell that
+        ``Worker #0: round_start round=1`` and ``Worker #2: round_start round=1``
+        landed within milliseconds of each other when workers are truly
+        concurrent (vs. seconds apart if they were serialised).
+        """
+        while not drain_stop.is_set():
+            try:
+                event = progress_queue.get(timeout=0.2)
+            except Exception:
+                continue
+            if event is None:
+                break
+            try:
+                worker_id, name, payload = event
+            except Exception:
+                continue
+            kv = " ".join(f"{k}={v}" for k, v in (payload or {}).items())
+            suffix = f" {kv}" if kv else ""
+            orch_logger.info("Worker #%d: %s%s", int(worker_id), str(name), suffix)
+            if progress_callback is not None:
+                try:
+                    progress_callback(int(worker_id), str(name), dict(payload or {}))
+                except Exception:
+                    pass
+
+    drain_thread = threading.Thread(target=_drain_progress, daemon=True)
+    drain_thread.start()
 
     for idx, p in enumerate(processes):
         p.start()
@@ -1686,7 +1801,20 @@ def run_batch_parallel(
             pause_event.set()
         for p in processes:
             p.join()
+        drain_stop.set()
+        try:
+            progress_queue.put(None)
+        except Exception:
+            pass
+        drain_thread.join(timeout=2)
         raise
+
+    drain_stop.set()
+    try:
+        progress_queue.put(None)
+    except Exception:
+        pass
+    drain_thread.join(timeout=2)
 
     all_tokens: list[str] = []
     errors: list[str] = []
