@@ -312,8 +312,14 @@ function renderSavedConfig(data) {
   passwordHint.textContent = data.has_email_admin_password
     ? '已保存 Worker 管理密码；留空会沿用已保存值，输入新密码会覆盖。'
     : '会保存到本机运行时配置文件；不会在状态接口和日志尾部返回。';
-  document.getElementById('count').value = data.count || 1;
-  document.getElementById('workers').value = data.workers || 1;
+  const savedCount = Number(data.count);
+  if (Number.isFinite(savedCount) && savedCount >= 1) {
+    document.getElementById('count').value = savedCount;
+  }
+  const savedWorkers = Number(data.workers);
+  if (Number.isFinite(savedWorkers) && savedWorkers >= 1) {
+    document.getElementById('workers').value = savedWorkers;
+  }
   document.getElementById('pool').value = data.pool || 'basic';
   document.getElementById('headless').checked = !!data.headless;
   document.getElementById('use-xvfb').checked = !!data.use_xvfb;
@@ -338,10 +344,22 @@ async function loadSavedConfig() {
   }
 }
 
+function clampPositiveInt(value, fallback, max) {
+  const num = Number(value);
+  if (!Number.isFinite(num) || num < 1) return fallback;
+  return Math.min(Math.floor(num), max);
+}
+
 function readPayload() {
+  const countEl = document.getElementById('count');
+  const workersEl = document.getElementById('workers');
+  const count = clampPositiveInt(countEl.value, 1, 100);
+  const workers = clampPositiveInt(workersEl.value, 1, 8);
+  countEl.value = count;
+  workersEl.value = workers;
   return {
-    count: Number(document.getElementById('count').value || 1),
-    workers: Number(document.getElementById('workers').value || 1),
+    count,
+    workers,
     email_worker_domain: document.getElementById('worker-domain').value.trim(),
     email_domains: document.getElementById('email-domains').value.split(',').map((item) => item.trim()).filter(Boolean),
     email_admin_password: document.getElementById('email-admin-password').value,
