@@ -212,7 +212,7 @@
             </div>
             <div class="status-tile">
               <div class="status-label">实际并发 worker</div>
-              <div class="status-value" id="spawned-workers">-</div>
+              <div class="status-value" id="spawned-workers">未运行</div>
             </div>
             <div class="status-tile">
               <div class="status-label">输出文件</div>
@@ -284,11 +284,22 @@ function renderStatus(data) {
   tokenCount.textContent = String(data.token_count || 0);
   const requested = Number(data.workers);
   const spawned = Number(data.spawned_workers);
+  const running = status === 'running' || status === 'paused' || status === 'stopping';
   if (Number.isFinite(spawned) && spawned > 0) {
     const requestedStr = Number.isFinite(requested) && requested > 0 ? String(requested) : '?';
     spawnedWorkersEl.textContent = `${spawned} / ${requestedStr}`;
+  } else if (running) {
+    spawnedWorkersEl.textContent = '启动中…';
   } else {
-    spawnedWorkersEl.textContent = '-';
+    const formEl = document.getElementById('workers');
+    const formWorkers = Number(formEl ? formEl.value : NaN);
+    const reqStr =
+      Number.isFinite(formWorkers) && formWorkers > 0
+        ? String(formWorkers)
+        : Number.isFinite(requested) && requested > 0
+          ? String(requested)
+          : '1';
+    spawnedWorkersEl.textContent = `未运行 (待启动 ${reqStr})`;
   }
   setText(outputPath, data.output_path);
   setText(configPath, data.config_path);
@@ -452,6 +463,18 @@ resumeBtn.addEventListener('click', () => sendControl('/maintainer/resume', '已
 stopBtn.addEventListener('click', () => sendControl('/maintainer/stop', '已发送停止信号'));
 
 refreshBtn.addEventListener('click', refreshStatus);
+
+// When the user changes the workers input, instantly update the "实际并发 worker" card
+// preview so they don't have to wait for the 3s poll. Only the preview text
+// changes — actual runtime value comes from /status polling.
+document.getElementById('workers').addEventListener('input', () => {
+  const status = statePill.textContent || 'idle';
+  const running = status === 'running' || status === 'paused' || status === 'stopping';
+  if (running) return;
+  const formWorkers = Number(document.getElementById('workers').value);
+  const reqStr = Number.isFinite(formWorkers) && formWorkers > 0 ? String(formWorkers) : '1';
+  spawnedWorkersEl.textContent = `未运行 (待启动 ${reqStr})`;
+});
 
 (async () => {
   await waitI18n();
