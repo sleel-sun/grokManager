@@ -36,8 +36,15 @@ _SECRET_KEYS = {"email_admin_password", "api_token", "admin_password", "token"}
 
 
 class MaintainerRunRequest(BaseModel):
-    count: int = Field(default=1, ge=1, le=100)
-    workers: int = Field(default=1, ge=1, le=8)
+    # ``count`` and ``workers`` deliberately have NO upper bound. The historical
+    # caps (count<=100, workers<=8) silently clamped values that exceeded them,
+    # so a user submitting workers=10 saw only 8 worker windows pop up and read
+    # that as "the parallelism setting did not take effect". Operators are
+    # responsible for picking values their hardware can sustain; the run-time
+    # already reports the actually spawned count via ``spawned_workers`` so
+    # silent clamping is no longer needed as a guardrail.
+    count: int = Field(default=1, ge=1)
+    workers: int = Field(default=1, ge=1)
     email_worker_domain: str = Field(min_length=1, max_length=253)
     email_domains: list[str] = Field(min_length=1, max_length=20)
     email_admin_password: str = Field(default="", max_length=4096)
@@ -221,13 +228,13 @@ def build_saved_config_response(payload: dict[str, Any]) -> dict[str, Any]:
         count = int(run_conf.get("count", 1) or 1)
     except (TypeError, ValueError):
         count = 1
-    count = min(max(count, 1), 100)
+    count = max(count, 1)
 
     try:
         workers = int(run_conf.get("workers", 1) or 1)
     except (TypeError, ValueError):
         workers = 1
-    workers = min(max(workers, 1), 8)
+    workers = max(workers, 1)
 
     pool = str(api_conf.get("pool", "basic") or "basic").strip().lower()
     if pool not in {"basic", "super", "heavy"}:

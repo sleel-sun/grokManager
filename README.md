@@ -211,7 +211,7 @@ uv run grokmanager-maintainer --count 5 --workers 2  # 2 个并发 worker × 每
 
 ### 多进程并发注册
 
-- CLI 新增 `--workers N`（1-8），`N>1` 时以 `multiprocessing.spawn` 拉起 **恰好 `N`** 个子进程并行注册，每个子进程独立跑 `count` 轮迭代
+- CLI 新增 `--workers N`（`N≥1`，**无上限**；按机器内存 / CPU / 上游配额自行控制），`N>1` 时以 `multiprocessing.spawn` 拉起 **恰好 `N`** 个子进程并行注册，每个子进程独立跑 `count` 轮迭代
 - **语义：`count` 是「每个 worker 的注册轮数」**，本次任务总注册数 = `workers × count`。这保证选了并发就一定能看到 `N` 个浏览器同时起来（旧语义是「总数 / workers」平摊，在 `count < workers` 时会静默少起 worker）
 - 每个 worker 的 SSO 输出文件以 `.w{idx}` 为后缀避免冲突，例如 `sso_2026-05-20T10-30-00.w0.txt`、`sso_..w1.txt`
 - 每个 worker 的运行日志以 `run_w{id}_{ts}_pid{X}.log` 存放；orchestrator 日志 `run_parallel_{ts}_pid{X}.log` 集中记录「启动/结束”事件（含每个 worker 的 pid 和 exitcode），WebUI 会优先展示该 orchestrator 日志，以便直接核对真实并发数

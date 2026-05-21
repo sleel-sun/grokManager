@@ -178,8 +178,8 @@
             <div class="inline">
               <div class="field">
                 <label for="count">注册数量</label>
-                <input class="input" id="count" name="count" type="number" min="1" max="100" value="1" required>
-                <small>每个 worker 的注册轮数；总注册数 = workers × 此值。</small>
+                <input class="input" id="count" name="count" type="number" min="1" value="1" required>
+                <small>每个 worker 的注册轮数；总注册数 = workers × 此值。无上限，按账号池容量和上游配额自行控制。</small>
               </div>
               <div class="field">
                 <label for="pool">写入账号池</label>
@@ -193,8 +193,8 @@
 
             <div class="field">
               <label for="workers">并发 worker 数</label>
-              <input class="input" id="workers" name="workers" type="number" min="1" max="8" value="1" required>
-              <small>同时起多少个浏览器子进程（1 为顺序运行）。workers × 注册数量 = 本次任务总注册数。资源占用随 workers 明显上升。</small>
+              <input class="input" id="workers" name="workers" type="number" min="1" value="1" required>
+              <small>同时起多少个浏览器子进程（1 为顺序运行）。workers × 注册数量 = 本次任务总注册数。无上限，但每个 worker 大约要 0.5-1GB 内存 + 1 个 Chromium 进程，请按机器实际容量调；运行后查看「实际并发 worker」状态卡 / orchestrator 日志确认 spawn 数。</small>
             </div>
 
             <div class="field">
@@ -466,17 +466,22 @@ async function loadSavedConfig() {
   }
 }
 
-function clampPositiveInt(value, fallback, max) {
+function clampPositiveInt(value, fallback) {
+  // No upper bound. Operators are responsible for picking values their
+  // hardware can sustain — the server reports the actual ``spawned_workers``
+  // count back via /maintainer/status, so silently clamping the submission
+  // would just hide the user's intent (the historical bug users described
+  // as "workers 没生效").
   const num = Number(value);
   if (!Number.isFinite(num) || num < 1) return fallback;
-  return Math.min(Math.floor(num), max);
+  return Math.floor(num);
 }
 
 function readPayload() {
   const countEl = document.getElementById('count');
   const workersEl = document.getElementById('workers');
-  const count = clampPositiveInt(countEl.value, 1, 100);
-  const workers = clampPositiveInt(workersEl.value, 1, 8);
+  const count = clampPositiveInt(countEl.value, 1);
+  const workers = clampPositiveInt(workersEl.value, 1);
   countEl.value = count;
   workersEl.value = workers;
   return {
