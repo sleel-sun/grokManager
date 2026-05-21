@@ -380,11 +380,11 @@ function renderStatus(data) {
   tokenCount.textContent = String(data.token_count || 0);
   const requested = Number(data.workers);
   const spawned = Number(data.spawned_workers);
-  const running = status === 'running' || status === 'paused' || status === 'stopping';
+  const isActive = status === 'running' || status === 'paused' || status === 'stopping';
   if (Number.isFinite(spawned) && spawned > 0) {
     const requestedStr = Number.isFinite(requested) && requested > 0 ? String(requested) : '?';
     spawnedWorkersEl.textContent = `${spawned} / ${requestedStr}`;
-  } else if (running) {
+  } else if (isActive) {
     spawnedWorkersEl.textContent = '启动中…';
   } else {
     const formEl = document.getElementById('workers');
