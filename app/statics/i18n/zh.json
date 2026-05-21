@@ -4,12 +4,12 @@
     "connectionFailed": "连接失败"
   },
   "login": {
-    "adminPageTitle": "Grok2API - Admin",
+    "adminPageTitle": "grokManager - Admin",
     "adminTitle": "管理后台",
     "adminSubtitle": "请输入后台密码以继续",
     "adminPlaceholder": "后台密码",
     "continue": "继续",
-    "webuiPageTitle": "Grok2API - WebUI",
+    "webuiPageTitle": "grokManager - WebUI",
     "webuiTitle": "WebUI",
     "webuiSubtitle": "请输入访问密钥",
     "webuiPlaceholder": "访问密钥",
@@ -43,7 +43,7 @@
       "chatkit": "ChatKit"
     },
     "chat": {
-      "pageTitle": "Grok2API - WebChat",
+      "pageTitle": "grokManager - WebChat",
       "sidebarTitle": "会话",
       "newChat": "新建聊天",
       "toggleSidebar": "折叠侧边栏",
@@ -89,7 +89,7 @@
       }
     },
     "chatkit": {
-      "pageTitle": "Grok2API - ChatKit",
+      "pageTitle": "grokManager - ChatKit",
       "voiceLabel": "声音",
       "personalityLabel": "个性",
       "instructionLabel": "提示",
@@ -116,7 +116,7 @@
       "invalidToken": "语音 token 返回无效"
     },
     "masonry": {
-      "pageTitle": "Grok2API - Masonry",
+      "pageTitle": "grokManager - Masonry",
       "title": "Masonry",
       "qualitySpeed": "速度",
       "qualityQuality": "质量",
@@ -147,9 +147,9 @@
     }
   },
   "account": {
-    "pageTitle": "Grok2API - 账户管理",
+    "pageTitle": "grokManager - 账户管理",
     "pageHeading": "账户管理",
-    "pageSubtitle": "统一管理 Grok2API 的 xAI 账户池、额度与运行状态。",
+    "pageSubtitle": "统一管理 grokManager 的 xAI 账户池、额度与运行状态。",
     "actionImport": "导入账户",
     "actionAdd": "新增账户",
     "actionImportShort": "导入",
@@ -298,9 +298,9 @@
     }
   },
   "config": {
-    "pageTitle": "Grok2API - 配置管理",
+    "pageTitle": "grokManager - 配置管理",
     "pageHeading": "配置管理",
-    "pageSubtitle": "管理 Grok2API 系统运行时参数与服务默认行为。",
+    "pageSubtitle": "管理 grokManager 系统运行时参数与服务默认行为。",
     "resetShort": "重置",
     "saveShort": "保存",
     "resetChanges": "重置更改",
@@ -615,7 +615,7 @@
     }
   },
   "cache": {
-    "pageTitle": "Grok2API - 缓存管理",
+    "pageTitle": "grokManager - 缓存管理",
     "pageHeading": "缓存管理",
     "pageSubtitle": "查看并管理本地缓存文件、容量上限与账户在线资产。",
     "sectionOverview": "缓存概览",

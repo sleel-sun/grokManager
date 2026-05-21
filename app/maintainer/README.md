@@ -1,6 +1,6 @@
 # Grok Maintainer
 
-浏览器注册器已经并入 `grok2api` 仓库，作为可选子工具维护，不会影响 API 服务默认依赖。
+浏览器注册器已经并入 `grokManager` 仓库，作为可选子工具维护，不会影响 API 服务默认依赖。
 
 ## 安装
 
@@ -12,7 +12,7 @@ uv sync --extra maintainer
 ## 启动
 
 ```bash
-uv run grok2api-maintainer --count 5
+uv run grokmanager-maintainer --count 5
 uv run python -m app.maintainer --count 0
 ```
 
@@ -40,4 +40,4 @@ uv run python -m app.maintainer --count 0
 - Python 3.13+
 - Chrome 或 Chromium
 - 自建临时邮箱 Worker
-- 可选：本仓库运行中的 `grok2api` 服务，用于自动回写 token
+- 可选：本仓库运行中的 `grokManager` 服务，用于自动回写 token

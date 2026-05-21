@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title data-i18n="config.pageTitle">Grok2API - 配置管理</title>
+  <title data-i18n="config.pageTitle">grokManager - 配置管理</title>
   <link rel="icon" href="/favicon.ico?v={{APP_VERSION}}">
   <link href="https://cdn.jsdelivr.net/npm/geist@1.0.0/dist/fonts/geist-sans/style.css" rel="stylesheet">
   <link href="/static/css/app.css?v={{APP_VERSION}}" rel="stylesheet">
@@ -836,7 +836,7 @@ function buildSchema() {
 }
 
 function applyConfigI18n() {
-  document.title = tr('config.pageTitle', null, 'Grok2API - 配置管理');
+  document.title = tr('config.pageTitle', null, 'grokManager - 配置管理');
   SCHEMA = buildSchema();
   if (!_configLoaded) return;
   renderAll();

@@ -11,7 +11,7 @@ _PYPROJECT = _ROOT / "pyproject.toml"
 
 @lru_cache(maxsize=1)
 def get_project_meta() -> dict[str, str]:
-    data: dict[str, str] = {"name": "grok2api", "version": "0.0.0"}
+    data: dict[str, str] = {"name": "grokManager", "version": "0.0.0"}
     if not _PYPROJECT.exists():
         return data
     with _PYPROJECT.open("rb") as fh:

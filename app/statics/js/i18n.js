@@ -1,4 +1,4 @@
-/* Grok2API — i18n */
+/* grokManager — i18n */
 (function(){
   var KEY='grok2api_lang',
       LANGS={

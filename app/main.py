@@ -1,4 +1,4 @@
-"""Grok2API application entry point.
+"""grokManager application entry point.
 
 Start with:
   uv run granian --interface asgi --host 0.0.0.0 --port 8000 --workers 1 app.main:app
@@ -107,7 +107,7 @@ async def lifespan(app: FastAPI):
         max_files=_config.get_int("logging.max_files", 7),
     )
     logger.info(
-        "application startup: service=grok2api python={} platform={}",
+        "application startup: service=grokManager python={} platform={}",
         sys.version.split()[0],
         platform.system(),
     )
@@ -325,7 +325,7 @@ def create_app() -> FastAPI:
         {"name": "WebUI - Voice", "description": "WebUI voice API endpoints."},
     ]
     app = FastAPI(
-        title="Grok2API",
+        title="grokManager",
         version=get_project_version(),
         description="OpenAI-compatible API gateway for Grok",
         openapi_tags=openapi_tags,

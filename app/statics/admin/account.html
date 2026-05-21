@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title data-i18n="account.pageTitle">Grok2API - 账户管理</title>
+  <title data-i18n="account.pageTitle">grokManager - 账户管理</title>
   <link rel="icon" href="/favicon.ico?v={{APP_VERSION}}">
   <link href="https://cdn.jsdelivr.net/npm/geist@1.0.0/dist/fonts/geist-sans/style.css" rel="stylesheet">
   <link href="/static/css/app.css?v={{APP_VERSION}}" rel="stylesheet">
@@ -721,7 +721,7 @@
   <div class="page-hd">
     <div>
       <div class="page-title" data-i18n="account.pageHeading">账户列表</div>
-      <div class="page-sub" data-i18n="account.pageSubtitle">管理 Grok2API 的 xAI 服务账户池。</div>
+      <div class="page-sub" data-i18n="account.pageSubtitle">管理 grokManager 的 xAI 服务账户池。</div>
     </div>
     <div class="page-actions">
       <button onclick="openImport()" class="page-action-btn">
@@ -1110,7 +1110,7 @@ function tr(key, params, fallback) {
 }
 
 function applyAccountI18n() {
-  document.title = tr('account.pageTitle', null, 'Grok2API - 账户管理');
+  document.title = tr('account.pageTitle', null, 'grokManager - 账户管理');
   document.querySelectorAll('#page-size-sel option').forEach(opt => {
     opt.textContent = tr('account.pageSizeOption', { n: opt.value }, `${opt.value} / 页`);
   });

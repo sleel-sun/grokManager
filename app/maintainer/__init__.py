@@ -1,1 +1,1 @@
-"""Optional browser-driven maintainer tooling for Grok2API."""
+"""Optional browser-driven maintainer tooling for grokManager."""
