@@ -90,6 +90,35 @@
     .status-pill.paused { background:#fff1c4; color:#8a5a00; }
     .status-pill.stopping { background:#e8e1d1; color:#564a35; }
     .status-pill.stopped { background:#e2e8f0; color:#1f2937; }
+    .worker-grid {
+      display:grid;
+      grid-template-columns:repeat(auto-fill, minmax(220px, 1fr));
+      gap:8px;
+      margin:12px 0;
+    }
+    .worker-card {
+      border:1px solid #e0d8c8;
+      border-radius:10px;
+      padding:10px 12px;
+      background:#fbf8f1;
+      font-size:12px;
+    }
+    .worker-card.active { background:#f1fbe7; border-color:#a9c98f; }
+    .worker-card.failed { background:#fde6e0; border-color:#d9a294; }
+    .worker-card.done { background:#e7f7df; border-color:#86a96b; }
+    .worker-card.idle { background:#f4eee0; }
+    .worker-card h4 { margin:0 0 4px; font-size:13px; font-weight:700; color:#221f1a; }
+    .worker-card .worker-event {
+      font-family:ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size:11px;
+      color:#564a35;
+    }
+    .worker-card .worker-meta {
+      margin-top:4px;
+      font-size:11px;
+      color:#92887b;
+      line-height:1.4;
+    }
     .log {
       min-height:240px;
       max-height:420px;
@@ -223,6 +252,7 @@
               <div class="status-value" id="config-path">-</div>
             </div>
           </div>
+          <div class="worker-grid" id="worker-grid" hidden></div>
           <pre class="log" id="log-box">暂无日志</pre>
           <div class="notice" id="state-message"></div>
         </div>
@@ -251,6 +281,7 @@ const tokenCount = document.getElementById('token-count');
 const spawnedWorkersEl = document.getElementById('spawned-workers');
 const outputPath = document.getElementById('output-path');
 const configPath = document.getElementById('config-path');
+const workerGrid = document.getElementById('worker-grid');
 const logBox = document.getElementById('log-box');
 const stateMessage = document.getElementById('state-message');
 
@@ -277,6 +308,71 @@ function setText(el, value) {
   el.textContent = value == null || value === '' ? '-' : String(value);
 }
 
+// Map orchestrator event names → display label + status class for the card.
+const WORKER_EVENT_LABELS = {
+  alive: { text: '已就绪', cls: 'active' },
+  started: { text: '已启动批次', cls: 'active' },
+  browser_started: { text: '浏览器已启动', cls: 'active' },
+  round_start: { text: '注册中…', cls: 'active' },
+  round_done: { text: '完成一轮', cls: 'done' },
+  round_failed: { text: '本轮失败', cls: 'failed' },
+  finished: { text: '已结束', cls: 'done' },
+  worker_failed: { text: '进程异常', cls: 'failed' },
+};
+
+function renderWorkerGrid(perWorker, spawned) {
+  const entries = perWorker && typeof perWorker === 'object' ? Object.entries(perWorker) : [];
+  if (!entries.length) {
+    workerGrid.hidden = true;
+    workerGrid.innerHTML = '';
+    return;
+  }
+  // Sort by worker id (numeric).
+  entries.sort((a, b) => Number(a[0]) - Number(b[0]));
+  workerGrid.hidden = false;
+  workerGrid.innerHTML = entries
+    .map(([id, snap]) => {
+      const evt = (snap && snap.last_event) || '';
+      const label = WORKER_EVENT_LABELS[evt] || { text: evt || '空闲', cls: 'idle' };
+      const lines = [];
+      if (snap && Number.isFinite(snap.last_round)) {
+        lines.push(`第 ${snap.last_round} 轮`);
+      }
+      if (snap && Number.isFinite(snap.rounds_done)) {
+        lines.push(`完成 ${snap.rounds_done} 个`);
+      }
+      if (snap && snap.last_sso_tail) {
+        lines.push(`最近 SSO …${snap.last_sso_tail}`);
+      }
+      if (snap && Number.isFinite(snap.last_elapsed_s)) {
+        lines.push(`上轮耗时 ${snap.last_elapsed_s.toFixed(1)}s`);
+      }
+      if (snap && snap.last_error) {
+        lines.push(`错误: ${escapeHtml(snap.last_error)}`);
+      }
+      const ts = snap && snap.last_event_at
+        ? new Date(snap.last_event_at).toLocaleTimeString()
+        : '';
+      const meta = lines.join(' · ');
+      return `
+        <div class="worker-card ${label.cls}">
+          <h4>Worker #${escapeHtml(id)}</h4>
+          <div class="worker-event">${escapeHtml(label.text)}${ts ? ` · ${escapeHtml(ts)}` : ''}</div>
+          ${meta ? `<div class="worker-meta">${meta}</div>` : ''}
+        </div>`;
+    })
+    .join('');
+}
+
+function escapeHtml(value) {
+  return String(value == null ? '' : value)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
 function renderStatus(data) {
   const status = data.status || 'idle';
   statePill.textContent = status;
@@ -293,6 +389,7 @@ function renderStatus(data) {
   setText(outputPath, data.output_path);
   setText(configPath, data.config_path);
   setText(stateMessage, data.message);
+  renderWorkerGrid(data.per_worker_progress, data.spawned_workers);
   logBox.textContent = Array.isArray(data.log_tail) && data.log_tail.length
     ? data.log_tail.join('\n')
     : '暂无日志';
