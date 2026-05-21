@@ -10,8 +10,8 @@ window.renderWebuiHeader = async function renderWebuiHeader() {
       return 'v1';
     }
   })();
-  const HEADER_HTML_CACHE_KEY = `grok2api.webui_header_html.${scriptVersion}`;
-  const META_VERSION_CACHE_KEY = `grok2api.meta_version.${scriptVersion}`;
+  const HEADER_HTML_CACHE_KEY = `grokmanager.webui_header_html.${scriptVersion}`;
+  const META_VERSION_CACHE_KEY = `grokmanager.meta_version.${scriptVersion}`;
   let appVersion = '';
 
   const readSessionCache = (key) => {
@@ -112,10 +112,10 @@ window.renderWebuiHeader = async function renderWebuiHeader() {
   };
 
   const loadVersion = async () => {
-    const cachedVersion = window.__grok2apiMetaVersion || readSessionCache(META_VERSION_CACHE_KEY);
+    const cachedVersion = window.__grokmanagerMetaVersion || readSessionCache(META_VERSION_CACHE_KEY);
     if (cachedVersion) {
       appVersion = String(cachedVersion).trim();
-      window.__grok2apiMetaVersion = appVersion;
+      window.__grokmanagerMetaVersion = appVersion;
       return;
     }
     try {
@@ -123,7 +123,7 @@ window.renderWebuiHeader = async function renderWebuiHeader() {
       if (!res.ok) throw new Error('meta unavailable');
       const data = await res.json();
       appVersion = String(data?.version || '').trim();
-      window.__grok2apiMetaVersion = appVersion;
+      window.__grokmanagerMetaVersion = appVersion;
       writeSessionCache(META_VERSION_CACHE_KEY, appVersion);
     } catch {
       appVersion = '';
@@ -152,15 +152,15 @@ window.renderWebuiHeader = async function renderWebuiHeader() {
   await loadVersion();
 
   try {
-    const cachedHtml = window.__grok2apiWebuiHeaderHtml || readSessionCache(HEADER_HTML_CACHE_KEY);
+    const cachedHtml = window.__grokmanagerWebuiHeaderHtml || readSessionCache(HEADER_HTML_CACHE_KEY);
     if (cachedHtml) {
       mount.innerHTML = cachedHtml;
     } else {
-      const res = await fetch('/static/webui/header.html');
+      const res = await fetch(`/static/webui/header.html?v=${encodeURIComponent(scriptVersion)}`);
       if (!res.ok) throw new Error('header unavailable');
       const html = await res.text();
       mount.innerHTML = html;
-      window.__grok2apiWebuiHeaderHtml = html;
+      window.__grokmanagerWebuiHeaderHtml = html;
       writeSessionCache(HEADER_HTML_CACHE_KEY, html);
     }
   } catch {
@@ -168,10 +168,10 @@ window.renderWebuiHeader = async function renderWebuiHeader() {
       <header class="admin-header webui-header-bar">
         <div class="admin-header-inner webui-header-inner">
           <div class="admin-brand-wrap">
-            <a href="https://github.com/chenyme/grok2api" target="_blank" rel="noopener" class="admin-brand-link">
-              <span class="admin-brand">Grok2API</span>
+            <a href="https://github.com/sleel-sun/grokManager" target="_blank" rel="noopener" class="admin-brand-link">
+              <span class="admin-brand">grokManager</span>
             </a>
-            <a href="https://blog.cheny.me/" target="_blank" rel="noopener" class="admin-username" id="hd-user">@Chenyme</a>
+            <a href="https://github.com/sleel-sun" target="_blank" rel="noopener" class="admin-username" id="hd-user">@sleel-sun</a>
           </div>
           <nav class="admin-nav">
             <a href="/webui/chat" class="admin-nav-link" data-nav="/webui/chat" data-i18n="webui.header.chat">聊天</a>
