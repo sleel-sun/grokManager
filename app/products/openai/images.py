@@ -8,6 +8,7 @@ import re
 import time
 from dataclasses import dataclass
 from typing import Any, AsyncGenerator, Awaitable, Callable
+from urllib.parse import urlparse
 
 import orjson
 
@@ -566,6 +567,15 @@ _EDIT_MAX_N = 2
 _EDIT_MAX_ATTEMPTS = 2
 
 
+def _is_upstream_asset_content_url(value: str) -> bool:
+    parsed = urlparse(value)
+    return (
+        parsed.scheme == "https"
+        and parsed.netloc == "assets.grok.com"
+        and parsed.path.endswith("/content")
+    )
+
+
 def _normalize_edit_inputs(image_inputs: list[str]) -> list[str]:
     """Validate and normalize image-edit reference inputs."""
     cleaned = [item.strip() for item in image_inputs if isinstance(item, str) and item.strip()]
@@ -587,6 +597,8 @@ def _normalize_edit_size(size: str) -> str:
 
 async def _prepare_edit_reference(token: str, image_input: str, index: int) -> str:
     """Upload one edit reference and resolve it to the upstream content URL."""
+    if _is_upstream_asset_content_url(image_input):
+        return image_input
     try:
         file_id, file_uri = await upload_from_input(token, image_input)
         return resolve_uploaded_asset_reference(token, file_id, file_uri)
