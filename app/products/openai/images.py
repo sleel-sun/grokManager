@@ -21,6 +21,7 @@ from app.control.model.registry import resolve as resolve_model
 from app.control.model.enums import ModeId
 from app.control.model.spec import ModelSpec
 from app.control.account.enums import FeedbackKind
+from app.control.proxy.models import ProxyFeedback, ProxyFeedbackKind
 from app.dataplane.reverse.transport.imagine_ws import stream_images
 from app.dataplane.reverse.protocol.xai_chat import (
     StreamAdapter,
@@ -41,6 +42,7 @@ from app.dataplane.reverse.transport.asset_upload import (
     upload_from_input,
 )
 from app.dataplane.reverse.transport.media import create_media_post
+from app.dataplane.reverse.transport._proxy_feedback import upstream_feedback
 from app.dataplane.proxy import get_proxy_runtime
 from app.dataplane.proxy.adapters.headers import build_http_headers, build_sso_cookie
 from app.dataplane.proxy.adapters.session import ResettableSession, build_session_kwargs
@@ -54,6 +56,11 @@ from ._format import (
 from .chat import _quota_sync, _fail_sync, _feedback_kind
 
 _X_USER_ID_RE = re.compile(r"(?:^|;\s*)x-userid=([^;]+)")
+_CLOUDFLARE_CHALLENGE_MARKERS = (
+    "just a moment",
+    "cf-challenge",
+    "cloudflare",
+)
 
 
 # ---------------------------------------------------------------------------
@@ -228,6 +235,21 @@ def _output_content(image: _ImageOutput, *, chat_format: bool) -> str:
 _LITE_IMAGE_MODELS = frozenset({"grok-imagine-image-lite"})
 # WS models that use quality mode (enable_pro=True).
 _PRO_IMAGE_MODELS  = frozenset({"grok-imagine-image-pro"})
+
+
+def _is_cloudflare_challenge_body(body: str) -> bool:
+    haystack = (body or "").lower()
+    return any(marker in haystack for marker in _CLOUDFLARE_CHALLENGE_MARKERS)
+
+
+def _image_generation_upstream_error_message(status_code: int, body: str) -> str:
+    message = f"Image-generation upstream returned {status_code}"
+    if status_code == 403 and _is_cloudflare_challenge_body(body):
+        return (
+            f"{message} (Cloudflare challenge; configure proxy.clearance "
+            "manual cf_cookies/user_agent or FlareSolverr, then restart)"
+        )
+    return message
 
 
 async def generate(
@@ -899,14 +921,26 @@ async def _stream_lite_generate(
             stream  = True,
         )
         if response.status_code != 200:
-            body = response.content.decode("utf-8", "replace")[:300]
-            raise UpstreamError(
-                f"Image-generation upstream returned {response.status_code}",
+            body = response.content.decode("utf-8", "replace")[:400]
+            exc = UpstreamError(
+                _image_generation_upstream_error_message(response.status_code, body),
                 status = response.status_code,
                 body   = body,
             )
-        async for line in response.aiter_lines():
-            yield line
+            logger.warning(
+                "lite image generation upstream failed: status={} body={}",
+                response.status_code,
+                body,
+            )
+            await proxy.feedback(lease, upstream_feedback(exc))
+            raise exc
+        try:
+            async for line in response.aiter_lines():
+                yield line
+        except Exception:
+            await proxy.feedback(lease, ProxyFeedback(kind=ProxyFeedbackKind.TRANSPORT_ERROR))
+            raise
+        await proxy.feedback(lease, ProxyFeedback(kind=ProxyFeedbackKind.SUCCESS, status_code=200))
 
 
 async def _run_lite_request(

@@ -13,6 +13,13 @@ if TYPE_CHECKING:
     from .repository import AccountRepository
 
 
+_CLOUDFLARE_CHALLENGE_MARKERS = (
+    "just a moment",
+    "cf-challenge",
+    "cloudflare",
+)
+
+
 async def mark_account_invalid_credentials(
     repo: "AccountRepository",
     token: str,
@@ -75,8 +82,21 @@ def feedback_kind_for_error(exc: BaseException | None) -> FeedbackKind:
     if status == 401:
         return FeedbackKind.UNAUTHORIZED
     if status == 403:
+        if _is_cloudflare_challenge_error(exc):
+            return FeedbackKind.SERVER_ERROR
         return FeedbackKind.FORBIDDEN
     return FeedbackKind.SERVER_ERROR
+
+
+def _is_cloudflare_challenge_error(exc: BaseException) -> bool:
+    if getattr(exc, "status", 0) != 403:
+        return False
+    body = ""
+    details = getattr(exc, "details", None)
+    if isinstance(details, dict):
+        body = str(details.get("body") or "")
+    haystack = f"{body} {exc}".lower()
+    return any(marker in haystack for marker in _CLOUDFLARE_CHALLENGE_MARKERS)
 
 
 __all__ = ["mark_account_invalid_credentials", "feedback_kind_for_error"]

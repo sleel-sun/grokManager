@@ -18,5 +18,25 @@ class ImageEditReferenceTests(unittest.TestCase):
         self.assertEqual(resolved, url)
 
 
+class ImageGenerationErrorTests(unittest.TestCase):
+    def test_cloudflare_403_error_mentions_clearance_configuration(self) -> None:
+        from app.products.openai import images
+
+        message = images._image_generation_upstream_error_message(
+            403,
+            '<!DOCTYPE html><title>Just a moment...</title><p>Cloudflare</p>',
+        )
+
+        self.assertIn("Cloudflare challenge", message)
+        self.assertIn("proxy.clearance", message)
+
+    def test_non_cloudflare_403_error_keeps_plain_status(self) -> None:
+        from app.products.openai import images
+
+        message = images._image_generation_upstream_error_message(403, "")
+
+        self.assertEqual(message, "Image-generation upstream returned 403")
+
+
 if __name__ == "__main__":
     unittest.main()
