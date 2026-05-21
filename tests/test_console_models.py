@@ -48,6 +48,19 @@ class ConsoleModelRoutingTests(unittest.TestCase):
         self.assertTrue(payload["stream"])
         self.assertEqual(payload["temperature"], 0.2)
 
+    def test_build_console_responses_payload_pins_public_model_identity(self) -> None:
+        payload = build_console_responses_payload(
+            model="grok-4.3",
+            message="[user]: 你是什么模型？",
+            stream=True,
+        )
+
+        instructions = payload.get("instructions")
+        self.assertIsInstance(instructions, str)
+        self.assertIn("Grok 4.3", instructions)
+        self.assertIn("grok-4.3", instructions)
+        self.assertIn("Do not identify yourself as Grok 1.5", instructions)
+
     def test_console_responses_stream_adapter_parses_text_and_reasoning(self) -> None:
         adapter = ConsoleResponsesStreamAdapter()
 

@@ -7,6 +7,19 @@ import orjson
 from app.dataplane.reverse.protocol.xai_chat import FrameEvent
 
 
+def _display_model_name(model: str) -> str:
+    return model.replace("grok-", "Grok ", 1)
+
+
+def _identity_instructions(model: str) -> str:
+    display = _display_model_name(model)
+    return (
+        f"You are {display}. The selected public model id for this conversation is "
+        f"{model}. If the user asks what model you are, answer {display}. "
+        "Do not identify yourself as Grok 1.5 or any other legacy model."
+    )
+
+
 def build_console_responses_payload(
     *,
     model: str,
@@ -24,6 +37,13 @@ def build_console_responses_payload(
                 if value is not None and key not in {"model", "input"}
             }
         )
+    identity = _identity_instructions(model)
+    existing_instructions = str(payload.get("instructions") or "").strip()
+    payload["instructions"] = (
+        f"{existing_instructions}\n\n{identity}"
+        if existing_instructions
+        else identity
+    )
     payload["model"] = model
     payload["input"] = message
     payload["stream"] = stream

@@ -262,6 +262,32 @@ class ModelPayloadHelperTests(unittest.TestCase):
         self.assertEqual(payload["id"], "grok-4.20-0309")
         self.assertEqual(payload["owned_by"], "xai")
         self.assertEqual(payload["created"], 0)
+        self.assertEqual(payload["capability"], "chat")
+        self.assertEqual(payload["capabilities"], ["chat"])
+
+    def test_openai_model_payload_marks_image_models(self) -> None:
+        from app.control.model.registry import resolve
+        from app.products.openai.router import _openai_model_payload
+
+        spec = resolve("grok-imagine-image")
+        payload = _openai_model_payload(spec, 0)
+
+        self.assertEqual(payload["object"], "model")
+        self.assertEqual(payload["id"], "grok-imagine-image")
+        self.assertEqual(payload["capability"], "image")
+        self.assertEqual(payload["capabilities"], ["image"])
+
+    def test_openai_model_payload_marks_image_edit_models(self) -> None:
+        from app.control.model.registry import resolve
+        from app.products.openai.router import _openai_model_payload
+
+        spec = resolve("grok-imagine-image-edit")
+        payload = _openai_model_payload(spec, 0)
+
+        self.assertEqual(payload["object"], "model")
+        self.assertEqual(payload["id"], "grok-imagine-image-edit")
+        self.assertEqual(payload["capability"], "image_edit")
+        self.assertEqual(payload["capabilities"], ["image_edit"])
 
     def test_is_anthropic_client_detects_header(self) -> None:
         from app.products.openai.router import _is_anthropic_client

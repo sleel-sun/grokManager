@@ -69,13 +69,31 @@ def _is_anthropic_client(anthropic_version: str | None) -> bool:
     return bool(anthropic_version and anthropic_version.strip())
 
 
+def _model_capability_names(spec: ModelSpec) -> list[str]:
+    capabilities: list[str] = []
+    if spec.is_chat():
+        capabilities.append("chat")
+    if spec.is_image():
+        capabilities.append("image")
+    if spec.is_image_edit():
+        capabilities.append("image_edit")
+    if spec.is_video():
+        capabilities.append("video")
+    if spec.is_voice():
+        capabilities.append("voice")
+    return capabilities
+
+
 def _openai_model_payload(spec: ModelSpec, created: int) -> dict:
+    capabilities = _model_capability_names(spec)
     return {
         "id": spec.model_name,
         "object": "model",
         "created": created,
         "owned_by": "xai",
         "name": spec.public_name,
+        "capability": capabilities[0] if capabilities else "unknown",
+        "capabilities": capabilities,
     }
 
 
