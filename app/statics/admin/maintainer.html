@@ -372,13 +372,34 @@ function readPayload() {
   };
 }
 
+function preserveIntent(savedConfig, sentPayload) {
+  if (!savedConfig || typeof savedConfig !== 'object') return savedConfig;
+  // Always reflect the user's just-sent count/workers, even if the backend
+  // silently dropped them (e.g. older backend without these fields, where
+  // Pydantic's default `extra="ignore"` strips the keys and the response
+  // falls back to default 1).
+  if (sentPayload && typeof sentPayload.count === 'number') {
+    savedConfig.count = sentPayload.count;
+  }
+  if (sentPayload && typeof sentPayload.workers === 'number') {
+    savedConfig.workers = sentPayload.workers;
+  }
+  return savedConfig;
+}
+
 form.addEventListener('submit', async (event) => {
   event.preventDefault();
   runBtn.disabled = true;
+  const sentPayload = readPayload();
   try {
-    const data = await api('POST', '/maintainer/run', readPayload());
+    const data = await api('POST', '/maintainer/run', sentPayload);
     renderStatus(data);
-    await loadSavedConfig();
+    try {
+      const savedConfig = await api('GET', '/maintainer/config');
+      renderSavedConfig(preserveIntent(savedConfig, sentPayload));
+    } catch (err) {
+      showToast(err.message || '配置加载失败', 'error');
+    }
     showToast('注册任务已启动', 'success');
   } catch (err) {
     showToast(err.message || '启动失败', 'error');
@@ -389,8 +410,10 @@ form.addEventListener('submit', async (event) => {
 
 saveBtn.addEventListener('click', async () => {
   saveBtn.disabled = true;
+  const sentPayload = readPayload();
   try {
-    renderSavedConfig(await api('POST', '/maintainer/config', readPayload()));
+    const response = await api('POST', '/maintainer/config', sentPayload);
+    renderSavedConfig(preserveIntent(response, sentPayload));
     showToast('注册邮箱配置已保存', 'success');
   } catch (err) {
     showToast(err.message || '保存失败', 'error');
