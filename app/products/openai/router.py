@@ -84,16 +84,83 @@ def _model_capability_names(spec: ModelSpec) -> list[str]:
     return capabilities
 
 
+def _model_primary_type(spec: ModelSpec) -> str:
+    if spec.is_image_edit():
+        return "image_edit"
+    if spec.is_image():
+        return "image"
+    if spec.is_video():
+        return "video"
+    if spec.is_voice():
+        return "voice"
+    if spec.is_chat():
+        return "chat"
+    return "unknown"
+
+
+def _model_generation_metadata(spec: ModelSpec) -> dict:
+    if spec.is_image_edit():
+        input_modalities = ["text", "image"]
+        output_modalities = ["image"]
+        methods = ["chat.completions", "images.edits"]
+        endpoints = ["/v1/chat/completions", "/v1/images/edits"]
+        modality = "text+image->image"
+    elif spec.is_image():
+        input_modalities = ["text"]
+        output_modalities = ["image"]
+        methods = ["chat.completions", "images.generations"]
+        endpoints = ["/v1/chat/completions", "/v1/images/generations"]
+        modality = "text->image"
+    elif spec.is_video():
+        input_modalities = ["text", "image"]
+        output_modalities = ["video"]
+        methods = ["chat.completions", "videos.create"]
+        endpoints = ["/v1/chat/completions", "/v1/videos"]
+        modality = "text+image->video"
+    elif spec.is_voice():
+        input_modalities = ["text", "audio"]
+        output_modalities = ["audio"]
+        methods = ["chat.completions"]
+        endpoints = ["/v1/chat/completions"]
+        modality = "text+audio->audio"
+    else:
+        input_modalities = ["text"]
+        output_modalities = ["text"]
+        methods = ["chat.completions", "responses"]
+        endpoints = ["/v1/chat/completions", "/v1/responses"]
+        modality = "text->text"
+
+    modalities = list(dict.fromkeys([*input_modalities, *output_modalities]))
+    return {
+        "modalities": modalities,
+        "input_modalities": input_modalities,
+        "output_modalities": output_modalities,
+        "supported_generation_methods": methods,
+        "supportedGenerationMethods": methods,
+        "endpoints": endpoints,
+        "supported_endpoints": endpoints,
+        "architecture": {
+            "modality": modality,
+            "input_modalities": input_modalities,
+            "output_modalities": output_modalities,
+        },
+    }
+
+
 def _openai_model_payload(spec: ModelSpec, created: int) -> dict:
     capabilities = _model_capability_names(spec)
+    primary_type = _model_primary_type(spec)
     return {
         "id": spec.model_name,
         "object": "model",
         "created": created,
         "owned_by": "xai",
         "name": spec.public_name,
+        "type": primary_type,
+        "model_type": primary_type,
         "capability": capabilities[0] if capabilities else "unknown",
         "capabilities": capabilities,
+        **_model_generation_metadata(spec),
     }
 
 

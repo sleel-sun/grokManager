@@ -264,6 +264,21 @@ class ModelPayloadHelperTests(unittest.TestCase):
         self.assertEqual(payload["created"], 0)
         self.assertEqual(payload["capability"], "chat")
         self.assertEqual(payload["capabilities"], ["chat"])
+        self.assertEqual(payload["type"], "chat")
+        self.assertEqual(payload["model_type"], "chat")
+        self.assertEqual(payload["input_modalities"], ["text"])
+        self.assertEqual(payload["output_modalities"], ["text"])
+        self.assertEqual(payload["supported_generation_methods"], ["chat.completions", "responses"])
+        self.assertEqual(payload["supportedGenerationMethods"], ["chat.completions", "responses"])
+        self.assertEqual(payload["endpoints"], ["/v1/chat/completions", "/v1/responses"])
+        self.assertEqual(
+            payload["architecture"],
+            {
+                "modality": "text->text",
+                "input_modalities": ["text"],
+                "output_modalities": ["text"],
+            },
+        )
 
     def test_openai_model_payload_marks_image_models(self) -> None:
         from app.control.model.registry import resolve
@@ -276,6 +291,22 @@ class ModelPayloadHelperTests(unittest.TestCase):
         self.assertEqual(payload["id"], "grok-imagine-image")
         self.assertEqual(payload["capability"], "image")
         self.assertEqual(payload["capabilities"], ["image"])
+        self.assertEqual(payload["type"], "image")
+        self.assertEqual(payload["model_type"], "image")
+        self.assertEqual(payload["input_modalities"], ["text"])
+        self.assertEqual(payload["output_modalities"], ["image"])
+        self.assertEqual(payload["modalities"], ["text", "image"])
+        self.assertEqual(payload["supported_generation_methods"], ["chat.completions", "images.generations"])
+        self.assertEqual(payload["supportedGenerationMethods"], ["chat.completions", "images.generations"])
+        self.assertEqual(payload["endpoints"], ["/v1/chat/completions", "/v1/images/generations"])
+        self.assertEqual(
+            payload["architecture"],
+            {
+                "modality": "text->image",
+                "input_modalities": ["text"],
+                "output_modalities": ["image"],
+            },
+        )
 
     def test_openai_model_payload_marks_image_edit_models(self) -> None:
         from app.control.model.registry import resolve
@@ -288,6 +319,22 @@ class ModelPayloadHelperTests(unittest.TestCase):
         self.assertEqual(payload["id"], "grok-imagine-image-edit")
         self.assertEqual(payload["capability"], "image_edit")
         self.assertEqual(payload["capabilities"], ["image_edit"])
+        self.assertEqual(payload["type"], "image_edit")
+        self.assertEqual(payload["model_type"], "image_edit")
+        self.assertEqual(payload["input_modalities"], ["text", "image"])
+        self.assertEqual(payload["output_modalities"], ["image"])
+        self.assertEqual(payload["modalities"], ["text", "image"])
+        self.assertEqual(payload["supported_generation_methods"], ["chat.completions", "images.edits"])
+        self.assertEqual(payload["supportedGenerationMethods"], ["chat.completions", "images.edits"])
+        self.assertEqual(payload["endpoints"], ["/v1/chat/completions", "/v1/images/edits"])
+        self.assertEqual(
+            payload["architecture"],
+            {
+                "modality": "text+image->image",
+                "input_modalities": ["text", "image"],
+                "output_modalities": ["image"],
+            },
+        )
 
     def test_is_anthropic_client_detects_header(self) -> None:
         from app.products.openai.router import _is_anthropic_client
