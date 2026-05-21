@@ -82,26 +82,53 @@ class MaintainerAdminTests(unittest.TestCase):
         self.assertTrue(response["headless"])
         self.assertEqual(response["window_size"], "1280,800")
 
-    def test_saved_config_response_clamps_workers(self) -> None:
-        too_high = build_saved_config_response({"run": {"count": 1, "workers": 99}})
-        self.assertEqual(too_high["workers"], 8)
+    def test_saved_config_response_preserves_high_workers_unclamped(self) -> None:
+        # Removing the historical upper cap (8) was the only way to fix the
+        # user complaint "并发 worker 数没有生效" — submitting workers=10
+        # was silently clamped to 8 here and the UI never showed the
+        # difference. Now the helper must surface the saved value as-is.
+        large = build_saved_config_response({"run": {"count": 1, "workers": 99}})
+        self.assertEqual(large["workers"], 99)
 
+        # ge=1 floor stays — zero / negative is meaningless.
         too_low = build_saved_config_response({"run": {"count": 1, "workers": 0}})
         self.assertEqual(too_low["workers"], 1)
 
         missing = build_saved_config_response({"run": {"count": 1}})
         self.assertEqual(missing["workers"], 1)
 
-    def test_run_request_rejects_workers_out_of_range(self) -> None:
-        with self.assertRaises(Exception):
-            MaintainerRunRequest(
-                count=1,
-                workers=99,
-                email_worker_domain="mail.example.com",
-                email_domains=["example.com"],
-                email_admin_password="pw",
-            )
+    def test_saved_config_response_preserves_high_count_unclamped(self) -> None:
+        # ``count`` (registration rounds per worker) used to be capped at 100
+        # which silently truncated large batch jobs. Operators must be able
+        # to schedule larger batches — the cap is now gone.
+        large = build_saved_config_response({"run": {"count": 500, "workers": 1}})
+        self.assertEqual(large["count"], 500)
 
+    def test_run_request_accepts_workers_above_old_cap(self) -> None:
+        # Pydantic no longer rejects workers>8. Operators may schedule any
+        # positive integer; spawning capacity is the operator's concern.
+        req = MaintainerRunRequest(
+            count=1,
+            workers=99,
+            email_worker_domain="mail.example.com",
+            email_domains=["example.com"],
+            email_admin_password="pw",
+        )
+        self.assertEqual(req.workers, 99)
+
+        # And count>100 is also accepted now.
+        req2 = MaintainerRunRequest(
+            count=500,
+            workers=1,
+            email_worker_domain="mail.example.com",
+            email_domains=["example.com"],
+            email_admin_password="pw",
+        )
+        self.assertEqual(req2.count, 500)
+
+    def test_run_request_still_rejects_non_positive_workers(self) -> None:
+        # ge=1 floor is the only validation we keep. Zero would mean
+        # "spawn no workers" which has no useful semantics.
         with self.assertRaises(Exception):
             MaintainerRunRequest(
                 count=1,
