@@ -8,6 +8,7 @@ import os
 import secrets
 import shutil
 import sys
+import tempfile
 import time
 from pathlib import Path
 from typing import Any, Callable
@@ -137,6 +138,26 @@ def _resolve_browser_tmp_path() -> Path:
     return maintainer_browser_tmp_dir()
 
 
+def _compute_worker_chrome_user_data_dir(worker_id: int, pid: int) -> Path:
+    """Return a unique absolute Chromium ``--user-data-dir`` path for a worker.
+
+    Each parallel worker MUST get its own user-data-dir so its Chromium
+    instance does not contend for the SingletonLock / SingletonCookie files
+    that Chromium creates inside the profile directory. Without isolation,
+    a second Chromium pointed at the same directory will either fail fast
+    with ``ProcessSingletonStartup`` or — worse — silently attach to the
+    first instance and serialise registration. Both outcomes look to the
+    user like "workers run one at a time" even though spawn IS parallel.
+
+    The path lives under the system tempdir so it's on a fast local FS and
+    independent of the project root. ``worker_id`` keeps the dirname stable
+    enough for log diagnostics; ``pid`` makes it unique across overlapping
+    runs (e.g. orchestrator restarts before cleanup finishes).
+    """
+    base = Path(tempfile.gettempdir())
+    return base / f"grokmgr-chrome-w{int(worker_id)}-{int(pid)}"
+
+
 def _format_bytes(size: int) -> str:
     value = float(size)
     for unit in ("B", "KiB", "MiB", "GiB", "TiB"):
@@ -215,6 +236,10 @@ def _configure_browser_options() -> ChromiumOptions:
     browser_path = _discover_browser_path()
     if browser_path:
         opts.set_browser_path(browser_path)
+
+    user_data_dir = os.getenv("MAINTAINER_CHROME_USER_DATA_DIR", "").strip()
+    if user_data_dir:
+        opts.set_user_data_path(str(Path(user_data_dir).expanduser().resolve()))
 
     opts.set_argument("--no-first-run")
     opts.set_argument("--no-default-browser-check")
@@ -1583,7 +1608,8 @@ def _worker_entry(
         except Exception:
             pass
 
-    _emit("alive", {"pid": os.getpid()})
+    user_data_dir = _compute_worker_chrome_user_data_dir(worker_id, os.getpid())
+    _emit("alive", {"pid": os.getpid(), "user_data_dir": str(user_data_dir)})
 
     try:
         for key, val in env_overrides.items():
@@ -1599,21 +1625,40 @@ def _worker_entry(
         os.environ["MAINTAINER_TMP_PATH"] = str(worker_tmp)
         os.environ["MAINTAINER_RUN_LOG_LABEL"] = f"w{worker_id}"
 
+        try:
+            user_data_dir.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            _emit(
+                "worker_failed",
+                {"error": f"无法创建 user-data-dir {user_data_dir}: {exc}"},
+            )
+            try:
+                result_queue.put((worker_id, [], f"user_data_dir error: {exc}"))
+            except Exception:
+                pass
+            return
+        os.environ["MAINTAINER_CHROME_USER_DATA_DIR"] = str(user_data_dir)
+
         def _is_paused() -> bool:
             return pause_event is not None and not pause_event.is_set()
 
         def _is_stopped() -> bool:
             return stop_event is not None and stop_event.is_set()
 
-        tokens = run_batch(
-            config_path=config_path_str,
-            count=count,
-            output=output_str or None,
-            extract_numbers=extract_numbers,
-            pause_check=_is_paused if pause_event is not None else None,
-            stop_check=_is_stopped if stop_event is not None else None,
-            progress_callback=_emit if progress_queue is not None else None,
-        )
+        try:
+            tokens = run_batch(
+                config_path=config_path_str,
+                count=count,
+                output=output_str or None,
+                extract_numbers=extract_numbers,
+                pause_check=_is_paused if pause_event is not None else None,
+                stop_check=_is_stopped if stop_event is not None else None,
+                progress_callback=_emit if progress_queue is not None else None,
+            )
+        finally:
+            # Best-effort cleanup so a long-running orchestrator doesn't leak
+            # one Chromium profile per worker per run.
+            shutil.rmtree(user_data_dir, ignore_errors=True)
         result_queue.put((worker_id, list(tokens), None))
     except BaseException as exc:  # noqa: BLE001 - cross-process boundary
         _emit("worker_failed", {"error": f"{type(exc).__name__}: {exc}"})
@@ -1621,6 +1666,7 @@ def _worker_entry(
             result_queue.put((worker_id, [], f"{type(exc).__name__}: {exc}"))
         except Exception:
             pass
+        shutil.rmtree(user_data_dir, ignore_errors=True)
 
 
 def _split_count(count: int, workers: int) -> list[int]:

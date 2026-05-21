@@ -220,6 +220,8 @@ uv run grokmanager-maintainer --count 5 --workers 2  # 2 个并发 worker × 每
 
 > 💡 小例：`--count 2 --workers 5` 会同时起 5 个 Chromium 子进程，每个子进程顺序注册 2 个账号 → 总计 10 个 token。资源占用随 workers 明显上升（内存 / 文件句柄 / 上游限流），调优时从 `workers=2-3` 开始逐步加。
 
+每个 worker 子进程会获得**独立的 Chromium 用户数据目录**：`<system_tempdir>/grokmgr-chrome-w{worker_id}-{pid}/`（例如 `/tmp/grokmgr-chrome-w0-24073/`），并通过 Chromium `--user-data-dir=` 参数显式传入。这是避免「workers 看着像串行」的关键 —— Chromium 在同一个 profile 目录下会用 SingletonLock / SingletonCookie 强制序列化，多个 worker 共享 profile 就会要么报 `ProcessSingletonStartup` 失败，要么静默挂到同一个浏览器实例上跑成串行。每个 worker 的 `alive` 事件 payload 含 `user_data_dir=...`，orchestrator 日志里直接能 grep。任务结束（成功或失败）后该目录会被 best-effort 清理。
+
 ### 暂停 / 继续 / 停止
 
 注册任务运行期间可通过 Admin API 控制：
