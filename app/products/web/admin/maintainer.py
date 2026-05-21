@@ -10,7 +10,7 @@ import os
 import re
 import time
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Callable, Literal
 
 from fastapi import APIRouter, Request
 from pydantic import BaseModel, Field, field_validator
@@ -98,6 +98,7 @@ _state: dict[str, Any] = {
     "config_path": "",
     "output_path": "",
     "workers": 1,
+    "spawned_workers": 0,
 }
 _task: asyncio.Task | None = None
 _lock = asyncio.Lock()
@@ -299,10 +300,25 @@ def _output_path() -> Path:
 
 
 def _latest_log_file() -> Path | None:
+    """Pick the most relevant run log for the UI's log tail.
+
+    Prefers the latest parallel-orchestrator log (``run_parallel_*.log``) if
+    one was touched within the last 10 minutes — that file records each
+    worker's spawn pid and completion so operators can immediately confirm
+    true concurrency. Falls back to the most recently modified ``run_*.log``
+    otherwise (single-worker runs).
+    """
     directory = log_path("maintainer")
     if not directory.exists():
         return None
-    files = [path for path in directory.glob("run_*.log") if path.is_file()]
+    files = [path for path in directory.glob("run*.log") if path.is_file()]
+    if not files:
+        return None
+    parallel = [p for p in files if p.name.startswith("run_parallel_")]
+    if parallel:
+        latest_parallel = max(parallel, key=lambda p: p.stat().st_mtime)
+        if time.time() - latest_parallel.stat().st_mtime < 600:
+            return latest_parallel
     return max(files, key=lambda path: path.stat().st_mtime, default=None)
 
 
@@ -338,6 +354,7 @@ def _run_sync(
     env: dict[str, str],
     pause_event: Any,
     stop_event: Any,
+    spawned_workers_callback: Callable[[int], None] | None = None,
 ) -> list[str]:
     previous = {key: os.environ.get(key) for key in _ENV_KEYS}
     try:
@@ -353,6 +370,7 @@ def _run_sync(
             pause_event=pause_event,
             stop_event=stop_event,
             env_overrides=env if workers > 1 else None,
+            spawned_workers_callback=spawned_workers_callback,
         )
     finally:
         for key, value in previous.items():
@@ -369,6 +387,9 @@ async def _run_background(
     env: dict[str, str],
     controller: _MaintainerController,
 ) -> None:
+    def _record_spawned(n: int) -> None:
+        _state["spawned_workers"] = int(n)
+
     try:
         tokens = await asyncio.to_thread(
             _run_sync,
@@ -380,6 +401,7 @@ async def _run_background(
             env,
             controller.pause_event,
             controller.stop_event,
+            _record_spawned,
         )
         stopped = controller.is_stopped()
         if stopped:
@@ -495,6 +517,7 @@ async def maintainer_run(req: MaintainerRunRequest, request: Request):
                 "config_path": str(config_path),
                 "output_path": str(output_path),
                 "workers": req.workers,
+                "spawned_workers": 0,
             }
         )
         _task = asyncio.create_task(

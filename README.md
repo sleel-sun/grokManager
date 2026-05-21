@@ -199,7 +199,7 @@ docker compose logs -f maintainer
 ```bash
 cp maintainer.config.example.json maintainer.config.json
 uv sync --extra maintainer
-uv run grokmanager-maintainer --count 5 --workers 2
+uv run grokmanager-maintainer --count 5 --workers 2  # 2 个并发 worker × 每个 5 轮 = 10 个 token
 ```
 
 - 新 CLI 名称：`grokmanager-maintainer`
@@ -211,11 +211,14 @@ uv run grokmanager-maintainer --count 5 --workers 2
 
 ### 多进程并发注册
 
-- CLI 新增 `--workers N`（1-8），`N>1` 时以 `multiprocessing.spawn` 拉起 `N` 个子进程并行注册，主进程汇总成功/失败统计
-- 注册总数按 `count` 在 N 个 worker 间整除分片，余数由前几个 worker 平摊
+- CLI 新增 `--workers N`（1-8），`N>1` 时以 `multiprocessing.spawn` 拉起 **恰好 `N`** 个子进程并行注册，每个子进程独立跑 `count` 轮迭代
+- **语义：`count` 是「每个 worker 的注册轮数」**，本次任务总注册数 = `workers × count`。这保证选了并发就一定能看到 `N` 个浏览器同时起来（旧语义是「总数 / workers」平摊，在 `count < workers` 时会静默少起 worker）
 - 每个 worker 的 SSO 输出文件以 `.w{idx}` 为后缀避免冲突，例如 `sso_2026-05-20T10-30-00.w0.txt`、`sso_..w1.txt`
+- 每个 worker 的运行日志以 `run_w{id}_{ts}_pid{X}.log` 存放；orchestrator 日志 `run_parallel_{ts}_pid{X}.log` 集中记录「启动/结束”事件（含每个 worker 的 pid 和 exitcode），WebUI 会优先展示该 orchestrator 日志，以便直接核对真实并发数
 - 不传 `--workers` 或 `--workers 1` 时退回原单进程顺序模式，行为完全保持向后兼容
-- 后台 `/maintainer/run` 同样接受 `workers` 字段（默认 1），WebUI 表单中也增加了并发输入框
+- 后台 `/maintainer/run` 同样接受 `workers` 字段（默认 1）；`GET /maintainer/status` 返回的 `spawned_workers` 字段是运行时实际启动的 worker 数（以供校验、差异调试），WebUI 表单中增加了并发输入框与「实际并发 worker」状态卡
+
+> 💡 小例：`--count 2 --workers 5` 会同时起 5 个 Chromium 子进程，每个子进程顺序注册 2 个账号 → 总计 10 个 token。资源占用随 workers 明显上升（内存 / 文件句柄 / 上游限流），调优时从 `workers=2-3` 开始逐步加。
 
 ### 暂停 / 继续 / 停止
 
