@@ -199,7 +199,7 @@ docker compose logs -f maintainer
 ```bash
 cp maintainer.config.example.json maintainer.config.json
 uv sync --extra maintainer
-uv run grokmanager-maintainer --count 5
+uv run grokmanager-maintainer --count 5 --workers 2
 ```
 
 - 新 CLI 名称：`grokmanager-maintainer`
@@ -208,6 +208,28 @@ uv run grokmanager-maintainer --count 5
 - 默认日志目录：`${LOG_DIR}/maintainer`
 - 默认回写接口：`/v1/admin/tokens`，使用 `app.app_key` 作为 Bearer Token
 - 兼容新后台接口：`/admin/api/tokens` 与 `/admin/api/tokens/add`
+
+### 多进程并发注册
+
+- CLI 新增 `--workers N`（1-8），`N>1` 时以 `multiprocessing.spawn` 拉起 `N` 个子进程并行注册，主进程汇总成功/失败统计
+- 注册总数按 `count` 在 N 个 worker 间整除分片，余数由前几个 worker 平摊
+- 每个 worker 的 SSO 输出文件以 `.w{idx}` 为后缀避免冲突，例如 `sso_2026-05-20T10-30-00.w0.txt`、`sso_..w1.txt`
+- 不传 `--workers` 或 `--workers 1` 时退回原单进程顺序模式，行为完全保持向后兼容
+- 后台 `/maintainer/run` 同样接受 `workers` 字段（默认 1），WebUI 表单中也增加了并发输入框
+
+### 暂停 / 继续 / 停止
+
+注册任务运行期间可通过 Admin API 控制：
+
+| 接口 | 行为 |
+| :-- | :-- |
+| `POST /maintainer/pause` | 设置暂停信号，当前轮结束后不再启动新轮（已在跑的子进程会跑完手头那条），状态切到 `paused` |
+| `POST /maintainer/resume` | 清除暂停信号，恢复 `running` 状态，继续后续轮 |
+| `POST /maintainer/stop` | 设置停止信号，状态切到 `stopping`，当前轮结束后立即退出，任务终止后清理 controller |
+
+- 单/多进程模式都受这三个端点控制：`_MaintainerController` 内部使用 `multiprocessing.Event` 在父子进程间同步暂停 / 停止状态
+- WebUI 注册页（`/admin/account` 中的 Maintainer 区块）同步暴露 **并发 worker 数** 输入框 + **暂停 / 继续 / 停止** 按钮，按钮根据 `running` / `paused` / `stopping` 状态自动 disable
+- `GET /maintainer/status` 返回的 `paused` / `stop_requested` 字段对应上述两个 Event 当前状态
 
 ### Compose 一体化启动
 
@@ -339,6 +361,7 @@ uv run grokmanager-maintainer --count 5
 | `grok-4.20-auto` | `auto` | `basic`，优先使用高等级账号池 |
 | `grok-4.20-expert` | `expert` | `basic`，优先使用高等级账号池 |
 | `grok-4.20-heavy` | `heavy` | `heavy` |
+| `grok-4.3` | `auto` | `basic`（走 xAI Console Responses 上游，命中 `https://console.x.ai`） |
 | `grok-4.3-beta` | `grok-420-computer-use-sa` | `super` |
 
 ### Image
