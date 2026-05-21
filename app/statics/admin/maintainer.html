@@ -150,6 +150,7 @@
               <div class="field">
                 <label for="count">注册数量</label>
                 <input class="input" id="count" name="count" type="number" min="1" max="100" value="1" required>
+                <small>每个 worker 的注册轮数；总注册数 = workers × 此值。</small>
               </div>
               <div class="field">
                 <label for="pool">写入账号池</label>
@@ -164,7 +165,7 @@
             <div class="field">
               <label for="workers">并发 worker 数</label>
               <input class="input" id="workers" name="workers" type="number" min="1" max="8" value="1" required>
-              <small>1 为顺序运行；&gt;1 会同时起多个浏览器子进程并行注册，资源占用明显上升。</small>
+              <small>同时起多少个浏览器子进程（1 为顺序运行）。workers × 注册数量 = 本次任务总注册数。资源占用随 workers 明显上升。</small>
             </div>
 
             <div class="field">
@@ -210,6 +211,10 @@
               <div class="status-value" id="token-count">0</div>
             </div>
             <div class="status-tile">
+              <div class="status-label">实际并发 worker</div>
+              <div class="status-value" id="spawned-workers">-</div>
+            </div>
+            <div class="status-tile">
               <div class="status-label">输出文件</div>
               <div class="status-value" id="output-path">-</div>
             </div>
@@ -243,6 +248,7 @@ const availableHint = document.getElementById('available-hint');
 const passwordHint = document.getElementById('password-hint');
 const statePill = document.getElementById('state-pill');
 const tokenCount = document.getElementById('token-count');
+const spawnedWorkersEl = document.getElementById('spawned-workers');
 const outputPath = document.getElementById('output-path');
 const configPath = document.getElementById('config-path');
 const logBox = document.getElementById('log-box');
@@ -276,6 +282,14 @@ function renderStatus(data) {
   statePill.textContent = status;
   statePill.className = `status-pill ${status}`;
   tokenCount.textContent = String(data.token_count || 0);
+  const requested = Number(data.workers);
+  const spawned = Number(data.spawned_workers);
+  if (Number.isFinite(spawned) && spawned > 0) {
+    const requestedStr = Number.isFinite(requested) && requested > 0 ? String(requested) : '?';
+    spawnedWorkersEl.textContent = `${spawned} / ${requestedStr}`;
+  } else {
+    spawnedWorkersEl.textContent = '-';
+  }
   setText(outputPath, data.output_path);
   setText(configPath, data.config_path);
   setText(stateMessage, data.message);

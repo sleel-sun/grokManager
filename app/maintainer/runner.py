@@ -42,17 +42,26 @@ _virtual_display = None
 run_logger: logging.Logger | None = None
 
 
-def setup_run_logger() -> logging.Logger:
+def setup_run_logger(label: str | None = None) -> logging.Logger:
+    """Create the per-run log file.
+
+    ``label`` is woven into the filename so concurrent workers do not collide
+    on the same path. Multi-process orchestration uses ``label="w{worker_id}"``
+    for each worker and ``label="parallel"`` for the parent orchestrator log.
+    """
     log_dir = maintainer_log_dir()
     log_dir.mkdir(parents=True, exist_ok=True)
     ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-    log_path = log_dir / f"run_{ts}.log"
+    suffix = f"_{label}" if label else ""
+    log_path = log_dir / f"run{suffix}_{ts}_pid{os.getpid()}.log"
 
-    logger = logging.getLogger("grok_maintainer")
+    logger_name = f"grok_maintainer.{label}" if label else "grok_maintainer"
+    logger = logging.getLogger(logger_name)
     logger.setLevel(logging.INFO)
     logger.handlers.clear()
 
-    fmt = logging.Formatter("%(asctime)s | %(message)s", datefmt="%Y-%m-%d %H:%M:%S")
+    prefix = f"[w{label.removeprefix('w')}] " if label and label.startswith("w") and label[1:].isdigit() else ""
+    fmt = logging.Formatter(f"%(asctime)s | {prefix}%(message)s", datefmt="%Y-%m-%d %H:%M:%S")
     fh = logging.FileHandler(log_path, encoding="utf-8")
     fh.setFormatter(fmt)
     logger.addHandler(fh)
@@ -1422,7 +1431,7 @@ def run_batch(
         )
 
     output_path = resolve_user_path(str(output or default_sso_file()))
-    run_logger = setup_run_logger()
+    run_logger = setup_run_logger(label=os.environ.get("MAINTAINER_RUN_LOG_LABEL") or None)
     run_logger.info("配置文件: %s", config_path_obj)
     run_logger.info("输出文件: %s", output_path)
 
@@ -1498,7 +1507,9 @@ def _worker_entry(
     Imported as a top-level function so it is picklable by ``spawn``.
     Each worker isolates its browser temp directory under
     ``MAINTAINER_TMP_PATH/worker_<id>`` to avoid Chromium user-data-dir
-    collisions when multiple browsers run concurrently.
+    collisions when multiple browsers run concurrently. The per-worker run
+    log is opened with ``label=f"w{worker_id}"`` so concurrent workers do not
+    overwrite each other's log files.
     """
     try:
         for key, val in env_overrides.items():
@@ -1512,6 +1523,7 @@ def _worker_entry(
         worker_tmp = base_path / f"worker_{worker_id}"
         worker_tmp.mkdir(parents=True, exist_ok=True)
         os.environ["MAINTAINER_TMP_PATH"] = str(worker_tmp)
+        os.environ["MAINTAINER_RUN_LOG_LABEL"] = f"w{worker_id}"
 
         def _is_paused() -> bool:
             return pause_event is not None and not pause_event.is_set()
@@ -1536,16 +1548,23 @@ def _worker_entry(
 
 
 def _split_count(count: int, workers: int) -> list[int]:
+    """Return one share entry per worker.
+
+    ``count`` is the **per-worker** registration count (the UI label is
+    "每个 worker 的注册轮数"), so the total target across the run is
+    ``count * workers`` whenever ``count > 0``. This semantic guarantees that
+    picking ``workers=N`` always spawns exactly ``N`` truly concurrent
+    processes, which was the behaviour users expected when they selected
+    parallel mode.
+
+    ``count == 0`` means "loop forever"; every worker gets the same sentinel
+    and only the stop signal terminates the loop.
+    """
     if workers <= 0:
         return []
-    if count <= 0:
-        # ``count == 0`` means "loop forever". Each worker gets the same
-        # sentinel; the stop signal is the only way out.
-        return [0] * workers
-    per_worker = count // workers
-    remainder = count % workers
-    shares = [per_worker + (1 if i < remainder else 0) for i in range(workers)]
-    return [share for share in shares if share > 0]
+    if count < 0:
+        count = 0
+    return [count] * workers
 
 
 def _build_worker_output(base: Path, worker_id: int) -> Path:
@@ -1565,13 +1584,20 @@ def run_batch_parallel(
     pause_event: Any = None,
     stop_event: Any = None,
     env_overrides: dict[str, str] | None = None,
+    spawned_workers_callback: Callable[[int], None] | None = None,
 ) -> list[str]:
     """Run registration either sequentially (workers <= 1) or in parallel.
 
     Parallel mode spawns ``workers`` child processes (start method ``spawn``)
-    that each maintain their own browser instance. ``pause_event`` / ``stop_event``
-    must be ``multiprocessing.synchronize.Event`` objects when ``workers > 1``
-    so they can be shared with child processes.
+    that each maintain their own browser instance and each run ``count``
+    registration rounds (the total across the run is therefore
+    ``count * workers``). ``pause_event`` / ``stop_event`` must be
+    ``multiprocessing.synchronize.Event`` objects when ``workers > 1`` so they
+    can be shared with child processes.
+
+    A dedicated orchestrator run-log (``run_parallel_*.log``) records each
+    worker's spawn pid, completion status, and final token count so operators
+    can confirm true concurrency from the UI's log tail.
     """
     workers = max(1, int(workers))
 
@@ -1580,6 +1606,8 @@ def run_batch_parallel(
             pause_check = lambda: not pause_event.is_set()  # noqa: E731
         if stop_check is None and stop_event is not None:
             stop_check = lambda: stop_event.is_set()  # noqa: E731
+        if spawned_workers_callback is not None:
+            spawned_workers_callback(1)
         return run_batch(
             config_path=config_path,
             count=count,
@@ -1600,6 +1628,21 @@ def run_batch_parallel(
 
     base_output = resolve_user_path(str(output or default_sso_file()))
     config_path_str = str(config_path)
+
+    orch_logger = setup_run_logger(label="parallel")
+    total_target = sum(shares) if all(s > 0 for s in shares) else 0
+    if total_target > 0:
+        orch_logger.info(
+            "启动 %d 个并发 worker，每 worker count=%d，总目标=%d",
+            workers,
+            shares[0],
+            total_target,
+        )
+    else:
+        orch_logger.info(
+            "启动 %d 个并发 worker，count=0 意味着无限循环直到 stop 信号",
+            workers,
+        )
 
     ctx = mp.get_context("spawn")
     result_queue: Any = ctx.Queue()
@@ -1624,12 +1667,19 @@ def run_batch_parallel(
         )
         processes.append(p)
 
-    for p in processes:
+    for idx, p in enumerate(processes):
         p.start()
+        orch_logger.info("Worker #%d 已启动 pid=%s", idx, p.pid)
+
+    if spawned_workers_callback is not None:
+        spawned_workers_callback(len(processes))
 
     try:
-        for p in processes:
+        for idx, p in enumerate(processes):
             p.join()
+            orch_logger.info(
+                "Worker #%d 已结束 exitcode=%s", idx, p.exitcode
+            )
     except KeyboardInterrupt:
         stop_event.set()
         if not pause_event.is_set():
