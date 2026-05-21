@@ -11,6 +11,7 @@ from app.platform.auth.middleware import verify_api_key
 from app.platform.errors import AppError, ValidationError
 from app.platform.tokens import estimate_prompt_tokens, estimate_tokens
 from app.control.model import registry as model_registry
+from app.products._upstream_headers import build_upstream_response_headers
 
 
 router = APIRouter(prefix="/v1", dependencies=[Depends(verify_api_key)])
@@ -116,12 +117,13 @@ async def messages_endpoint(req: MessagesRequest):
         tool_choice  = req.tool_choice,
     )
 
+    upstream_headers = build_upstream_response_headers(spec)
     if isinstance(result, dict):
-        return JSONResponse(result)
+        return JSONResponse(result, headers=upstream_headers)
     return StreamingResponse(
         _safe_sse_anthropic(result),
         media_type = "text/event-stream",
-        headers    = _SSE_HEADERS,
+        headers    = {**_SSE_HEADERS, **upstream_headers},
     )
 
 

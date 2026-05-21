@@ -17,6 +17,7 @@ from app.platform.logging.logger import logger
 from app.platform.storage import image_files_dir, video_files_dir
 from app.control.model import registry as model_registry
 from app.control.model.spec import ModelSpec
+from app.products._upstream_headers import build_upstream_response_headers
 from .schemas import (
     ChatCompletionRequest,
     ImageGenerationRequest,
@@ -427,16 +428,19 @@ async def chat_completions_endpoint(req: ChatCompletionRequest):
                 yield "data: [DONE]\n\n"
 
             return StreamingResponse(
-                _err_stream(), media_type="text/event-stream", headers=_SSE_HEADERS
+                _err_stream(),
+                media_type="text/event-stream",
+                headers={**_SSE_HEADERS, **build_upstream_response_headers(spec)},
             )
         raise
 
+    upstream_headers = build_upstream_response_headers(spec)
     if isinstance(result, dict):
-        return JSONResponse(result)
+        return JSONResponse(result, headers=upstream_headers)
     return StreamingResponse(
         _sse_with_heartbeat(_safe_sse(result)),
         media_type="text/event-stream",
-        headers=_SSE_HEADERS,
+        headers={**_SSE_HEADERS, **upstream_headers},
     )
 
 
@@ -512,12 +516,13 @@ async def responses_endpoint(req: ResponsesCreateRequest):
         tool_choice=req.tool_choice,
     )
 
+    upstream_headers = build_upstream_response_headers(spec)
     if isinstance(result, dict):
-        return JSONResponse(result)
+        return JSONResponse(result, headers=upstream_headers)
     return StreamingResponse(
         _sse_with_heartbeat(_safe_sse_responses(result)),
         media_type="text/event-stream",
-        headers=_SSE_HEADERS,
+        headers={**_SSE_HEADERS, **upstream_headers},
     )
 
 
