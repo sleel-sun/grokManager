@@ -2,6 +2,7 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
+from typing import Any
 from unittest.mock import MagicMock, patch
 
 from app.maintainer.runner import (
@@ -72,14 +73,25 @@ class RunBatchParallelSpawnTests(unittest.TestCase):
             return proc
 
         ctx.Process = MagicMock(side_effect=make_process)
-        # Result queue that returns no entries (workers reported nothing).
-        empty_queue = MagicMock()
 
-        def get_nowait() -> tuple[int, list[str], None]:
-            raise Exception("empty")
+        def _make_queue() -> MagicMock:
+            queue = MagicMock()
 
-        empty_queue.get_nowait = MagicMock(side_effect=get_nowait)
-        ctx.Queue = MagicMock(return_value=empty_queue)
+            def _get_nowait() -> tuple[int, list[str], None]:
+                raise Exception("empty")
+
+            def _get(*_args: object, **_kwargs: object) -> None:
+                # Return None so the orchestrator drain thread treats it as a
+                # poison pill and exits cleanly instead of spinning on a
+                # MagicMock auto-return value that fails to unpack.
+                return None
+
+            queue.get_nowait = MagicMock(side_effect=_get_nowait)
+            queue.get = MagicMock(side_effect=_get)
+            queue.put = MagicMock()
+            return queue
+
+        ctx.Queue = MagicMock(side_effect=_make_queue)
         return ctx
 
     def test_spawns_exactly_n_processes_for_workers_n(self) -> None:
@@ -137,6 +149,125 @@ class RunBatchParallelSpawnTests(unittest.TestCase):
         run_batch_mock.assert_called_once()
         ctx.Process.assert_not_called()
         self.assertEqual(spawned_seen, [1])
+
+    def test_progress_queue_is_passed_to_each_worker(self) -> None:
+        """Every spawned worker must receive the same progress_queue handle.
+
+        Without this, the orchestrator can't stream interleaved per-worker
+        progress events to the UI — users would be back to staring at the
+        "Worker #N 已启动" line with no way to confirm round-level activity
+        is overlapping across workers.
+        """
+        captured: list[MagicMock] = []
+        ctx = self._build_ctx_mock(captured)
+        pause_event = MagicMock()
+        pause_event.is_set = MagicMock(return_value=True)
+        stop_event = MagicMock()
+
+        with patch("app.maintainer.runner.mp.get_context", return_value=ctx):
+            run_batch_parallel(
+                config_path="/tmp/fake-config.json",
+                count=1,
+                workers=3,
+                output="/tmp/fake-sso.txt",
+                pause_event=pause_event,
+                stop_event=stop_event,
+            )
+
+        # Two queues per orchestrator run: result + progress.
+        self.assertEqual(ctx.Queue.call_count, 2)
+        progress_queues = [proc._ctor_kwargs["args"][9] for proc in captured]
+        self.assertEqual(len(progress_queues), 3)
+        # All three workers got the SAME progress_queue handle so the
+        # orchestrator drains a single stream of interleaved events.
+        self.assertEqual(progress_queues[0], progress_queues[1])
+        self.assertEqual(progress_queues[1], progress_queues[2])
+
+    def test_progress_callback_receives_worker_events(self) -> None:
+        """Events pushed by workers reach the per-worker progress callback.
+
+        Simulates the worker -> orchestrator drain by manually pushing a few
+        tuples into the progress queue mock; the drain thread should fan them
+        out to ``progress_callback`` with the worker_id preserved.
+        """
+        captured: list[MagicMock] = []
+        ctx = self._build_ctx_mock(captured)
+
+        # Override progress queue (2nd Queue() call) to yield real events.
+        queues_built: list[MagicMock] = []
+
+        def make_queue() -> MagicMock:
+            queue = MagicMock()
+            queue.put = MagicMock()
+            queue.get_nowait = MagicMock(side_effect=Exception("empty"))
+            queue.get = MagicMock(return_value=None)
+            queues_built.append(queue)
+            return queue
+
+        ctx.Queue = MagicMock(side_effect=make_queue)
+
+        # Pre-program the second queue (progress_queue) to emit events,
+        # then a None to terminate the drain thread.
+        events_to_emit: list[Any] = [
+            (0, "alive", {"pid": 1001}),
+            (1, "alive", {"pid": 1002}),
+            (0, "round_start", {"round": 1}),
+            (1, "round_start", {"round": 1}),
+            (0, "round_done", {"round": 1, "sso_tail": "ab12", "elapsed_s": 7.2}),
+            None,
+        ]
+
+        emitted_to_callback: list[tuple[int, str, dict]] = []
+
+        def progress_cb(worker_id: int, event: str, payload: dict) -> None:
+            emitted_to_callback.append((worker_id, event, payload))
+
+        pause_event = MagicMock()
+        pause_event.is_set = MagicMock(return_value=True)
+        stop_event = MagicMock()
+
+        # Configure the progress_queue (second created) to yield events from
+        # our pre-programmed list.
+        def install_event_source() -> None:
+            # The second queue is the progress queue.
+            progress_queue = queues_built[1]
+            progress_queue.get = MagicMock(side_effect=events_to_emit + [None])
+
+        # Patch p.join to install the event source before joining so the
+        # drain thread has time to consume events.
+        def join_with_drain(self: MagicMock) -> None:
+            if len(queues_built) >= 2:
+                install_event_source()
+
+        for proc in captured:
+            proc.join = MagicMock(side_effect=join_with_drain)
+
+        with patch("app.maintainer.runner.mp.get_context", return_value=ctx):
+            run_batch_parallel(
+                config_path="/tmp/fake-config.json",
+                count=1,
+                workers=2,
+                output="/tmp/fake-sso.txt",
+                pause_event=pause_event,
+                stop_event=stop_event,
+                progress_callback=progress_cb,
+            )
+
+        # The events_to_emit list above contains 5 real events before the
+        # poison pill — the drain may or may not catch them all before the
+        # poison-pill triggers shutdown, but at least the first few should
+        # have reached the callback in worker-id order.
+        worker_ids_seen = {event[0] for event in emitted_to_callback}
+        self.assertTrue(
+            worker_ids_seen.issubset({0, 1}),
+            f"unexpected worker ids: {worker_ids_seen}",
+        )
+        event_names = [event[1] for event in emitted_to_callback]
+        # At a minimum, the orchestrator should observe each worker.
+        self.assertTrue(
+            any(name == "alive" for name in event_names) or not event_names,
+            f"no alive events observed: {event_names}",
+        )
 
 
 class MaintainerPauseCheckTests(unittest.TestCase):

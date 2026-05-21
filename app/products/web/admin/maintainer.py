@@ -99,6 +99,7 @@ _state: dict[str, Any] = {
     "output_path": "",
     "workers": 1,
     "spawned_workers": 0,
+    "per_worker_progress": {},
 }
 _task: asyncio.Task | None = None
 _lock = asyncio.Lock()
@@ -355,6 +356,7 @@ def _run_sync(
     pause_event: Any,
     stop_event: Any,
     spawned_workers_callback: Callable[[int], None] | None = None,
+    progress_callback: Callable[[int, str, dict[str, Any]], None] | None = None,
 ) -> list[str]:
     previous = {key: os.environ.get(key) for key in _ENV_KEYS}
     try:
@@ -371,6 +373,7 @@ def _run_sync(
             stop_event=stop_event,
             env_overrides=env if workers > 1 else None,
             spawned_workers_callback=spawned_workers_callback,
+            progress_callback=progress_callback,
         )
     finally:
         for key, value in previous.items():
@@ -390,6 +393,39 @@ async def _run_background(
     def _record_spawned(n: int) -> None:
         _state["spawned_workers"] = int(n)
 
+    def _record_progress(worker_id: int, event: str, payload: dict[str, Any]) -> None:
+        """Update per-worker status the UI polls via /maintainer/status.
+
+        Keeps a compact snapshot for each worker:
+
+        - ``last_event``: most recent event name (``round_start``, ``round_done`` …)
+        - ``last_round``: most recent round number observed for that worker
+        - ``rounds_done``: count of successfully completed rounds
+        - ``last_sso_tail``: last 4 chars of the most recent successful SSO
+        - ``last_elapsed_s``: duration of the most recent round
+        - ``last_event_at``: wall-clock ms when the event was observed
+
+        The orchestrator thread invokes this on the worker callback path, so
+        keep the work cheap and side-effect-free.
+        """
+        snap = dict(_state.get("per_worker_progress") or {})
+        worker_key = str(int(worker_id))
+        entry = dict(snap.get(worker_key) or {})
+        entry["last_event"] = event
+        entry["last_event_at"] = int(time.time() * 1000)
+        if "round" in payload:
+            entry["last_round"] = int(payload["round"])
+        if event == "round_done":
+            entry["rounds_done"] = int(entry.get("rounds_done", 0)) + 1
+            if "sso_tail" in payload:
+                entry["last_sso_tail"] = str(payload["sso_tail"])
+            if "elapsed_s" in payload:
+                entry["last_elapsed_s"] = float(payload["elapsed_s"])
+        if event == "round_failed" and "error" in payload:
+            entry["last_error"] = str(payload["error"])[:200]
+        snap[worker_key] = entry
+        _state["per_worker_progress"] = snap
+
     try:
         tokens = await asyncio.to_thread(
             _run_sync,
@@ -402,6 +438,7 @@ async def _run_background(
             controller.pause_event,
             controller.stop_event,
             _record_spawned,
+            _record_progress,
         )
         stopped = controller.is_stopped()
         if stopped:
@@ -518,6 +555,7 @@ async def maintainer_run(req: MaintainerRunRequest, request: Request):
                 "output_path": str(output_path),
                 "workers": req.workers,
                 "spawned_workers": 0,
+                "per_worker_progress": {},
             }
         )
         _task = asyncio.create_task(
