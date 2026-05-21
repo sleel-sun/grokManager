@@ -7,6 +7,8 @@ from unittest.mock import MagicMock, patch
 
 from app.maintainer.runner import (
     _build_worker_output,
+    _compute_worker_chrome_user_data_dir,
+    _configure_browser_options,
     _ensure_browser_storage_ready,
     _resolve_browser_tmp_path,
     _split_count,
@@ -268,6 +270,83 @@ class RunBatchParallelSpawnTests(unittest.TestCase):
             any(name == "alive" for name in event_names) or not event_names,
             f"no alive events observed: {event_names}",
         )
+
+
+class MaintainerChromeUserDataDirTests(unittest.TestCase):
+    """Each parallel worker must get its own Chromium ``--user-data-dir``.
+
+    Sharing a profile directory across workers causes Chromium's process
+    singleton lock to either reject every Chromium past the first one or
+    silently attach them to the same browser, both of which manifest as
+    "workers run one at a time" — the exact symptom users have reported.
+    """
+
+    def test_distinct_workers_get_distinct_user_data_dirs(self) -> None:
+        # Same parent pid (the orchestrator), distinct worker ids — the dirs
+        # MUST differ or two Chromium instances will share the same profile
+        # and serialize on the singleton lock.
+        dir0 = _compute_worker_chrome_user_data_dir(0, 12345)
+        dir1 = _compute_worker_chrome_user_data_dir(1, 12345)
+        dir2 = _compute_worker_chrome_user_data_dir(2, 12345)
+        self.assertNotEqual(dir0, dir1)
+        self.assertNotEqual(dir1, dir2)
+        self.assertNotEqual(dir0, dir2)
+
+    def test_user_data_dir_is_absolute_and_under_system_tempdir(self) -> None:
+        # Absolute path under the OS tempdir keeps the profile off the
+        # project FS (avoiding lock contention with shared data dirs) and
+        # avoids relative-path footguns when Chromium is launched from a
+        # subprocess with a different CWD than the orchestrator.
+        path = _compute_worker_chrome_user_data_dir(3, 99999)
+        self.assertTrue(path.is_absolute(), f"{path} is not absolute")
+        self.assertTrue(
+            str(path).startswith(tempfile.gettempdir()),
+            f"{path} not under {tempfile.gettempdir()}",
+        )
+
+    def test_user_data_dir_name_includes_worker_id_for_diagnostics(self) -> None:
+        # The dirname is logged on every ``Worker #N: alive`` event so ops
+        # can grep it. Keep the ``w{N}`` token stable across releases.
+        path = _compute_worker_chrome_user_data_dir(7, 12345)
+        self.assertIn("w7", path.name)
+
+    def test_configure_browser_options_adds_user_data_dir_flag_when_env_set(
+        self,
+    ) -> None:
+        # When MAINTAINER_CHROME_USER_DATA_DIR is set, the configured
+        # ChromiumOptions MUST emit an explicit ``--user-data-dir=<path>``
+        # Chromium argument. Without this flag Chromium falls back to the
+        # default profile dir and contends with other workers.
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch.dict(
+                os.environ, {"MAINTAINER_CHROME_USER_DATA_DIR": tmpdir}
+            ):
+                opts = _configure_browser_options()
+        matching = [a for a in opts.arguments if a.startswith("--user-data-dir=")]
+        self.assertEqual(
+            len(matching),
+            1,
+            f"expected exactly one --user-data-dir flag, got {matching}",
+        )
+        # Path is normalised to absolute form so Chromium does not pick up
+        # a different cwd than the orchestrator's.
+        self.assertEqual(matching[0], f"--user-data-dir={Path(tmpdir).resolve()}")
+
+    def test_configure_browser_options_omits_user_data_dir_flag_by_default(
+        self,
+    ) -> None:
+        # In single-worker mode the env is not set; we must not force a
+        # custom profile because that would lose any cached state
+        # (cookies, login, etc.) maintained in the default profile.
+        env_without_user_data = {
+            k: v
+            for k, v in os.environ.items()
+            if k != "MAINTAINER_CHROME_USER_DATA_DIR"
+        }
+        with patch.dict(os.environ, env_without_user_data, clear=True):
+            opts = _configure_browser_options()
+        matching = [a for a in opts.arguments if a.startswith("--user-data-dir=")]
+        self.assertEqual(matching, [])
 
 
 class MaintainerPauseCheckTests(unittest.TestCase):
