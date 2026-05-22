@@ -25,6 +25,23 @@ from app.products.openai.images import (
 router = APIRouter()
 
 
+def _image_event_error_payload(event: dict, run_id: str) -> dict:
+    """Normalize upstream WS errors to the WebUI error contract."""
+    message = str(
+        event.get("message")
+        or event.get("error")
+        or event.get("detail")
+        or "Image generation failed"
+    ).strip()
+    code = str(event.get("code") or event.get("error_code") or "upstream_error").strip()
+    return {
+        "type": "error",
+        "message": message or "Image generation failed",
+        "code": code or "upstream_error",
+        "run_id": run_id,
+    }
+
+
 async def _acquire_token(exclude_tokens: list[str] | None = None):
     from app.dataplane.account import _directory as _acct_dir
     if _acct_dir is None:
@@ -120,7 +137,7 @@ async def imagine_ws(websocket: WebSocket):
         })
 
         enable_nsfw = nsfw if nsfw is not None else get_config().get_bool("features.enable_nsfw", True)
-        max_retries = selection_max_retries()
+        max_retries = get_config().get_int("image.max_retries", selection_max_retries())
         retry_codes = _image_retry_codes(get_config())
         excluded: list[str] = []
         last_exc = None
@@ -171,8 +188,7 @@ async def imagine_ws(websocket: WebSocket):
                                     token[:8],
                                 )
                                 break
-                            event.setdefault("run_id", run_id)
-                            await _send(event)
+                            await _send(_image_event_error_payload(event, run_id))
                             return
 
                         event.setdefault("run_id", run_id)

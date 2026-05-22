@@ -529,7 +529,8 @@
         state.keepRunning = false;
         markBatchFailed(batch);
         setStatus(text('webui.masonry.statusFailed', '失败'), 'failed');
-        toast(payload.message || text('webui.masonry.errors.requestFailed', '请求失败'), 'error');
+        const errorMessage = payload.message || payload.error || payload.code || payload.error_code || text('webui.masonry.errors.requestFailed', '请求失败');
+        toast(errorMessage, 'error');
         try {
           socket.close(1011, 'error');
         } catch {}

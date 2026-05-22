@@ -295,6 +295,10 @@ def _image_retry_codes(cfg) -> frozenset[int]:
     return _configured_retry_codes(cfg) | frozenset({403})
 
 
+def _image_max_retries(cfg) -> int:
+    return max(0, cfg.get_int("image.max_retries", selection_max_retries()))
+
+
 def _upstream_error_body(exc: UpstreamError) -> str:
     return str(exc.details.get("body", "") or "")
 
@@ -357,7 +361,7 @@ async def generate(
     response_id = make_response_id()
     enable_pro  = model in _PRO_IMAGE_MODELS
     _ws_mode_id = int(spec.mode_id)
-    max_retries = selection_max_retries()
+    max_retries = _image_max_retries(cfg)
     retry_codes = _image_retry_codes(cfg)
 
     if stream:
@@ -1116,7 +1120,7 @@ async def _run_lite_request(
     directory = _acct_dir
 
     mode_id = int(spec.mode_id)
-    max_retries = selection_max_retries()
+    max_retries = _image_max_retries(get_config())
     retry_codes = _image_retry_codes(get_config())
     excluded: list[str] = []
     last_exc: UpstreamError | None = None

@@ -684,6 +684,7 @@ const SCHEMA_DEF = [
           { key: 'timeout', section: 'chat', label: '对话请求超时（秒）', labelKey: 'config.schema.fields.chatTimeout.label', type: 'number', desc: '对话与图像编辑请求的 HTTP 连接超时时间。', descKey: 'config.schema.fields.chatTimeout.desc' },
           { key: 'timeout', section: 'image', label: '图像请求超时（秒）', labelKey: 'config.schema.fields.imageTimeout.label', type: 'number', desc: '图像生成 WebSocket 请求的总超时时间。', descKey: 'config.schema.fields.imageTimeout.desc' },
           { key: 'stream_timeout', section: 'image', label: '图像流式空闲超时（秒）', type: 'number', desc: '图像生成 WebSocket 在流式接收阶段允许的最长连续空闲等待时长。' },
+          { key: 'max_retries', section: 'image', label: '图像换号重试上限', type: 'number', desc: '图像生成遇到账号限流或权限失败时，最多额外尝试的账号数量。' },
           { key: 'timeout', section: 'video', label: '视频请求超时（秒）', labelKey: 'config.schema.fields.videoTimeout.label', type: 'number', desc: '视频生成请求的统一超时时间。', descKey: 'config.schema.fields.videoTimeout.desc' },
           { key: 'timeout', section: 'voice', label: '语音请求超时（秒）', labelKey: 'config.schema.fields.voiceTimeout.label', type: 'number', desc: '语音请求的统一超时时间。', descKey: 'config.schema.fields.voiceTimeout.desc' },
           { key: 'timeout', section: 'nsfw', label: 'NSFW 处理超时（秒）', labelKey: 'config.schema.fields.nsfwTimeout.label', type: 'number', desc: 'set_birth_date 与 enable_nsfw 接口调用的超时时间。', descKey: 'config.schema.fields.nsfwTimeout.desc' },

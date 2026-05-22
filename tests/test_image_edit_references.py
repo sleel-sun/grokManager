@@ -24,6 +24,9 @@ class _FakeConfig:
     def get_float(self, key: str, default: float = 0.0) -> float:
         return float(self._values.get(key, default))
 
+    def get_int(self, key: str, default: int = 0) -> int:
+        return int(self._values.get(key, default))
+
 
 class _FakeLease:
     def __init__(self, token: str) -> None:
