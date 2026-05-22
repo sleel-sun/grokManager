@@ -361,6 +361,14 @@ def _validate_image_edit_n(n: int, *, param: str) -> None:
         raise ValidationError("n must be between 1 and 2 for image edit", param=param)
 
 
+def _coalesce_uploads(*groups: list[UploadFile] | None) -> list[UploadFile]:
+    uploads: list[UploadFile] = []
+    for group in groups:
+        if group:
+            uploads.extend(group)
+    return uploads
+
+
 async def _upload_to_data_uri(upload: UploadFile, *, param: str) -> str:
     raw = await upload.read()
     if not raw:
@@ -659,16 +667,31 @@ async def videos_create(
         Literal["fun", "normal", "spicy", "custom"] | None, Form()
     ] = None,
     input_reference: Annotated[
+        list[UploadFile] | None, File(alias="input_reference")
+    ] = None,
+    input_reference_array: Annotated[
         list[UploadFile] | None, File(alias="input_reference[]")
+    ] = None,
+    image: Annotated[
+        list[UploadFile] | None, File(alias="image")
+    ] = None,
+    image_array: Annotated[
+        list[UploadFile] | None, File(alias="image[]")
     ] = None,
 ):
     from .video import create_video
 
+    reference_uploads = _coalesce_uploads(
+        input_reference,
+        input_reference_array,
+        image,
+        image_array,
+    )
     references_payload = None
-    if input_reference:
+    if reference_uploads:
         references_payload = [
             {"image_url": await _upload_to_data_uri(f, param="input_reference")}
-            for f in input_reference[:5]
+            for f in reference_uploads[:5]
         ]
 
     result = await create_video(
@@ -715,7 +738,8 @@ async def videos_content(video_id: str):
 async def image_edits(
     model: Annotated[str, Form(...)],
     prompt: Annotated[str, Form(...)],
-    image: Annotated[list[UploadFile], File(..., alias="image[]")],
+    image: Annotated[list[UploadFile] | None, File(alias="image")] = None,
+    image_array: Annotated[list[UploadFile] | None, File(alias="image[]")] = None,
     mask: Annotated[UploadFile | None, File()] = None,
     n: Annotated[int, Form()] = 1,
     size: Annotated[str, Form()] = "1024x1024",
@@ -729,12 +753,15 @@ async def image_edits(
     if mask is not None:
         raise ValidationError("mask is not supported yet", param="mask")
     _validate_image_edit_n(n, param="n")
+    image_uploads = _coalesce_uploads(image, image_array)
+    if not image_uploads:
+        raise ValidationError("image is required", param="image")
 
     from .images import edit as img_edit
 
     image_inputs = [
         await _upload_to_data_uri(item, param=f"image.{index}")
-        for index, item in enumerate(image)
+        for index, item in enumerate(image_uploads)
     ]
     # Wrap input into a single-message conversation.
     content = [{"type": "text", "text": prompt}]

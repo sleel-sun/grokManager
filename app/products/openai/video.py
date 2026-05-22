@@ -128,6 +128,11 @@ class _VideoJob:
             payload["error"] = self.error
         if self.remixed_from_video_id:
             payload["remixed_from_video_id"] = self.remixed_from_video_id
+        if self.video_url:
+            payload["video_url"] = self.video_url
+            payload["url"] = self.video_url
+        if self.content_path:
+            payload["content_url"] = f"/v1/videos/{self.id}/content"
         return payload
 
 
@@ -815,6 +820,7 @@ async def _run_video_job(
         token = acct.token
         success = False
         fail_exc: BaseException | None = None
+        content_path = ""
         try:
             cfg = get_config()
             timeout_s = cfg.get_float("video.timeout", 180.0)
@@ -835,7 +841,14 @@ async def _run_video_job(
                 input_references=input_references,
                 progress_cb=_progress,
             )
-            raw, _mime = await _download_video_bytes(token, artifact.video_url)
+            try:
+                raw, _mime = await _download_video_bytes(token, artifact.video_url)
+                content_path = str(_save_video_bytes(raw, job.id))
+            except Exception as exc:
+                logger.warning(
+                    "video content download failed: fallback_to=upstream_url error={}",
+                    exc,
+                )
             success = True
         except BaseException as exc:
             fail_exc = exc
@@ -855,13 +868,12 @@ async def _run_video_job(
             else:
                 asyncio.create_task(_fail_sync(token, int(spec.mode_id), fail_exc))
 
-        path = _save_video_bytes(raw, job.id)
         async with _VIDEO_JOBS_LOCK:
             job.status = "completed"
             job.progress = 100
             job.completed_at = int(time.time())
             job.video_url = artifact.video_url
-            job.content_path = str(path)
+            job.content_path = content_path
             job.remixed_from_video_id = artifact.remixed_from_video_id
     except Exception as exc:
         logger.exception("video job failed: job_id={} error={}", job.id, exc)
