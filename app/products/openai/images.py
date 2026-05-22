@@ -669,11 +669,23 @@ async def _prepare_edit_references(token: str, image_inputs: list[str]) -> list[
     async def _runner(index: int, image_input: str) -> None:
         results[index] = await _prepare_edit_reference(token, image_input, index)
 
-    async with asyncio.TaskGroup() as tg:
-        for index, image_input in enumerate(image_inputs):
-            tg.create_task(_runner(index, image_input), name=f"image-edit-ref-{index}")
+    try:
+        async with asyncio.TaskGroup() as tg:
+            for index, image_input in enumerate(image_inputs):
+                tg.create_task(_runner(index, image_input), name=f"image-edit-ref-{index}")
+    except ExceptionGroup as exc:
+        first = _first_taskgroup_exception(exc)
+        if isinstance(first, (ValidationError, UpstreamError)):
+            raise first
+        raise UpstreamError(f"Image edit reference upload failed: {first}") from first
 
     return [result for result in results if result is not None]
+
+
+def _first_taskgroup_exception(exc: BaseException) -> BaseException:
+    if isinstance(exc, ExceptionGroup) and exc.exceptions:
+        return _first_taskgroup_exception(exc.exceptions[0])
+    return exc
 
 
 def _extract_edit_prompt_and_inputs(messages: list[dict]) -> tuple[str, list[str]]:

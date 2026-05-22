@@ -6,6 +6,7 @@ from typing import Any
 from unittest.mock import MagicMock, patch
 
 from app.maintainer.runner import (
+    build_profile,
     _build_worker_output,
     _compute_worker_chrome_user_data_dir,
     _configure_browser_options,
@@ -29,6 +30,17 @@ class MaintainerRunnerTests(unittest.TestCase):
             with patch.dict(os.environ, {"MAINTAINER_MIN_BROWSER_FREE_BYTES": str(10**18)}):
                 with self.assertRaisesRegex(RuntimeError, "浏览器临时目录可用空间不足"):
                     _ensure_browser_storage_ready(tmpdir)
+
+    def test_build_profile_uses_random_name_choices(self) -> None:
+        with patch(
+            "app.maintainer.runner.secrets.choice",
+            side_effect=["Ava", "Chen"],
+        ):
+            given_name, family_name, password = build_profile()
+
+        self.assertEqual((given_name, family_name), ("Ava", "Chen"))
+        self.assertNotEqual((given_name, family_name), ("Neo", "Lin"))
+        self.assertTrue(password.startswith("N"))
 
 
 class MaintainerBatchHelpersTests(unittest.TestCase):

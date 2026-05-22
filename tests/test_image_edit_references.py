@@ -3,7 +3,7 @@ import unittest
 from unittest.mock import patch
 
 from app.platform.errors import UpstreamError
-from app.products.openai.images import _prepare_edit_reference
+from app.products.openai.images import _prepare_edit_reference, _prepare_edit_references
 
 
 class _FakeConfig:
@@ -25,6 +25,22 @@ class ImageEditReferenceTests(unittest.TestCase):
             resolved = asyncio.run(_prepare_edit_reference("token", url, 0))
 
         self.assertEqual(resolved, url)
+
+    def test_prepare_edit_references_unwraps_taskgroup_upstream_error(self) -> None:
+        async def fake_prepare_reference(token: str, image_input: str, index: int) -> str:
+            if index == 1:
+                raise UpstreamError("reference 2 upload failed", status=403)
+            return f"resolved-{image_input}"
+
+        with patch(
+            "app.products.openai.images._prepare_edit_reference",
+            side_effect=fake_prepare_reference,
+        ):
+            with self.assertRaises(UpstreamError) as ctx:
+                asyncio.run(_prepare_edit_references("token", ["img-a", "img-b"]))
+
+        self.assertEqual(ctx.exception.message, "reference 2 upload failed")
+        self.assertEqual(ctx.exception.status, 403)
 
 
 class ImageGenerationErrorTests(unittest.TestCase):

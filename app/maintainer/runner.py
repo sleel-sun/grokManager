@@ -48,6 +48,34 @@ HEADLESS_STABILITY_ARGS = (
     "--password-store=basic",
     "--use-mock-keychain",
 )
+PROFILE_GIVEN_NAMES = (
+    "Ava",
+    "Mia",
+    "Luna",
+    "Nora",
+    "Ivy",
+    "Zoe",
+    "Leo",
+    "Noah",
+    "Milo",
+    "Evan",
+    "Owen",
+    "Theo",
+)
+PROFILE_FAMILY_NAMES = (
+    "Chen",
+    "Lin",
+    "Wang",
+    "Li",
+    "Zhang",
+    "Liu",
+    "Yang",
+    "Wu",
+    "Zhou",
+    "Xu",
+    "Sun",
+    "Guo",
+)
 
 browser = None
 page = None
@@ -876,8 +904,8 @@ Object.defineProperty(MouseEvent.prototype, 'screenY', { value: screenY });
 
 
 def build_profile() -> tuple[str, str, str]:
-    given_name = "Neo"
-    family_name = "Lin"
+    given_name = secrets.choice(PROFILE_GIVEN_NAMES)
+    family_name = secrets.choice(PROFILE_FAMILY_NAMES)
     password = "N" + secrets.token_hex(4) + "!a7#" + secrets.token_urlsafe(6)
     return given_name, family_name, password
 
