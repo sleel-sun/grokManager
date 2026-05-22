@@ -408,6 +408,22 @@ def stop_browser() -> None:
     _stop_virtual_display()
 
 
+def _reset_isolated_browser_profile() -> None:
+    user_data_dir = os.getenv("MAINTAINER_CHROME_USER_DATA_DIR", "").strip()
+    if not user_data_dir:
+        return
+
+    path = Path(user_data_dir).expanduser()
+    shutil.rmtree(path, ignore_errors=True)
+    path.mkdir(parents=True, exist_ok=True)
+
+
+def reset_browser_for_next_round() -> None:
+    stop_browser()
+    _reset_isolated_browser_profile()
+    start_browser()
+
+
 def restart_browser() -> None:
     stop_browser()
     start_browser()
@@ -1664,7 +1680,10 @@ def run_batch(
                     },
                 )
             finally:
-                restart_browser()
+                if (count == 0 or current_round < count) and not (
+                    stop_check and stop_check()
+                ):
+                    reset_browser_for_next_round()
 
             if count == 0 or current_round < count:
                 time.sleep(2)
@@ -1746,6 +1765,7 @@ def _worker_entry(
         os.environ["MAINTAINER_RUN_LOG_LABEL"] = f"w{worker_id}"
 
         try:
+            shutil.rmtree(user_data_dir, ignore_errors=True)
             user_data_dir.mkdir(parents=True, exist_ok=True)
         except OSError as exc:
             _emit(

@@ -15,6 +15,7 @@ from app.maintainer.runner import (
     _worker_entry,
     _split_count,
     _wait_while_paused,
+    run_batch,
     run_batch_parallel,
 )
 
@@ -69,6 +70,57 @@ class MaintainerBatchHelpersTests(unittest.TestCase):
         base = Path("/tmp/sso_20260520.txt")
         self.assertEqual(_build_worker_output(base, 0), Path("/tmp/sso_20260520.w0.txt"))
         self.assertEqual(_build_worker_output(base, 2), Path("/tmp/sso_20260520.w2.txt"))
+
+
+class MaintainerBatchProfileIsolationTests(unittest.TestCase):
+    def test_run_batch_resets_isolated_profile_between_rounds(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp_path = Path(tmpdir)
+            config_path = tmp_path / "maintainer.config.json"
+            config_path.write_text("{}", encoding="utf-8")
+            output_path = tmp_path / "sso.txt"
+            user_data_dir = tmp_path / "profile"
+            stale_cookie = user_data_dir / "Default" / "Cookies"
+            calls = {"count": 0}
+
+            def fake_registration(*_args: Any, **_kwargs: Any) -> dict[str, str]:
+                calls["count"] += 1
+                if calls["count"] == 1:
+                    stale_cookie.parent.mkdir(parents=True, exist_ok=True)
+                    stale_cookie.write_text("old-session", encoding="utf-8")
+                    return {"sso": "sso-first"}
+
+                self.assertFalse(
+                    stale_cookie.exists(),
+                    "worker profile must be cleared before the next registration round",
+                )
+                return {"sso": "sso-second"}
+
+            env = {
+                k: v
+                for k, v in os.environ.items()
+                if not k.startswith("MAINTAINER_")
+            }
+            env["MAINTAINER_CHROME_USER_DATA_DIR"] = str(user_data_dir)
+
+            with (
+                patch.dict(os.environ, env, clear=True),
+                patch("app.maintainer.runner.start_browser"),
+                patch("app.maintainer.runner.stop_browser"),
+                patch("app.maintainer.runner.push_sso_to_api"),
+                patch(
+                    "app.maintainer.runner.run_single_registration",
+                    side_effect=fake_registration,
+                ),
+            ):
+                tokens = run_batch(
+                    config_path=str(config_path),
+                    count=2,
+                    output=str(output_path),
+                )
+
+        self.assertEqual(tokens, ["sso-first", "sso-second"])
+        self.assertEqual(calls["count"], 2)
 
 
 class RunBatchParallelSpawnTests(unittest.TestCase):
