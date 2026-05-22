@@ -47,13 +47,20 @@ from app.dataplane.proxy import get_proxy_runtime
 from app.dataplane.proxy.adapters.headers import build_http_headers, build_sso_cookie
 from app.dataplane.proxy.adapters.session import ResettableSession, build_session_kwargs
 from app.dataplane.reverse.runtime.endpoint_table import CHAT
+from app.products._account_selection import selection_max_retries
 from ._format import (
     make_chat_response,
     make_response_id,
     make_stream_chunk,
     make_thinking_chunk,
 )
-from .chat import _quota_sync, _fail_sync, _feedback_kind
+from .chat import (
+    _configured_retry_codes,
+    _fail_sync,
+    _feedback_kind,
+    _quota_sync,
+    _should_retry_upstream,
+)
 
 _X_USER_ID_RE = re.compile(r"(?:^|;\s*)x-userid=([^;]+)")
 _CLOUDFLARE_CHALLENGE_MARKERS = (
@@ -278,6 +285,33 @@ def _image_generation_upstream_error_message(status_code: int, body: str) -> str
     return message
 
 
+def _image_retry_codes(cfg) -> frozenset[int]:
+    """Return image retry statuses.
+
+    Image generation has account-specific 403 failures (missing entitlement,
+    stale birth-date/NSFW state, or blocked image mode) that should swap
+    accounts. Cloudflare challenge 403 is handled separately and is not retried.
+    """
+    return _configured_retry_codes(cfg) | frozenset({403})
+
+
+def _upstream_error_body(exc: UpstreamError) -> str:
+    return str(exc.details.get("body", "") or "")
+
+
+def _should_retry_image_upstream(exc: UpstreamError, retry_codes: frozenset[int]) -> bool:
+    if exc.status == 403 and _is_cloudflare_challenge_body(_upstream_error_body(exc)):
+        return False
+    return _should_retry_upstream(exc, retry_codes)
+
+
+def _image_stream_error_to_upstream_error(ev: dict[str, Any], *, prefix: str) -> UpstreamError:
+    code = str(ev.get("error_code") or "").strip()
+    message = str(ev.get("error") or "unknown").strip() or "unknown"
+    status = 429 if code == "rate_limit_exceeded" or "rate limit" in message.lower() else 502
+    return UpstreamError(f"{prefix}: {message}", status=status, body=message)
+
+
 async def generate(
     *,
     model:           str,
@@ -319,156 +353,242 @@ async def generate(
             chat_format     = chat_format,
         )
 
-    acct = await _acct_dir.reserve_any(
-        spec.pool_candidates(),
-        now_s_override=now_s(),
-    )
-    if acct is None:
-        raise RateLimitError("No available accounts for image generation")
-
-    token       = acct.token
+    directory   = _acct_dir
     response_id = make_response_id()
     enable_pro  = model in _PRO_IMAGE_MODELS
     _ws_mode_id = int(spec.mode_id)
+    max_retries = selection_max_retries()
+    retry_codes = _image_retry_codes(cfg)
 
     if stream:
         async def _sse_stream() -> AsyncGenerator[str, None]:
-            success = False
-            fail_exc: BaseException | None = None
-            progress_map: dict[object, int] = {}
-            completed_ids: set[object] = set()
-            last_progress = -1
-            try:
-                async for ev in stream_images(
-                    token, prompt,
-                    aspect_ratio = aspect_ratio,
-                    n            = n,
-                    enable_nsfw  = enable_nsfw,
-                    enable_pro   = enable_pro,
-                ):
-                    ev_type = ev.get("type")
-                    if ev_type == "error":
-                        raise UpstreamError(f"Image error: {ev.get('error', '')}")
-                    if ev_type == "moderated":
-                        logger.warning("image generation slot moderated: image_id={}", ev.get("image_id", "")[:8])
-                        continue
-                    if ev_type == "progress":
-                        key = ev.get("image_id") or f"progress-{len(progress_map)}"
-                        progress_map[key] = _clamp_progress(ev.get("progress") or 0)
+            excluded: list[str] = []
+            last_exc: UpstreamError | None = None
+
+            for attempt in range(max_retries + 1):
+                acct = await directory.reserve(
+                    pool_candidates=spec.pool_candidates(),
+                    mode_id=_ws_mode_id,
+                    exclude_tokens=excluded or None,
+                    now_s_override=now_s(),
+                )
+                if acct is None:
+                    if last_exc is not None:
+                        raise last_exc
+                    raise RateLimitError("No available accounts for image generation")
+
+                token = acct.token
+                success = False
+                should_retry = False
+                fail_exc: BaseException | None = None
+                progress_map: dict[object, int] = {}
+                completed_ids: set[object] = set()
+                last_progress = -1
+                try:
+                    async for ev in stream_images(
+                        token, prompt,
+                        aspect_ratio = aspect_ratio,
+                        n            = n,
+                        enable_nsfw  = enable_nsfw,
+                        enable_pro   = enable_pro,
+                    ):
+                        ev_type = ev.get("type")
+                        if ev_type == "error":
+                            raise _image_stream_error_to_upstream_error(ev, prefix="Image error")
+                        if ev_type == "moderated":
+                            logger.warning("image generation slot moderated: image_id={}", ev.get("image_id", "")[:8])
+                            continue
+                        if ev_type == "progress":
+                            key = ev.get("image_id") or f"progress-{len(progress_map)}"
+                            progress_map[key] = _clamp_progress(ev.get("progress") or 0)
+                            aggregate = _compute_progress_percent(progress_map, n)
+                            if chat_format and aggregate > last_progress:
+                                last_progress = aggregate
+                                reason = _progress_reason(
+                                    "图片",
+                                    aggregate,
+                                    completed=len(completed_ids),
+                                    total=n,
+                                )
+                                chunk = make_thinking_chunk(response_id, model, reason)
+                                yield f"data: {orjson.dumps(chunk).decode()}\n\n"
+                            continue
+                        if not ev.get("is_final"):
+                            continue
+                        key = ev.get("image_id") or f"final-{len(completed_ids)}"
+                        progress_map[key] = 100
+                        completed_ids.add(key)
                         aggregate = _compute_progress_percent(progress_map, n)
                         if chat_format and aggregate > last_progress:
                             last_progress = aggregate
-                            reason = _progress_reason(
-                                "图片",
-                                aggregate,
-                                completed=len(completed_ids),
-                                total=n,
-                            )
+                            reason = _progress_reason("图片", aggregate, completed=len(completed_ids), total=n)
                             chunk = make_thinking_chunk(response_id, model, reason)
                             yield f"data: {orjson.dumps(chunk).decode()}\n\n"
-                        continue
-                    if not ev.get("is_final"):
-                        continue
-                    key = ev.get("image_id") or f"final-{len(completed_ids)}"
-                    progress_map[key] = 100
-                    completed_ids.add(key)
-                    aggregate = _compute_progress_percent(progress_map, n)
-                    if chat_format and aggregate > last_progress:
-                        last_progress = aggregate
-                        reason = _progress_reason("图片", aggregate, completed=len(completed_ids), total=n)
-                        chunk = make_thinking_chunk(response_id, model, reason)
+                        image = await _resolve_image_output(
+                            token=token,
+                            url=ev.get("url", ""),
+                            response_format=response_format,
+                            blob_b64=ev.get("blob") or None,
+                        )
+                        content = _output_content(image, chat_format=chat_format)
+                        chunk = make_stream_chunk(response_id, model, content)
                         yield f"data: {orjson.dumps(chunk).decode()}\n\n"
-                    image = await _resolve_image_output(
-                        token=token,
-                        url=ev.get("url", ""),
-                        response_format=response_format,
-                        blob_b64=ev.get("blob") or None,
-                    )
-                    content = _output_content(image, chat_format=chat_format)
-                    chunk = make_stream_chunk(response_id, model, content)
-                    yield f"data: {orjson.dumps(chunk).decode()}\n\n"
 
-                final = make_stream_chunk(response_id, model, "", is_final=True)
-                yield f"data: {orjson.dumps(final).decode()}\n\n"
-                yield "data: [DONE]\n\n"
-                success = True
-            except BaseException as exc:
-                fail_exc = exc
-                raise
-            finally:
-                await _acct_dir.release(acct)
-                # WS image gen has its own upstream rate limiting — skip quota tracking.
-                # Still propagate auth failures so bad accounts get marked expired.
-                if not success and fail_exc is not None:
-                    kind = _feedback_kind(fail_exc)
-                    if kind in (FeedbackKind.UNAUTHORIZED, FeedbackKind.FORBIDDEN):
-                        await _acct_dir.feedback(token, kind, _ws_mode_id)
+                    final = make_stream_chunk(response_id, model, "", is_final=True)
+                    yield f"data: {orjson.dumps(final).decode()}\n\n"
+                    yield "data: [DONE]\n\n"
+                    success = True
+                    return
+                except UpstreamError as exc:
+                    fail_exc = exc
+                    last_exc = exc
+                    should_retry = attempt < max_retries and _should_retry_image_upstream(exc, retry_codes)
+                    if not should_retry:
+                        raise
+                    logger.warning(
+                        "image stream retry scheduled: attempt={}/{} status={} token={}...",
+                        attempt + 1,
+                        max_retries,
+                        exc.status,
+                        token[:8],
+                    )
+                except BaseException as exc:
+                    fail_exc = exc
+                    raise
+                finally:
+                    await directory.release(acct)
+                    kind = (
+                        FeedbackKind.SUCCESS
+                        if success
+                        else _feedback_kind(fail_exc)
+                        if fail_exc
+                        else FeedbackKind.SERVER_ERROR
+                    )
+                    await directory.feedback(token, kind, _ws_mode_id, now_s_val=now_s())
+
+                if should_retry:
+                    excluded.append(token)
+                    continue
+
+            if last_exc is not None:
+                raise last_exc
+            raise RateLimitError("No available accounts for image generation")
 
         return _sse_stream()
 
     # Non-streaming: collect all final images.
     finals: list[_ImageOutput] = []
     reasoning_updates: list[str] = []
-    progress_map: dict[object, int] = {}
-    completed_ids: set[object] = set()
-    success = False
-    fail_exc: BaseException | None = None
-    try:
-        async for ev in stream_images(
-            token, prompt,
-            aspect_ratio = aspect_ratio,
-            n            = n,
-            enable_nsfw  = enable_nsfw,
-            enable_pro   = enable_pro,
-        ):
-            ev_type = ev.get("type")
-            if ev_type == "error":
-                raise UpstreamError(f"Image generation failed: {ev.get('error', 'unknown')}")
-            if ev_type == "moderated":
-                logger.warning("image generation slot moderated: image_id={}", ev.get("image_id", "")[:8])
-                continue
-            if ev_type == "progress":
-                key = ev.get("image_id") or f"progress-{len(progress_map)}"
-                progress_map[key] = _clamp_progress(ev.get("progress") or 0)
-                if chat_format:
-                    _append_reason_update(
-                        reasoning_updates,
-                        "图片",
-                        _compute_progress_percent(progress_map, n),
-                        completed=len(completed_ids),
-                        total=n,
+    excluded: list[str] = []
+    last_exc: UpstreamError | None = None
+    completed = False
+    for attempt in range(max_retries + 1):
+        acct = await directory.reserve(
+            pool_candidates=spec.pool_candidates(),
+            mode_id=_ws_mode_id,
+            exclude_tokens=excluded or None,
+            now_s_override=now_s(),
+        )
+        if acct is None:
+            if last_exc is not None:
+                raise last_exc
+            raise RateLimitError("No available accounts for image generation")
+
+        token = acct.token
+        finals = []
+        reasoning_updates = []
+        progress_map: dict[object, int] = {}
+        completed_ids: set[object] = set()
+        success = False
+        should_retry = False
+        fail_exc: BaseException | None = None
+        try:
+            async for ev in stream_images(
+                token, prompt,
+                aspect_ratio = aspect_ratio,
+                n            = n,
+                enable_nsfw  = enable_nsfw,
+                enable_pro   = enable_pro,
+            ):
+                ev_type = ev.get("type")
+                if ev_type == "error":
+                    raise _image_stream_error_to_upstream_error(
+                        ev,
+                        prefix="Image generation failed",
                     )
-                continue
-            if ev.get("is_final"):
-                key = ev.get("image_id") or f"final-{len(completed_ids)}"
-                progress_map[key] = 100
-                completed_ids.add(key)
-                if chat_format:
-                    _append_reason_update(
-                        reasoning_updates,
-                        "图片",
-                        _compute_progress_percent(progress_map, n),
-                        completed=len(completed_ids),
-                        total=n,
+                if ev_type == "moderated":
+                    logger.warning("image generation slot moderated: image_id={}", ev.get("image_id", "")[:8])
+                    continue
+                if ev_type == "progress":
+                    key = ev.get("image_id") or f"progress-{len(progress_map)}"
+                    progress_map[key] = _clamp_progress(ev.get("progress") or 0)
+                    if chat_format:
+                        _append_reason_update(
+                            reasoning_updates,
+                            "图片",
+                            _compute_progress_percent(progress_map, n),
+                            completed=len(completed_ids),
+                            total=n,
+                        )
+                    continue
+                if ev.get("is_final"):
+                    key = ev.get("image_id") or f"final-{len(completed_ids)}"
+                    progress_map[key] = 100
+                    completed_ids.add(key)
+                    if chat_format:
+                        _append_reason_update(
+                            reasoning_updates,
+                            "图片",
+                            _compute_progress_percent(progress_map, n),
+                            completed=len(completed_ids),
+                            total=n,
+                        )
+                    image = await _resolve_image_output(
+                        token=token,
+                        url=ev.get("url", ""),
+                        response_format=response_format,
+                        blob_b64=ev.get("blob") or None,
                     )
-                image = await _resolve_image_output(
-                    token=token,
-                    url=ev.get("url", ""),
-                    response_format=response_format,
-                    blob_b64=ev.get("blob") or None,
-                )
-                finals.append(image)
-        success = True
-    except BaseException as exc:
-        fail_exc = exc
-        raise
-    finally:
-        await _acct_dir.release(acct)
-        # WS image gen has its own upstream rate limiting — skip quota tracking.
-        if not success and fail_exc is not None:
-            kind = _feedback_kind(fail_exc)
-            if kind in (FeedbackKind.UNAUTHORIZED, FeedbackKind.FORBIDDEN):
-                await _acct_dir.feedback(token, kind, _ws_mode_id)
+                    finals.append(image)
+            success = True
+            completed = True
+        except UpstreamError as exc:
+            fail_exc = exc
+            last_exc = exc
+            should_retry = attempt < max_retries and _should_retry_image_upstream(exc, retry_codes)
+            if not should_retry:
+                raise
+            logger.warning(
+                "image retry scheduled: attempt={}/{} status={} token={}...",
+                attempt + 1,
+                max_retries,
+                exc.status,
+                token[:8],
+            )
+        except BaseException as exc:
+            fail_exc = exc
+            raise
+        finally:
+            await directory.release(acct)
+            kind = (
+                FeedbackKind.SUCCESS
+                if success
+                else _feedback_kind(fail_exc)
+                if fail_exc
+                else FeedbackKind.SERVER_ERROR
+            )
+            await directory.feedback(token, kind, _ws_mode_id, now_s_val=now_s())
+
+        if completed:
+            break
+        if should_retry:
+            excluded.append(token)
+            continue
+
+    if not completed:
+        if last_exc is not None:
+            raise last_exc
+        raise RateLimitError("No available accounts for image generation")
 
     if chat_format:
         content = "\n\n".join(image.markdown_value for image in finals)
@@ -993,60 +1113,99 @@ async def _run_lite_request(
 
     if _acct_dir is None:
         raise RateLimitError("Account directory not initialised")
+    directory = _acct_dir
 
-    acct = await _acct_dir.reserve(
-        pool_candidates = spec.pool_candidates(),
-        mode_id         = int(spec.mode_id),
-        now_s_override  = now_s(),
-    )
-    if acct is None:
-        raise RateLimitError("No available accounts for image generation")
+    mode_id = int(spec.mode_id)
+    max_retries = selection_max_retries()
+    retry_codes = _image_retry_codes(get_config())
+    excluded: list[str] = []
+    last_exc: UpstreamError | None = None
 
-    token   = acct.token
-    adapter = StreamAdapter()
-    success = False
-    fail_exc: BaseException | None = None
-    try:
-        async for line in _stream_lite_generate(
-            token,
-            prompt,
-            spec.mode_id,
-            timeout_s=timeout_s,
-        ):
-            ev_type, data = classify_line(line)
-            if ev_type == "done":
-                break
-            if ev_type != "data" or not data:
-                continue
-            for ev in adapter.feed(data):
-                if ev.kind == "image_progress":
-                    if progress_cb is not None:
-                        try:
-                            await progress_cb(_clamp_progress(int(ev.content or "0")))
-                        except ValueError:
-                            pass
-                if ev.kind == "image" and ev.content:
-                    if progress_cb is not None:
-                        await progress_cb(100)
-                    image = await _resolve_image_output(
-                        token=token,
-                        url=ev.content,
-                        response_format=response_format,
-                    )
-                    success = True
-                    return image
-        raise UpstreamError("Image generation returned no images")
-    except BaseException as exc:
-        fail_exc = exc
-        raise
-    finally:
-        await _acct_dir.release(acct)
-        kind = FeedbackKind.SUCCESS if success else _feedback_kind(fail_exc) if fail_exc else FeedbackKind.SERVER_ERROR
-        await _acct_dir.feedback(token, kind, int(spec.mode_id))
-        if success:
-            asyncio.create_task(_quota_sync(token, int(spec.mode_id)))
-        else:
-            asyncio.create_task(_fail_sync(token, int(spec.mode_id), fail_exc))
+    for attempt in range(max_retries + 1):
+        acct = await directory.reserve(
+            pool_candidates=spec.pool_candidates(),
+            mode_id=mode_id,
+            exclude_tokens=excluded or None,
+            now_s_override=now_s(),
+        )
+        if acct is None:
+            if last_exc is not None:
+                raise last_exc
+            raise RateLimitError("No available accounts for image generation")
+
+        token = acct.token
+        adapter = StreamAdapter()
+        success = False
+        should_retry = False
+        fail_exc: BaseException | None = None
+        try:
+            async for line in _stream_lite_generate(
+                token,
+                prompt,
+                spec.mode_id,
+                timeout_s=timeout_s,
+            ):
+                ev_type, data = classify_line(line)
+                if ev_type == "done":
+                    break
+                if ev_type != "data" or not data:
+                    continue
+                for ev in adapter.feed(data):
+                    if ev.kind == "image_progress":
+                        if progress_cb is not None:
+                            try:
+                                await progress_cb(_clamp_progress(int(ev.content or "0")))
+                            except ValueError:
+                                pass
+                    if ev.kind == "image" and ev.content:
+                        if progress_cb is not None:
+                            await progress_cb(100)
+                        image = await _resolve_image_output(
+                            token=token,
+                            url=ev.content,
+                            response_format=response_format,
+                        )
+                        success = True
+                        return image
+            raise UpstreamError("Image generation returned no images")
+        except UpstreamError as exc:
+            fail_exc = exc
+            last_exc = exc
+            should_retry = attempt < max_retries and _should_retry_image_upstream(exc, retry_codes)
+            if not should_retry:
+                raise
+            logger.warning(
+                "lite image retry scheduled: attempt={}/{} status={} token={}...",
+                attempt + 1,
+                max_retries,
+                exc.status,
+                token[:8],
+            )
+        except BaseException as exc:
+            fail_exc = exc
+            raise
+        finally:
+            await directory.release(acct)
+            kind = (
+                FeedbackKind.SUCCESS
+                if success
+                else _feedback_kind(fail_exc)
+                if fail_exc
+                else FeedbackKind.SERVER_ERROR
+            )
+            await directory.feedback(token, kind, mode_id)
+            if success:
+                asyncio.create_task(_quota_sync(token, mode_id))
+            else:
+                asyncio.create_task(_fail_sync(token, mode_id, fail_exc))
+
+        if should_retry:
+            excluded.append(token)
+            continue
+
+    if last_exc is not None:
+        raise last_exc
+    raise RateLimitError("No available accounts for image generation")
 
 
 async def _run_lite_batch(
@@ -1069,11 +1228,25 @@ async def _run_lite_batch(
             progress_cb=None if progress_cb is None else lambda progress: progress_cb(idx, progress),
         )
 
-    async with asyncio.TaskGroup() as tg:
-        for idx in range(n):
-            tg.create_task(_runner(idx), name=f"lite-image-{idx}")
-
-    return [result for result in results if result is not None]
+    tasks = [asyncio.create_task(_runner(idx), name=f"lite-image-{idx}") for idx in range(n)]
+    gathered = await asyncio.gather(*tasks, return_exceptions=True)
+    failures = [item for item in gathered if isinstance(item, BaseException)]
+    images = [result for result in results if result is not None]
+    if images:
+        if failures:
+            logger.warning(
+                "lite image batch returned partial results: requested={} received={} failed={}",
+                n,
+                len(images),
+                len(failures),
+            )
+        return images
+    if failures:
+        first = failures[0]
+        if isinstance(first, (ValidationError, UpstreamError)):
+            raise first
+        raise UpstreamError(f"Image generation failed: {first}") from first
+    return []
 
 
 async def edit(

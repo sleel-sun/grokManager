@@ -12,12 +12,20 @@ from app.platform.auth.middleware import get_webui_key, is_webui_enabled
 from app.platform.config.snapshot import get_config
 from app.platform.logging.logger import logger
 from app.platform.runtime.clock import now_s
-from app.products.openai.images import resolve_aspect_ratio
+from app.control.account.enums import FeedbackKind
+from app.products._account_selection import selection_max_retries
+from app.products.openai.chat import _feedback_kind
+from app.products.openai.images import (
+    _image_retry_codes,
+    _image_stream_error_to_upstream_error,
+    _should_retry_image_upstream,
+    resolve_aspect_ratio,
+)
 
 router = APIRouter()
 
 
-async def _acquire_token():
+async def _acquire_token(exclude_tokens: list[str] | None = None):
     from app.dataplane.account import _directory as _acct_dir
     if _acct_dir is None:
         return None, None
@@ -28,6 +36,7 @@ async def _acquire_token():
     acct = await _acct_dir.reserve(
         pool_candidates=spec.pool_candidates(),
         mode_id=int(spec.mode_id),
+        exclude_tokens=exclude_tokens or None,
         now_s_override=now_s(),
     )
     if acct is None:
@@ -110,42 +119,101 @@ async def imagine_ws(websocket: WebSocket):
             "quality": quality,
         })
 
-        acct = None
+        enable_nsfw = nsfw if nsfw is not None else get_config().get_bool("features.enable_nsfw", True)
+        max_retries = selection_max_retries()
+        retry_codes = _image_retry_codes(get_config())
+        excluded: list[str] = []
+        last_exc = None
         try:
-            token, acct = await _acquire_token()
-            if not token:
-                await _send({
-                    "type": "error",
-                    "message": "No available accounts for this model tier",
-                    "code": "rate_limit_exceeded",
-                })
-                return
-
-            enable_nsfw = nsfw if nsfw is not None else get_config().get_bool("features.enable_nsfw", True)
-            async for event in stream_images(
-                token,
-                prompt,
-                aspect_ratio=aspect_ratio,
-                n=count,
-                enable_nsfw=enable_nsfw,
-                enable_pro=enable_pro,
-            ):
-                if stop_event.is_set():
-                    return
-                if not isinstance(event, dict) or event.get("type") == "_meta":
-                    continue
-                event.setdefault("run_id", run_id)
-                await _send(event)
-                if event.get("type") == "error":
+            for attempt in range(max_retries + 1):
+                token, acct = await _acquire_token(excluded or None)
+                if not token:
+                    await _send({
+                        "type": "error",
+                        "message": last_exc.message if last_exc else "No available accounts for this model tier",
+                        "code": "rate_limit_exceeded",
+                    })
                     return
 
-            if not stop_event.is_set():
-                await _send({
-                    "type": "status",
-                    "status": "completed",
-                    "run_id": run_id,
-                    "count": count,
-                })
+                success = False
+                should_retry = False
+                fail_exc = None
+                try:
+                    async for event in stream_images(
+                        token,
+                        prompt,
+                        aspect_ratio=aspect_ratio,
+                        n=count,
+                        enable_nsfw=enable_nsfw,
+                        enable_pro=enable_pro,
+                    ):
+                        if stop_event.is_set():
+                            return
+                        if not isinstance(event, dict) or event.get("type") == "_meta":
+                            continue
+                        if event.get("type") == "error":
+                            exc = _image_stream_error_to_upstream_error(
+                                event,
+                                prefix="Image generation failed",
+                            )
+                            fail_exc = exc
+                            last_exc = exc
+                            should_retry = (
+                                attempt < max_retries
+                                and _should_retry_image_upstream(exc, retry_codes)
+                            )
+                            if should_retry:
+                                logger.warning(
+                                    "webui imagine retry scheduled: attempt={}/{} status={} token={}...",
+                                    attempt + 1,
+                                    max_retries,
+                                    exc.status,
+                                    token[:8],
+                                )
+                                break
+                            event.setdefault("run_id", run_id)
+                            await _send(event)
+                            return
+
+                        event.setdefault("run_id", run_id)
+                        await _send(event)
+
+                    if should_retry:
+                        excluded.append(token)
+                        continue
+
+                    success = True
+                    if not stop_event.is_set():
+                        await _send({
+                            "type": "status",
+                            "status": "completed",
+                            "run_id": run_id,
+                            "count": count,
+                        })
+                    return
+                finally:
+                    if acct and _acct_dir:
+                        await _acct_dir.release(acct)
+                        if not stop_event.is_set():
+                            kind = (
+                                FeedbackKind.SUCCESS
+                                if success
+                                else _feedback_kind(fail_exc)
+                                if fail_exc
+                                else FeedbackKind.SERVER_ERROR
+                            )
+                            await _acct_dir.feedback(
+                                token,
+                                kind,
+                                int(getattr(acct, "mode_id", 0)),
+                                now_s_val=now_s(),
+                            )
+
+            await _send({
+                "type": "error",
+                "message": last_exc.message if last_exc else "No available accounts for this model tier",
+                "code": "rate_limit_exceeded",
+            })
         except asyncio.CancelledError:
             pass
         except Exception as exc:
@@ -160,8 +228,6 @@ async def imagine_ws(websocket: WebSocket):
                 "code": "internal_error",
             })
         finally:
-            if acct and _acct_dir:
-                await _acct_dir.release(acct)
             if stop_event.is_set():
                 await _send({"type": "status", "status": "stopped", "run_id": run_id})
 
