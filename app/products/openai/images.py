@@ -153,6 +153,20 @@ def _normalize_response_format(response_format: str) -> str:
     return fmt
 
 
+def _normalize_image_delivery_format(value: str | None) -> str:
+    fmt = (value or "grok_url").strip().lower()
+    if fmt not in {"grok_url", "local_url", "grok_md", "local_md", "base64"}:
+        raise ValidationError(
+            "image_format must be one of [grok_url, local_url, grok_md, local_md, base64]",
+            param="features.image_format",
+        )
+    return fmt
+
+
+def _upstream_image_output(url: str) -> _ImageOutput:
+    return _ImageOutput(api_value=url, markdown_value=f"![image]({url})")
+
+
 def _app_url() -> str:
     return get_config().get_str("app.app_url", "").rstrip("/")
 
@@ -196,8 +210,12 @@ async def _resolve_image_output(
     blob_b64: str | None = None,
 ) -> _ImageOutput:
     fmt = _normalize_response_format(response_format)
-    if fmt == "url" and not _app_url():
-        return _ImageOutput(api_value=url, markdown_value=f"![image]({url})")
+    image_format = _normalize_image_delivery_format(
+        get_config().get_str("features.image_format", "grok_url")
+    )
+    should_localize = fmt == "url" and image_format in {"local_url", "local_md"} and bool(_app_url())
+    if fmt == "url" and not should_localize:
+        return _upstream_image_output(url)
 
     mime = infer_content_type(url) or "image/jpeg"
     if blob_b64 is not None:
@@ -206,7 +224,15 @@ async def _resolve_image_output(
         except (ValueError, TypeError, binascii.Error) as exc:
             raise UpstreamError(f"Invalid upstream image blob: {exc}") from exc
     else:
-        raw, mime = await _download_image_bytes(token, url)
+        try:
+            raw, mime = await _download_image_bytes(token, url)
+        except Exception as exc:
+            if fmt == "url":
+                logger.warning(
+                    "image download failed: fallback_to=upstream_url error={}", exc
+                )
+                return _upstream_image_output(url)
+            raise
 
     if fmt == "b64_json":
         b64 = blob_b64 or base64.b64encode(raw).decode()

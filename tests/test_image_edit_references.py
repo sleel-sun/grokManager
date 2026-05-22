@@ -2,7 +2,16 @@ import asyncio
 import unittest
 from unittest.mock import patch
 
+from app.platform.errors import UpstreamError
 from app.products.openai.images import _prepare_edit_reference
+
+
+class _FakeConfig:
+    def __init__(self, values: dict[str, str]) -> None:
+        self._values = values
+
+    def get_str(self, key: str, default: str = "") -> str:
+        return self._values.get(key, default)
 
 
 class ImageEditReferenceTests(unittest.TestCase):
@@ -36,6 +45,60 @@ class ImageGenerationErrorTests(unittest.TestCase):
         message = images._image_generation_upstream_error_message(403, "")
 
         self.assertEqual(message, "Image-generation upstream returned 403")
+
+
+class ImageGenerationOutputTests(unittest.TestCase):
+    def test_grok_url_format_does_not_download_even_when_app_url_is_configured(self) -> None:
+        from app.products.openai import images
+
+        url = "https://assets.grok.com/users/user-1/image-1/content"
+        cfg = _FakeConfig(
+            {
+                "app.app_url": "http://127.0.0.1:8000",
+                "features.image_format": "grok_url",
+            }
+        )
+
+        with patch("app.products.openai.images.get_config", return_value=cfg), patch(
+            "app.products.openai.images._download_image_bytes",
+            side_effect=AssertionError("grok_url must not download assets"),
+        ):
+            output = asyncio.run(
+                images._resolve_image_output(
+                    token="token",
+                    url=url,
+                    response_format="url",
+                )
+            )
+
+        self.assertEqual(output.api_value, url)
+        self.assertEqual(output.markdown_value, f"![image]({url})")
+
+    def test_local_url_format_falls_back_to_upstream_url_when_download_fails(self) -> None:
+        from app.products.openai import images
+
+        url = "https://assets.grok.com/users/user-1/image-1/content"
+        cfg = _FakeConfig(
+            {
+                "app.app_url": "http://127.0.0.1:8000",
+                "features.image_format": "local_url",
+            }
+        )
+
+        with patch("app.products.openai.images.get_config", return_value=cfg), patch(
+            "app.products.openai.images._download_image_bytes",
+            side_effect=UpstreamError("download returned 403", status=403),
+        ):
+            output = asyncio.run(
+                images._resolve_image_output(
+                    token="token",
+                    url=url,
+                    response_format="url",
+                )
+            )
+
+        self.assertEqual(output.api_value, url)
+        self.assertEqual(output.markdown_value, f"![image]({url})")
 
 
 if __name__ == "__main__":
