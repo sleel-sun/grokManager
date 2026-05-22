@@ -348,6 +348,40 @@ class MaintainerChromeUserDataDirTests(unittest.TestCase):
         matching = [a for a in opts.arguments if a.startswith("--user-data-dir=")]
         self.assertEqual(matching, [])
 
+    def test_headless_browser_options_include_registration_stability_args(
+        self,
+    ) -> None:
+        env = {
+            k: v
+            for k, v in os.environ.items()
+            if not k.startswith("MAINTAINER_")
+        }
+        env["MAINTAINER_HEADLESS"] = "true"
+        with patch.dict(os.environ, env, clear=True):
+            opts = _configure_browser_options()
+
+        self.assertIn("--headless=new", opts.arguments)
+        self.assertIn("--window-size=1440,900", opts.arguments)
+        self.assertIn("--disable-gpu", opts.arguments)
+        self.assertIn("--disable-blink-features=AutomationControlled", opts.arguments)
+        self.assertIn("--lang=en-US", opts.arguments)
+        self.assertIn("--password-store=basic", opts.arguments)
+        self.assertIn("--use-mock-keychain", opts.arguments)
+
+    def test_maintainer_chrome_args_allows_extra_browser_arguments(self) -> None:
+        env = {
+            k: v
+            for k, v in os.environ.items()
+            if not k.startswith("MAINTAINER_")
+        }
+        env["MAINTAINER_CHROME_ARGS"] = '--foo --bar=baz "--quoted=value with space"'
+        with patch.dict(os.environ, env, clear=True):
+            opts = _configure_browser_options()
+
+        self.assertIn("--foo", opts.arguments)
+        self.assertIn("--bar=baz", opts.arguments)
+        self.assertIn("--quoted=value with space", opts.arguments)
+
 
 class MaintainerPauseCheckTests(unittest.TestCase):
     def test_wait_while_paused_returns_false_when_not_paused(self) -> None:

@@ -6,6 +6,7 @@ import logging
 import multiprocessing as mp
 import os
 import secrets
+import shlex
 import shutil
 import sys
 import tempfile
@@ -36,6 +37,14 @@ from .settings import (
 
 SIGNUP_URL = "https://accounts.x.ai/sign-up?redirect=grok-com"
 DEFAULT_MIN_BROWSER_FREE_BYTES = 256 * 1024 * 1024
+DEFAULT_HEADLESS_WINDOW_SIZE = "1440,900"
+HEADLESS_STABILITY_ARGS = (
+    "--disable-gpu",
+    "--disable-blink-features=AutomationControlled",
+    "--lang=en-US",
+    "--password-store=basic",
+    "--use-mock-keychain",
+)
 
 browser = None
 page = None
@@ -226,6 +235,16 @@ def _stop_virtual_display() -> None:
     _virtual_display = None
 
 
+def _extra_chromium_args_from_env() -> list[str]:
+    raw = os.getenv("MAINTAINER_CHROME_ARGS", "").strip()
+    if not raw:
+        return []
+    try:
+        return shlex.split(raw)
+    except ValueError:
+        return raw.split()
+
+
 def _configure_browser_options() -> ChromiumOptions:
     opts = ChromiumOptions()
     opts.auto_port()
@@ -244,8 +263,11 @@ def _configure_browser_options() -> ChromiumOptions:
     opts.set_argument("--no-first-run")
     opts.set_argument("--no-default-browser-check")
 
-    if as_bool(os.getenv("MAINTAINER_HEADLESS"), default=False):
+    is_headless = as_bool(os.getenv("MAINTAINER_HEADLESS"), default=False)
+    if is_headless:
         opts.headless(True)
+        for arg in HEADLESS_STABILITY_ARGS:
+            opts.set_argument(arg)
 
     if as_bool(os.getenv("MAINTAINER_NO_SANDBOX"), default=_running_in_container()):
         opts.set_argument("--no-sandbox")
@@ -256,8 +278,13 @@ def _configure_browser_options() -> ChromiumOptions:
         opts.set_argument("--disable-dev-shm-usage")
 
     window_size = os.getenv("MAINTAINER_WINDOW_SIZE", "").strip()
+    if is_headless and not window_size:
+        window_size = DEFAULT_HEADLESS_WINDOW_SIZE
     if window_size:
         opts.set_argument("--window-size", window_size)
+
+    for arg in _extra_chromium_args_from_env():
+        opts.set_argument(arg)
 
     return opts
 

@@ -31,6 +31,7 @@ _ENV_KEYS = (
     "MAINTAINER_NO_SANDBOX",
     "MAINTAINER_DISABLE_DEV_SHM",
     "MAINTAINER_WINDOW_SIZE",
+    "MAINTAINER_CHROME_ARGS",
 )
 _SECRET_KEYS = {"email_admin_password", "api_token", "admin_password", "token"}
 
