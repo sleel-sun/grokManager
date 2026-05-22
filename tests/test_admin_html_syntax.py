@@ -74,3 +74,12 @@ def test_admin_html_inline_scripts_have_no_syntax_errors(html_file: Path) -> Non
             f"breaking form handlers and polling. Common causes: duplicate `const`/`let` "
             f"declarations in the same scope, stray top-level `return`, or mismatched braces."
         )
+
+
+def test_maintainer_page_uses_absolute_admin_api_prefix() -> None:
+    """Pause/resume/stop must never resolve to relative ``api/maintainer/...``."""
+    html = (STATIC_ADMIN_DIR / "maintainer.html").read_text(encoding="utf-8")
+
+    assert "const MAINTAINER_ADMIN_API = '/admin/api';" in html
+    assert "fetch(MAINTAINER_ADMIN_API + path" in html
+    assert "verifyKey(MAINTAINER_ADMIN_API + '/verify'" in html
