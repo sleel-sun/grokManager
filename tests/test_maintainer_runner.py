@@ -77,11 +77,16 @@ class RunBatchParallelSpawnTests(unittest.TestCase):
         ctx = MagicMock()
 
         def make_process(*args: object, **kwargs: object) -> MagicMock:
-            proc = MagicMock(spec=["start", "join", "pid", "exitcode"])
+            proc = MagicMock(
+                spec=["start", "join", "pid", "exitcode", "is_alive", "terminate", "kill"]
+            )
             proc.start = MagicMock()
             proc.join = MagicMock()
             proc.pid = 10000 + len(captured_processes)
             proc.exitcode = 0
+            proc.is_alive = MagicMock(return_value=False)
+            proc.terminate = MagicMock()
+            proc.kill = MagicMock()
             proc._ctor_args = args  # for assertions
             proc._ctor_kwargs = kwargs
             captured_processes.append(proc)
@@ -214,7 +219,12 @@ class RunBatchParallelSpawnTests(unittest.TestCase):
         def make_queue() -> MagicMock:
             queue = MagicMock()
             queue.put = MagicMock()
-            queue.get_nowait = MagicMock(side_effect=Exception("empty"))
+            if not queues_built:
+                queue.get_nowait = MagicMock(
+                    side_effect=[(0, [], None), (1, [], None), Exception("empty")]
+                )
+            else:
+                queue.get_nowait = MagicMock(side_effect=Exception("empty"))
             queue.get = MagicMock(return_value=None)
             queues_built.append(queue)
             return queue
@@ -283,6 +293,186 @@ class RunBatchParallelSpawnTests(unittest.TestCase):
             any(name == "alive" for name in event_names) or not event_names,
             f"no alive events observed: {event_names}",
         )
+
+    def test_worker_exit_without_result_emits_failure_progress(self) -> None:
+        captured: list[MagicMock] = []
+        ctx = MagicMock()
+
+        def make_process(*args: object, **kwargs: object) -> MagicMock:
+            proc = MagicMock(
+                spec=["start", "join", "pid", "exitcode", "is_alive", "terminate", "kill"]
+            )
+            proc.start = MagicMock()
+            proc.join = MagicMock()
+            proc.pid = 11000 + len(captured)
+            proc.exitcode = 0 if len(captured) == 0 else 1
+            proc.is_alive = MagicMock(return_value=False)
+            proc.terminate = MagicMock()
+            proc.kill = MagicMock()
+            proc._ctor_args = args
+            proc._ctor_kwargs = kwargs
+            captured.append(proc)
+            return proc
+
+        result_queue = MagicMock()
+        result_queue.get_nowait = MagicMock(
+            side_effect=[(0, ["sso-ok"], None), Exception("empty")]
+        )
+        progress_queue = MagicMock()
+        progress_queue.get = MagicMock(return_value=None)
+        progress_queue.put = MagicMock()
+        ctx.Process = MagicMock(side_effect=make_process)
+        ctx.Queue = MagicMock(side_effect=[result_queue, progress_queue])
+
+        events: list[tuple[int, str, dict[str, Any]]] = []
+        pause_event = MagicMock()
+        pause_event.is_set = MagicMock(return_value=True)
+        stop_event = MagicMock()
+
+        with patch("app.maintainer.runner.mp.get_context", return_value=ctx):
+            tokens = run_batch_parallel(
+                config_path="/tmp/fake-config.json",
+                count=1,
+                workers=2,
+                output="/tmp/fake-sso.txt",
+                pause_event=pause_event,
+                stop_event=stop_event,
+                progress_callback=lambda worker_id, event, payload: events.append(
+                    (worker_id, event, payload)
+                ),
+            )
+
+        self.assertEqual(tokens, ["sso-ok"])
+        failure_events = [event for event in events if event[1] == "worker_failed"]
+        self.assertEqual(len(failure_events), 1)
+        self.assertEqual(failure_events[0][0], 1)
+        self.assertIn("exitcode=1", failure_events[0][2]["error"])
+
+    def test_failed_worker_output_tokens_are_recovered_and_pushed(self) -> None:
+        captured: list[MagicMock] = []
+        ctx = MagicMock()
+
+        def make_process(*args: object, **kwargs: object) -> MagicMock:
+            proc = MagicMock(
+                spec=["start", "join", "pid", "exitcode", "is_alive", "terminate", "kill"]
+            )
+            proc.start = MagicMock()
+            proc.join = MagicMock()
+            proc.pid = 12000 + len(captured)
+            proc.exitcode = 0 if len(captured) == 0 else 1
+            proc.is_alive = MagicMock(return_value=False)
+            proc.terminate = MagicMock()
+            proc.kill = MagicMock()
+            proc._ctor_args = args
+            proc._ctor_kwargs = kwargs
+            captured.append(proc)
+            return proc
+
+        result_queue = MagicMock()
+        result_queue.get_nowait = MagicMock(
+            side_effect=[(0, ["sso-ok"], None), Exception("empty")]
+        )
+        progress_queue = MagicMock()
+        progress_queue.get = MagicMock(return_value=None)
+        progress_queue.put = MagicMock()
+        ctx.Process = MagicMock(side_effect=make_process)
+        ctx.Queue = MagicMock(side_effect=[result_queue, progress_queue])
+
+        pause_event = MagicMock()
+        pause_event.is_set = MagicMock(return_value=True)
+        stop_event = MagicMock()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output = Path(tmpdir) / "sso.txt"
+            _build_worker_output(output, 1).write_text("sso-lost\n", encoding="utf-8")
+            with (
+                patch("app.maintainer.runner.mp.get_context", return_value=ctx),
+                patch("app.maintainer.runner.push_sso_to_api") as push_mock,
+            ):
+                tokens = run_batch_parallel(
+                    config_path="/tmp/fake-config.json",
+                    count=1,
+                    workers=2,
+                    output=str(output),
+                    pause_event=pause_event,
+                    stop_event=stop_event,
+                )
+
+        self.assertEqual(tokens, ["sso-ok", "sso-lost"])
+        push_mock.assert_called_once_with(["sso-lost"])
+
+    def test_idle_worker_is_terminated_and_marked_failed(self) -> None:
+        captured: list[MagicMock] = []
+        ctx = MagicMock()
+
+        def make_process(*args: object, **kwargs: object) -> MagicMock:
+            proc = MagicMock(
+                spec=["start", "join", "pid", "exitcode", "is_alive", "terminate", "kill"]
+            )
+            alive = {"value": len(captured) == 0}
+            proc.start = MagicMock()
+            proc.join = MagicMock()
+            proc.pid = 13000 + len(captured)
+            proc.exitcode = None if alive["value"] else 0
+
+            def is_alive() -> bool:
+                return alive["value"]
+
+            def terminate() -> None:
+                alive["value"] = False
+                proc.exitcode = -15
+
+            proc.is_alive = MagicMock(side_effect=is_alive)
+            proc.terminate = MagicMock(side_effect=terminate)
+            proc.kill = MagicMock()
+            proc._ctor_args = args
+            proc._ctor_kwargs = kwargs
+            captured.append(proc)
+            return proc
+
+        result_queue = MagicMock()
+        result_queue.get_nowait = MagicMock(
+            side_effect=[(1, ["sso-ok"], None), Exception("empty")]
+        )
+        progress_queue = MagicMock()
+        progress_queue.get = MagicMock(return_value=None)
+        progress_queue.put = MagicMock()
+        ctx.Process = MagicMock(side_effect=make_process)
+        ctx.Queue = MagicMock(side_effect=[result_queue, progress_queue])
+
+        events: list[tuple[int, str, dict[str, Any]]] = []
+        pause_event = MagicMock()
+        pause_event.is_set = MagicMock(return_value=True)
+        stop_event = MagicMock()
+
+        env = {
+            k: v
+            for k, v in os.environ.items()
+            if k != "MAINTAINER_WORKER_IDLE_TIMEOUT"
+        }
+        env["MAINTAINER_WORKER_IDLE_TIMEOUT"] = "0.01"
+        with (
+            patch.dict(os.environ, env, clear=True),
+            patch("app.maintainer.runner.mp.get_context", return_value=ctx),
+        ):
+            tokens = run_batch_parallel(
+                config_path="/tmp/fake-config.json",
+                count=1,
+                workers=2,
+                output="/tmp/fake-sso.txt",
+                pause_event=pause_event,
+                stop_event=stop_event,
+                progress_callback=lambda worker_id, event, payload: events.append(
+                    (worker_id, event, payload)
+                ),
+            )
+
+        self.assertEqual(tokens, ["sso-ok"])
+        captured[0].terminate.assert_called_once()
+        failure_events = [event for event in events if event[1] == "worker_failed"]
+        self.assertEqual(len(failure_events), 1)
+        self.assertEqual(failure_events[0][0], 0)
+        self.assertIn("idle timeout", failure_events[0][2]["error"])
 
 
 class MaintainerChromeUserDataDirTests(unittest.TestCase):

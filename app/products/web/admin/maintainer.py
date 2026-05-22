@@ -429,7 +429,7 @@ async def _run_background(
                 entry["last_sso_tail"] = str(payload["sso_tail"])
             if "elapsed_s" in payload:
                 entry["last_elapsed_s"] = float(payload["elapsed_s"])
-        if event == "round_failed" and "error" in payload:
+        if event in {"round_failed", "worker_failed"} and "error" in payload:
             entry["last_error"] = str(payload["error"])[:200]
         snap[worker_key] = entry
         _state["per_worker_progress"] = snap

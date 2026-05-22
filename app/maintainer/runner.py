@@ -39,6 +39,8 @@ from .settings import (
 SIGNUP_URL = "https://accounts.x.ai/sign-up?redirect=grok-com"
 DEFAULT_MIN_BROWSER_FREE_BYTES = 256 * 1024 * 1024
 DEFAULT_HEADLESS_WINDOW_SIZE = "1440,900"
+DEFAULT_WORKER_IDLE_TIMEOUT = 600.0
+WORKER_TERMINATE_GRACE_SECONDS = 5.0
 WORKER_DEBUG_PORT_MIN = 20_000
 WORKER_DEBUG_PORT_SPAN = 40_000
 HEADLESS_STABILITY_ARGS = (
@@ -240,6 +242,16 @@ def _min_browser_free_bytes() -> int:
         return max(0, int(raw))
     except ValueError:
         return DEFAULT_MIN_BROWSER_FREE_BYTES
+
+
+def _worker_idle_timeout_seconds() -> float:
+    raw = os.getenv("MAINTAINER_WORKER_IDLE_TIMEOUT", "").strip()
+    if not raw:
+        return DEFAULT_WORKER_IDLE_TIMEOUT
+    try:
+        return max(0.0, float(raw))
+    except ValueError:
+        return DEFAULT_WORKER_IDLE_TIMEOUT
 
 
 def _ensure_browser_storage_ready(path_like: str | os.PathLike[str]) -> Path:
@@ -1802,6 +1814,23 @@ def _build_worker_output(base: Path, worker_id: int) -> Path:
     return base.with_name(f"{base.stem}.w{worker_id}{suffix}")
 
 
+def _read_sso_tokens_from_file(path: Path) -> list[str]:
+    try:
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return []
+
+    tokens: list[str] = []
+    seen: set[str] = set()
+    for line in lines:
+        token = line.strip()
+        if not token or token in seen:
+            continue
+        seen.add(token)
+        tokens.append(token)
+    return tokens
+
+
 def run_batch_parallel(
     *,
     config_path: str | os.PathLike[str],
@@ -1880,8 +1909,10 @@ def run_batch_parallel(
     progress_queue: Any = ctx.Queue()
 
     processes: list[Any] = []
+    worker_outputs: dict[int, Path] = {}
     for i, share in enumerate(shares):
         worker_output = _build_worker_output(base_output, i)
+        worker_outputs[i] = worker_output
         p = ctx.Process(
             target=_worker_entry,
             args=(
@@ -1903,6 +1934,19 @@ def run_batch_parallel(
     import threading
 
     drain_stop = threading.Event()
+    last_progress_at: dict[int, float] = {}
+    failure_reported: set[int] = set()
+
+    def _emit_worker_failure(worker_id: int, error: str) -> None:
+        if worker_id in failure_reported:
+            return
+        failure_reported.add(worker_id)
+        orch_logger.info("Worker #%d: worker_failed error=%s", worker_id, error)
+        if progress_callback is not None:
+            try:
+                progress_callback(worker_id, "worker_failed", {"error": error})
+            except Exception:
+                pass
 
     def _drain_progress() -> None:
         """Consume worker progress events and write interleaved log lines.
@@ -1924,12 +1968,18 @@ def run_batch_parallel(
                 worker_id, name, payload = event
             except Exception:
                 continue
+            worker_id = int(worker_id)
+            name = str(name)
+            payload = dict(payload or {})
+            last_progress_at[worker_id] = time.monotonic()
+            if name == "worker_failed":
+                failure_reported.add(worker_id)
             kv = " ".join(f"{k}={v}" for k, v in (payload or {}).items())
             suffix = f" {kv}" if kv else ""
-            orch_logger.info("Worker #%d: %s%s", int(worker_id), str(name), suffix)
+            orch_logger.info("Worker #%d: %s%s", worker_id, name, suffix)
             if progress_callback is not None:
                 try:
-                    progress_callback(int(worker_id), str(name), dict(payload or {}))
+                    progress_callback(worker_id, name, payload)
                 except Exception:
                     pass
 
@@ -1938,23 +1988,75 @@ def run_batch_parallel(
 
     for idx, p in enumerate(processes):
         p.start()
+        last_progress_at[idx] = time.monotonic()
         orch_logger.info("Worker #%d 已启动 pid=%s", idx, p.pid)
 
     if spawned_workers_callback is not None:
         spawned_workers_callback(len(processes))
 
+    idle_timeout = _worker_idle_timeout_seconds()
+    finished_workers: set[int] = set()
+    timed_out_workers: set[int] = set()
+
+    def _is_process_alive(process: Any) -> bool:
+        try:
+            return bool(process.is_alive())
+        except Exception:
+            return getattr(process, "exitcode", None) is None
+
     try:
-        for idx, p in enumerate(processes):
-            p.join()
-            orch_logger.info(
-                "Worker #%d 已结束 exitcode=%s", idx, p.exitcode
-            )
+        while len(finished_workers) < len(processes):
+            for idx, p in enumerate(processes):
+                if idx in finished_workers:
+                    continue
+
+                p.join(timeout=0)
+                if _is_process_alive(p):
+                    idle_for = time.monotonic() - last_progress_at.get(idx, 0.0)
+                    if idle_timeout > 0 and idle_for >= idle_timeout:
+                        error = f"worker idle timeout after {idle_timeout:.0f}s"
+                        timed_out_workers.add(idx)
+                        _emit_worker_failure(idx, error)
+                        orch_logger.warning(
+                            "Worker #%d 空闲 %.1fs 超过阈值 %.1fs，终止 pid=%s",
+                            idx,
+                            idle_for,
+                            idle_timeout,
+                            getattr(p, "pid", None),
+                        )
+                        try:
+                            p.terminate()
+                        except Exception as exc:
+                            orch_logger.warning("Worker #%d terminate 失败: %s", idx, exc)
+                        try:
+                            p.join(timeout=WORKER_TERMINATE_GRACE_SECONDS)
+                        except Exception:
+                            pass
+                        if _is_process_alive(p):
+                            try:
+                                p.kill()
+                            except Exception:
+                                pass
+                            try:
+                                p.join(timeout=WORKER_TERMINATE_GRACE_SECONDS)
+                            except Exception:
+                                pass
+
+                    if _is_process_alive(p):
+                        continue
+
+                finished_workers.add(idx)
+                orch_logger.info(
+                    "Worker #%d 已结束 exitcode=%s", idx, p.exitcode
+                )
+            if len(finished_workers) < len(processes):
+                time.sleep(0.2)
     except KeyboardInterrupt:
         stop_event.set()
         if not pause_event.is_set():
             pause_event.set()
         for p in processes:
-            p.join()
+            p.join(timeout=WORKER_TERMINATE_GRACE_SECONDS)
         drain_stop.set()
         try:
             progress_queue.put(None)
@@ -1972,18 +2074,54 @@ def run_batch_parallel(
 
     all_tokens: list[str] = []
     errors: list[str] = []
+    result_worker_ids: set[int] = set()
     while True:
         try:
             worker_id, tokens, error = result_queue.get_nowait()
         except Exception:
             break
+        worker_id = int(worker_id)
+        result_worker_ids.add(worker_id)
         if error:
             errors.append(f"worker#{worker_id}: {error}")
             print(f"[Warn] Worker {worker_id} 失败: {error}")
+            _emit_worker_failure(worker_id, str(error))
         all_tokens.extend(tokens)
+
+    for idx, p in enumerate(processes):
+        exitcode = getattr(p, "exitcode", None)
+        if idx not in result_worker_ids:
+            if idx in timed_out_workers:
+                error = f"worker idle timeout after {idle_timeout:.0f}s"
+            elif exitcode not in (0, None):
+                error = f"worker exited without result (exitcode={exitcode})"
+            else:
+                error = "worker exited without result"
+            errors.append(f"worker#{idx}: {error}")
+            _emit_worker_failure(idx, error)
+        elif exitcode not in (0, None):
+            error = f"worker exited with non-zero exitcode={exitcode}"
+            errors.append(f"worker#{idx}: {error}")
+            _emit_worker_failure(idx, error)
 
     if errors:
         print(f"[Warn] 并发注册存在 {len(errors)} 个 worker 异常")
+        recovered_tokens: list[str] = []
+        for idx in range(len(processes)):
+            recovered_tokens.extend(_read_sso_tokens_from_file(worker_outputs[idx]))
+
+        existing = {str(token).strip() for token in all_tokens if str(token).strip()}
+        missing_tokens = [
+            token for token in _merge_tokens([], recovered_tokens) if token not in existing
+        ]
+        if missing_tokens:
+            all_tokens = _merge_tokens(all_tokens, missing_tokens)
+            orch_logger.info(
+                "从 worker 输出文件恢复 %d 个未上报 token，补推到 API",
+                len(missing_tokens),
+            )
+            set_config_path(config_path_str)
+            push_sso_to_api(missing_tokens)
 
     return all_tokens
 
