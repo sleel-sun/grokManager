@@ -8,6 +8,7 @@ import os
 import secrets
 import shlex
 import shutil
+import socket
 import sys
 import tempfile
 import time
@@ -38,6 +39,8 @@ from .settings import (
 SIGNUP_URL = "https://accounts.x.ai/sign-up?redirect=grok-com"
 DEFAULT_MIN_BROWSER_FREE_BYTES = 256 * 1024 * 1024
 DEFAULT_HEADLESS_WINDOW_SIZE = "1440,900"
+WORKER_DEBUG_PORT_MIN = 20_000
+WORKER_DEBUG_PORT_SPAN = 40_000
 HEADLESS_STABILITY_ARGS = (
     "--disable-gpu",
     "--disable-blink-features=AutomationControlled",
@@ -167,6 +170,31 @@ def _compute_worker_chrome_user_data_dir(worker_id: int, pid: int) -> Path:
     return base / f"grokmgr-chrome-w{int(worker_id)}-{int(pid)}"
 
 
+def _is_tcp_port_available(port: int) -> bool:
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            sock.bind(("127.0.0.1", int(port)))
+        return True
+    except OSError:
+        return False
+
+
+def _select_worker_chrome_debug_port(worker_id: int, pid: int) -> int:
+    """Pick a per-worker Chromium remote-debugging port.
+
+    DrissionPage disables ``auto_port`` whenever ``set_user_data_path()`` is
+    called. Parallel workers need explicit ports or they all keep the default
+    ``127.0.0.1:9222`` address and then race/fail during browser connection.
+    """
+    seed = (int(pid) + int(worker_id) * 9973) % WORKER_DEBUG_PORT_SPAN
+    for offset in range(WORKER_DEBUG_PORT_SPAN):
+        port = WORKER_DEBUG_PORT_MIN + ((seed + offset) % WORKER_DEBUG_PORT_SPAN)
+        if _is_tcp_port_available(port):
+            return port
+    raise RuntimeError("无法为并发注册 worker 分配可用 Chrome 调试端口")
+
+
 def _format_bytes(size: int) -> str:
     value = float(size)
     for unit in ("B", "KiB", "MiB", "GiB", "TiB"):
@@ -259,6 +287,20 @@ def _configure_browser_options() -> ChromiumOptions:
     user_data_dir = os.getenv("MAINTAINER_CHROME_USER_DATA_DIR", "").strip()
     if user_data_dir:
         opts.set_user_data_path(str(Path(user_data_dir).expanduser().resolve()))
+
+    debug_port = os.getenv("MAINTAINER_CHROME_DEBUG_PORT", "").strip()
+    if debug_port:
+        try:
+            port_int = int(debug_port)
+        except ValueError as exc:
+            raise RuntimeError(
+                f"MAINTAINER_CHROME_DEBUG_PORT 必须是端口号: {debug_port}"
+            ) from exc
+        if port_int <= 0 or port_int > 65535:
+            raise RuntimeError(
+                f"MAINTAINER_CHROME_DEBUG_PORT 超出有效端口范围: {debug_port}"
+            )
+        opts.set_local_port(port_int)
 
     opts.set_argument("--no-first-run")
     opts.set_argument("--no-default-browser-check")
@@ -1635,8 +1677,8 @@ def _worker_entry(
         except Exception:
             pass
 
-    user_data_dir = _compute_worker_chrome_user_data_dir(worker_id, os.getpid())
-    _emit("alive", {"pid": os.getpid(), "user_data_dir": str(user_data_dir)})
+    pid = os.getpid()
+    user_data_dir = _compute_worker_chrome_user_data_dir(worker_id, pid)
 
     try:
         for key, val in env_overrides.items():
@@ -1644,6 +1686,17 @@ def _worker_entry(
                 os.environ.pop(key, None)
             else:
                 os.environ[key] = str(val)
+
+        debug_port = _select_worker_chrome_debug_port(worker_id, pid)
+        os.environ["MAINTAINER_CHROME_DEBUG_PORT"] = str(debug_port)
+        _emit(
+            "alive",
+            {
+                "pid": pid,
+                "user_data_dir": str(user_data_dir),
+                "debug_port": debug_port,
+            },
+        )
 
         base_tmp = os.environ.get("MAINTAINER_TMP_PATH", "").strip()
         base_path = Path(base_tmp).expanduser() if base_tmp else maintainer_browser_tmp_dir()

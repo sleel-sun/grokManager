@@ -11,6 +11,7 @@ from app.maintainer.runner import (
     _configure_browser_options,
     _ensure_browser_storage_ready,
     _resolve_browser_tmp_path,
+    _worker_entry,
     _split_count,
     _wait_while_paused,
     run_batch_parallel,
@@ -332,6 +333,26 @@ class MaintainerChromeUserDataDirTests(unittest.TestCase):
         # a different cwd than the orchestrator's.
         self.assertEqual(matching[0], f"--user-data-dir={Path(tmpdir).resolve()}")
 
+    def test_configure_browser_options_uses_worker_debug_port_when_env_set(
+        self,
+    ) -> None:
+        # DrissionPage.set_user_data_path() disables auto_port internally.
+        # Without an explicit local port, parallel workers all keep the
+        # default address 127.0.0.1:9222 and fail to connect concurrently.
+        with tempfile.TemporaryDirectory() as tmpdir:
+            env = {
+                k: v
+                for k, v in os.environ.items()
+                if not k.startswith("MAINTAINER_")
+            }
+            env["MAINTAINER_CHROME_USER_DATA_DIR"] = tmpdir
+            env["MAINTAINER_CHROME_DEBUG_PORT"] = "34567"
+            with patch.dict(os.environ, env, clear=True):
+                opts = _configure_browser_options()
+
+        self.assertEqual(opts.address, "127.0.0.1:34567")
+        self.assertFalse(opts.is_auto_port)
+
     def test_configure_browser_options_omits_user_data_dir_flag_by_default(
         self,
     ) -> None:
@@ -381,6 +402,64 @@ class MaintainerChromeUserDataDirTests(unittest.TestCase):
         self.assertIn("--foo", opts.arguments)
         self.assertIn("--bar=baz", opts.arguments)
         self.assertIn("--quoted=value with space", opts.arguments)
+
+    def test_worker_entry_sets_unique_chrome_debug_port_env(self) -> None:
+        class _Queue:
+            def __init__(self) -> None:
+                self.items: list[Any] = []
+
+            def put(self, item: Any) -> None:
+                self.items.append(item)
+
+        class _Event:
+            def __init__(self, value: bool = False) -> None:
+                self.value = value
+
+            def is_set(self) -> bool:
+                return self.value
+
+        seen_debug_ports: list[str | None] = []
+
+        def fake_run_batch(**_kwargs: Any) -> list[str]:
+            seen_debug_ports.append(os.getenv("MAINTAINER_CHROME_DEBUG_PORT"))
+            return ["sso-token"]
+
+        result_queue = _Queue()
+        progress_queue = _Queue()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            env = {
+                k: v
+                for k, v in os.environ.items()
+                if not k.startswith("MAINTAINER_")
+            }
+            env["MAINTAINER_TMP_PATH"] = tmpdir
+            with (
+                patch.dict(os.environ, env, clear=True),
+                patch(
+                    "app.maintainer.runner._select_worker_chrome_debug_port",
+                    return_value=34567,
+                ),
+                patch("app.maintainer.runner.run_batch", side_effect=fake_run_batch),
+            ):
+                _worker_entry(
+                    2,
+                    "/tmp/fake-config.json",
+                    1,
+                    "/tmp/fake-output.txt",
+                    False,
+                    {},
+                    _Event(True),
+                    _Event(False),
+                    result_queue,
+                    progress_queue,
+                )
+
+        self.assertEqual(seen_debug_ports, ["34567"])
+        self.assertEqual(result_queue.items, [(2, ["sso-token"], None)])
+        alive_events = [item for item in progress_queue.items if item[1] == "alive"]
+        self.assertEqual(len(alive_events), 1)
+        self.assertEqual(alive_events[0][2]["debug_port"], 34567)
 
 
 class MaintainerPauseCheckTests(unittest.TestCase):
