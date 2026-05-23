@@ -188,6 +188,94 @@ async def _probe_chat_model(
     return ProbeOutcome(status="supported", message="probe succeeded", status_code=200)
 
 
+async def _probe_image_model(
+    token: str,
+    spec: ModelSpec,
+    timeout_s: float,
+) -> ProbeOutcome:
+    prompt = "permission probe: plain gray square icon"
+    try:
+        if spec.model_name == "grok-imagine-image-lite":
+            from app.dataplane.reverse.protocol.xai_chat import StreamAdapter
+            from app.products.openai.images import _stream_lite_generate
+
+            adapter = StreamAdapter()
+            async for line in _stream_lite_generate(
+                token,
+                prompt,
+                ModeId(spec.mode_id),
+                timeout_s=timeout_s,
+            ):
+                event_type, data = classify_line(line)
+                if event_type == "done":
+                    break
+                if event_type != "data" or not data:
+                    continue
+                for event in adapter.feed(data):
+                    if event.kind == "image" and event.content:
+                        return ProbeOutcome(
+                            status="supported",
+                            message="image probe succeeded",
+                            status_code=200,
+                        )
+            return ProbeOutcome(
+                status="upstream_error",
+                message="Image probe returned no image.",
+                status_code=502,
+            )
+
+        from app.dataplane.reverse.transport.imagine_ws import stream_images
+        from app.products.openai.images import _image_stream_error_to_upstream_error
+
+        async for event in stream_images(
+            token,
+            prompt,
+            aspect_ratio="1:1",
+            n=1,
+            enable_nsfw=False,
+            enable_pro=spec.model_name == "grok-imagine-image-pro",
+        ):
+            if event.get("type") == "error":
+                return _outcome_from_error(
+                    _image_stream_error_to_upstream_error(
+                        event,
+                        prefix="Image permission probe failed",
+                    )
+                )
+            if event.get("is_final"):
+                return ProbeOutcome(
+                    status="supported",
+                    message="image probe succeeded",
+                    status_code=200,
+                )
+    except UpstreamError as exc:
+        return _outcome_from_error(exc)
+    return ProbeOutcome(
+        status="upstream_error",
+        message="Image probe returned no image.",
+        status_code=502,
+    )
+
+
+async def _probe_model(
+    token: str,
+    spec: ModelSpec,
+    timeout_s: float,
+) -> ProbeOutcome:
+    if spec.is_chat():
+        return await _probe_chat_model(token, spec, timeout_s)
+    if spec.is_image():
+        return await _probe_image_model(token, spec, timeout_s)
+    return ProbeOutcome(
+        status="unsupported_probe_type",
+        message="Only chat and text-to-image models are probed by the account-pool permission checker.",
+    )
+
+
+def _is_probe_supported(spec: ModelSpec) -> bool:
+    return spec.is_chat() or spec.is_image()
+
+
 def _aggregate_failures(outcomes: list[ProbeOutcome]) -> ProbeOutcome:
     for status in (
         "upstream_model_not_found",
@@ -233,11 +321,11 @@ async def _detect_one(
             "sampled_accounts": [],
         }
 
-    if not spec.is_chat():
+    if not _is_probe_supported(spec):
         return {
             **base,
             "status": "unsupported_probe_type",
-            "message": "Only chat models are probed by the account-pool permission checker.",
+            "message": "Only chat and text-to-image models are probed by the account-pool permission checker.",
             "accounts_checked": 0,
             "status_code": None,
             "sampled_accounts": [],
@@ -293,7 +381,7 @@ async def detect_model_permissions(
     pools: list[str] | None = None,
     sample_size: int = 1,
     timeout_s: float = 30.0,
-    probe_func: ProbeFunc = _probe_chat_model,
+    probe_func: ProbeFunc = _probe_model,
 ) -> dict:
     specs = _normalize_models(models)
     pool_names = _normalize_pools(pools)

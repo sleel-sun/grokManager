@@ -82,6 +82,21 @@ async def test_model_permission_reports_supported_on_first_success() -> None:
 
 
 @pytest.mark.anyio
+async def test_model_permission_probes_explicit_image_models() -> None:
+    result = await model_permissions.detect_model_permissions(
+        _Repo([_acct("tok-basic-000000000000", "basic")]),
+        models=["grok-imagine-image-lite"],
+        pools=["basic"],
+        probe_func=_ok_probe,
+    )
+
+    item = result["results"][0]
+    assert item["capability"] == "image"
+    assert item["status"] == "supported"
+    assert item["accounts_checked"] == 1
+
+
+@pytest.mark.anyio
 async def test_model_permission_aggregates_account_entitlement_failures() -> None:
     async def _probe(*args, **kwargs) -> model_permissions.ProbeOutcome:
         raise UpstreamError("forbidden", status=403, body="")

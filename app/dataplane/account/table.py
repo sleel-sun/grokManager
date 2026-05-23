@@ -130,6 +130,23 @@ class AccountRuntimeTable:
         default_factory=lambda: array.array("L")
     )
 
+    # --- Quota source per mode (uint8; 0=default, 1=real, 2=estimated) ---
+    source_auto_by_idx: "array.array[int]" = field(
+        default_factory=lambda: array.array("B")
+    )
+    source_fast_by_idx: "array.array[int]" = field(
+        default_factory=lambda: array.array("B")
+    )
+    source_expert_by_idx: "array.array[int]" = field(
+        default_factory=lambda: array.array("B")
+    )
+    source_heavy_by_idx: "array.array[int]" = field(
+        default_factory=lambda: array.array("B")
+    )
+    source_grok_4_3_by_idx: "array.array[int]" = field(
+        default_factory=lambda: array.array("B")
+    )
+
     # --- Runtime counters (uint16) ---
     inflight_by_idx: "array.array[int]" = field(
         default_factory=lambda: array.array("H")
@@ -214,6 +231,17 @@ class AccountRuntimeTable:
             return self.window_heavy_by_idx
         return self.window_grok_4_3_by_idx
 
+    def _source_col(self, mode_id: int) -> "array.array[int]":
+        if mode_id == 0:
+            return self.source_auto_by_idx
+        if mode_id == 1:
+            return self.source_fast_by_idx
+        if mode_id == 2:
+            return self.source_expert_by_idx
+        if mode_id == 3:
+            return self.source_heavy_by_idx
+        return self.source_grok_4_3_by_idx
+
     def _add_to_indexes(self, idx: int) -> None:
         pool_id   = int(self.pool_by_idx[idx])
         status_id = int(self.status_by_idx[idx])
@@ -269,6 +297,11 @@ class AccountRuntimeTable:
         reset_expert:    int,
         reset_heavy:     int,
         reset_grok_4_3:  int,
+        source_auto:     int,
+        source_fast:     int,
+        source_expert:   int,
+        source_heavy:    int,
+        source_grok_4_3: int,
         health:          float,
         last_use_s:      int,
         last_fail_s:     int,
@@ -300,6 +333,11 @@ class AccountRuntimeTable:
         self.reset_expert_at_by_idx.append(reset_expert)
         self.reset_heavy_at_by_idx.append(reset_heavy)
         self.reset_grok_4_3_at_by_idx.append(reset_grok_4_3)
+        self.source_auto_by_idx.append(max(0, min(source_auto, 255)))
+        self.source_fast_by_idx.append(max(0, min(source_fast, 255)))
+        self.source_expert_by_idx.append(max(0, min(source_expert, 255)))
+        self.source_heavy_by_idx.append(max(0, min(source_heavy, 255)))
+        self.source_grok_4_3_by_idx.append(max(0, min(source_grok_4_3, 255)))
         self.inflight_by_idx.append(0)
         self.fail_count_by_idx.append(min(fail_count, 65535))
         self.health_by_idx.append(health)
@@ -340,6 +378,11 @@ class AccountRuntimeTable:
         reset_expert: int,
         reset_heavy: int,
         reset_grok_4_3: int,
+        source_auto: int,
+        source_fast: int,
+        source_expert: int,
+        source_heavy: int,
+        source_grok_4_3: int,
         health: float,
         last_use_s: int,
         last_fail_s: int,
@@ -372,6 +415,11 @@ class AccountRuntimeTable:
         self.reset_expert_at_by_idx[idx] = reset_expert
         self.reset_heavy_at_by_idx[idx] = reset_heavy
         self.reset_grok_4_3_at_by_idx[idx] = reset_grok_4_3
+        self.source_auto_by_idx[idx] = max(0, min(source_auto, 255))
+        self.source_fast_by_idx[idx] = max(0, min(source_fast, 255))
+        self.source_expert_by_idx[idx] = max(0, min(source_expert, 255))
+        self.source_heavy_by_idx[idx] = max(0, min(source_heavy, 255))
+        self.source_grok_4_3_by_idx[idx] = max(0, min(source_grok_4_3, 255))
         self.fail_count_by_idx[idx] = min(fail_count, 65535)
         self.last_use_at_by_idx[idx] = last_use_s
         self.last_fail_at_by_idx[idx] = last_fail_s

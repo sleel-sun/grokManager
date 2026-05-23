@@ -31,6 +31,9 @@ def _record_to_slot_args(record: AccountRecord) -> dict:
     def _window_s(window) -> int:
         return max(0, int(window.window_seconds)) if window is not None else 0
 
+    def _source(window) -> int:
+        return max(0, int(window.source)) if window is not None else 0
+
     heavy_w = qs.heavy
     grok_4_3_w = qs.grok_4_3
     # fmt: off
@@ -57,6 +60,11 @@ def _record_to_slot_args(record: AccountRecord) -> dict:
         reset_expert    = _reset_s(qs.expert),
         reset_heavy     = _reset_s(heavy_w)    if heavy_w    is not None else 0,
         reset_grok_4_3  = _reset_s(grok_4_3_w) if grok_4_3_w is not None else 0,
+        source_auto     = _source(qs.auto),
+        source_fast     = _source(qs.fast),
+        source_expert   = _source(qs.expert),
+        source_heavy    = _source(heavy_w),
+        source_grok_4_3 = _source(grok_4_3_w),
         health          = 1.0,
         last_use_s      = ms_to_s(record.last_use_at)  if record.last_use_at  else 0,
         last_fail_s     = ms_to_s(record.last_fail_at) if record.last_fail_at else 0,

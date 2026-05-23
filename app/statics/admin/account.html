@@ -1119,7 +1119,7 @@
 <div class="modal-overlay" id="modal-model-permissions">
   <div class="modal">
     <div class="modal-title">账号池模型权限检测</div>
-    <div class="dialog-help">按账号池抽样真实请求检测模型权限，会消耗少量对话额度。留空模型列表时检测全部已启用对话模型。</div>
+    <div class="dialog-help">按账号池抽样真实请求检测模型权限，会消耗对应模型额度。留空模型列表时检测全部已启用对话模型；填写生图模型 ID 时会真实探测生图权限。</div>
     <div class="dialog-body">
       <div class="dialog-field">
         <span class="dialog-label">账号池</span>
@@ -1136,7 +1136,7 @@
       </div>
       <div>
         <div class="dialog-help">模型 ID（可选，每行一个）</div>
-        <textarea class="input dialog-textarea perm-model-list" id="perm-models" placeholder="grok-4.3&#10;grok-4.20-0309&#10;grok-image-image-lite"></textarea>
+        <textarea class="input dialog-textarea perm-model-list" id="perm-models" placeholder="grok-4.3&#10;grok-4.20-0309&#10;grok-imagine-image-lite"></textarea>
       </div>
       <div id="perm-results" class="dialog-help">尚未检测。</div>
     </div>
