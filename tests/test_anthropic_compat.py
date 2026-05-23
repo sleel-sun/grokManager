@@ -193,14 +193,15 @@ class ModelsContentNegotiationTests(unittest.TestCase):
         self.assertEqual(body["first_id"], first["id"])
         self.assertEqual(body["last_id"], body["data"][-1]["id"])
 
-    def test_list_models_anthropic_empty_pool_returns_empty_envelope(self) -> None:
-        # No manageable accounts → no models pass the pool filter.
+    def test_list_models_anthropic_empty_pool_still_lists_registered_models(self) -> None:
+        # No manageable accounts should not hide registered models; runtime
+        # requests report account availability failures explicitly.
         body = _body(self._list_models(anthropic_version="2023-06-01", pools=()))
 
-        self.assertEqual(body["data"], [])
+        self.assertGreater(len(body["data"]), 0)
         self.assertFalse(body["has_more"])
-        self.assertIsNone(body["first_id"])
-        self.assertIsNone(body["last_id"])
+        self.assertEqual(body["first_id"], body["data"][0]["id"])
+        self.assertEqual(body["last_id"], body["data"][-1]["id"])
 
     def test_get_model_anthropic_header_returns_anthropic_format(self) -> None:
         model = "grok-4.3"

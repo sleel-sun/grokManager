@@ -8,13 +8,12 @@ from app.dataplane.reverse.protocol.xai_console import (
     build_console_responses_payload,
 )
 from app.dataplane.reverse.runtime.endpoint_table import CONSOLE_RESPONSES
+from app.products.openai.router import _openai_model_payload
 
 
 class ConsoleModelRoutingTests(unittest.TestCase):
-    VERIFIED_CHAT_MODELS = (
+    AVAILABLE_CHAT_MODELS = (
         "grok-4.3",
-    )
-    UNAVAILABLE_CHAT_MODELS = (
         "grok-4.20-0309-non-reasoning",
         "grok-4.20-0309",
         "grok-4.20-0309-reasoning",
@@ -52,23 +51,14 @@ class ConsoleModelRoutingTests(unittest.TestCase):
         "grok-imagine-video",
     )
 
-    def test_verified_chat_models_are_registered_and_enabled(self) -> None:
+    def test_chat_models_are_registered_and_enabled(self) -> None:
         enabled_ids = {spec.model_name for spec in list_enabled()}
 
-        for model in self.VERIFIED_CHAT_MODELS:
+        for model in self.AVAILABLE_CHAT_MODELS:
             with self.subTest(model=model):
                 spec = resolve(model)
                 self.assertIn(model, enabled_ids)
                 self.assertTrue(spec.is_chat())
-
-    def test_real_unavailable_chat_models_are_hidden_and_rejected(self) -> None:
-        enabled_ids = {spec.model_name for spec in list_enabled()}
-
-        for model in self.UNAVAILABLE_CHAT_MODELS:
-            with self.subTest(model=model):
-                self.assertNotIn(model, enabled_ids)
-                with self.assertRaises(ValueError):
-                    resolve(model)
 
     def test_media_models_stay_visible_for_runtime_account_retry(self) -> None:
         enabled_ids = {spec.model_name for spec in list_enabled()}
@@ -78,6 +68,18 @@ class ConsoleModelRoutingTests(unittest.TestCase):
                 spec = resolve(model)
                 self.assertIn(model, enabled_ids)
                 self.assertTrue(spec.is_image() or spec.is_image_edit() or spec.is_video())
+
+    def test_model_payload_reports_pool_availability_instead_of_hiding(self) -> None:
+        spec = resolve("grok-4.3-beta")
+
+        payload = _openai_model_payload(spec, created=123, available_pools=frozenset({"basic"}))
+
+        self.assertEqual(payload["id"], "grok-4.3-beta")
+        self.assertEqual(payload["availability"]["status"], "unavailable")
+        self.assertIn("super", payload["availability"]["required_pools"])
+        self.assertIn("heavy", payload["availability"]["required_pools"])
+        self.assertIn("pool", payload["availability"]["reason"])
+        self.assertEqual(payload["routing"]["upstream_profile"], "grok_web")
 
     def test_grok_43_uses_free_sso_console_responses_route(self) -> None:
         spec = resolve("grok-4.3")

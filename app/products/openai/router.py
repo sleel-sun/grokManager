@@ -147,7 +147,47 @@ def _model_generation_metadata(spec: ModelSpec) -> dict:
     }
 
 
-def _openai_model_payload(spec: ModelSpec, created: int) -> dict:
+def _model_pool_names(spec: ModelSpec) -> list[str]:
+    return [_POOL_ID_TO_NAME[pool_id] for pool_id in spec.pool_candidates()]
+
+
+def _model_availability_payload(
+    spec: ModelSpec,
+    available_pools: frozenset[str] | None,
+) -> dict:
+    required = _model_pool_names(spec)
+    if available_pools is None:
+        status = "unknown"
+        reason = "Account pool availability was not evaluated for this request."
+    else:
+        status = "available" if bool(set(required) & available_pools) else "unavailable"
+        reason = (
+            "At least one required account pool is active."
+            if status == "available"
+            else "Requires an active/manageable account in one of the required pools."
+        )
+    return {
+        "status": status,
+        "reason": reason,
+        "required_pools": required,
+        "available_pools": sorted(available_pools) if available_pools is not None else [],
+    }
+
+
+def _model_routing_payload(spec: ModelSpec) -> dict:
+    return {
+        "upstream_profile": spec.upstream_profile,
+        "upstream_model": spec.upstream_model_name(),
+        "mode_id": int(spec.mode_id),
+        "pool_candidates": _model_pool_names(spec),
+    }
+
+
+def _openai_model_payload(
+    spec: ModelSpec,
+    created: int,
+    available_pools: frozenset[str] | None = None,
+) -> dict:
     capabilities = _model_capability_names(spec)
     primary_type = _model_primary_type(spec)
     return {
@@ -160,6 +200,8 @@ def _openai_model_payload(spec: ModelSpec, created: int) -> dict:
         "model_type": primary_type,
         "capability": capabilities[0] if capabilities else "unknown",
         "capabilities": capabilities,
+        "availability": _model_availability_payload(spec, available_pools),
+        "routing": _model_routing_payload(spec),
         **_model_generation_metadata(spec),
     }
 
@@ -190,7 +232,7 @@ async def list_models(
 
     pools = await _available_pools(request)
     created = int(time.time())
-    available = [m for m in model_registry.list_enabled() if _model_available_for_pools(m, pools)]
+    available = model_registry.list_enabled()
 
     if _is_anthropic_client(anthropic_version):
         data = [_anthropic_model_payload(m, created) for m in available]
@@ -206,7 +248,7 @@ async def list_models(
     return JSONResponse(
         {
             "object": "list",
-            "data": [_openai_model_payload(m, created) for m in available],
+            "data": [_openai_model_payload(m, created, pools) for m in available],
         }
     )
 
@@ -223,7 +265,7 @@ async def get_model_endpoint(
 
     spec = model_registry.get(model_id)
     pools = await _available_pools(request)
-    if spec is None or not _model_available_for_pools(spec, pools):
+    if spec is None or not spec.enabled:
         if _is_anthropic_client(anthropic_version):
             return JSONResponse(
                 {
@@ -248,7 +290,7 @@ async def get_model_endpoint(
     created = int(time.time())
     if _is_anthropic_client(anthropic_version):
         return JSONResponse(_anthropic_model_payload(spec, created))
-    return JSONResponse(_openai_model_payload(spec, created))
+    return JSONResponse(_openai_model_payload(spec, created, pools))
 
 
 # ---------------------------------------------------------------------------

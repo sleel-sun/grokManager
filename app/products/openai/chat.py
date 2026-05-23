@@ -103,6 +103,19 @@ def _upstream_body(exc: UpstreamError) -> str:
     return str(details.get("body", "") or "")
 
 
+def _chat_pool_names(spec: ModelSpec) -> list[str]:
+    pool_names = {0: "basic", 1: "super", 2: "heavy"}
+    return [pool_names.get(pool_id, str(pool_id)) for pool_id in spec.pool_candidates()]
+
+
+def _no_available_account_error(spec: ModelSpec) -> RateLimitError:
+    pools = ", ".join(_chat_pool_names(spec))
+    return RateLimitError(
+        f"No active/manageable accounts are available for chat model {spec.model_name!r}; "
+        f"required pool(s): {pools}."
+    )
+
+
 def _transport_upstream_error(exc: BaseException, *, context: str) -> UpstreamError:
     if isinstance(exc, UpstreamError):
         return exc
@@ -110,6 +123,30 @@ def _transport_upstream_error(exc: BaseException, *, context: str) -> UpstreamEr
     return UpstreamError(
         f"{context}: {exc}",
         status=502,
+        body=body,
+    )
+
+
+def _raise_chat_status_error(
+    *,
+    spec: ModelSpec | None,
+    status_code: int,
+    body: str,
+) -> None:
+    if spec and spec.uses_console_responses() and status_code == 404:
+        upstream_model = spec.upstream_model_name()
+        raise UpstreamError(
+            "Console Responses upstream does not expose model "
+            f"{upstream_model!r} for public model {spec.model_name!r}; "
+            "the model is listed locally for diagnostics, but it is unavailable "
+            "until the upstream account/Console API exposes that model id or the "
+            "registry maps it to a supported upstream model.",
+            status=status_code,
+            body=body,
+        )
+    raise UpstreamError(
+        f"Chat upstream returned {status_code}",
+        status=status_code,
         body=body,
     )
 
@@ -204,7 +241,7 @@ _CLOUDFLARE_CHALLENGE_MARKERS = (
     "cf-mitigated",
     "cloudflare",
 )
-_CHAT_ACCOUNT_RETRY_MIN_RETRIES = 5
+_CHAT_ACCOUNT_RETRY_MIN_RETRIES = 20
 
 
 def _is_account_scoped_forbidden(exc: UpstreamError) -> bool:
@@ -228,6 +265,21 @@ def _chat_max_retries(cfg) -> int:
 def _feedback_kind(exc: BaseException) -> "FeedbackKind":
     """Map an upstream exception to the appropriate FeedbackKind."""
     return feedback_kind_for_error(exc)
+
+
+def _chat_exhausted_error(
+    model: str,
+    *,
+    attempted_accounts: int,
+    last_exc: UpstreamError,
+) -> BaseException:
+    if _is_account_scoped_forbidden(last_exc) or last_exc.status == 429:
+        return RateLimitError(
+            f"Chat model {model!r} has no available account quota/entitlement "
+            f"after {attempted_accounts} account attempts; "
+            f"last upstream status={last_exc.status}."
+        )
+    return last_exc
 
 
 async def _download_image_bytes(token: str, url: str) -> tuple[bytes, str]:
@@ -487,9 +539,9 @@ async def _stream_chat(
                 body = response.content.decode("utf-8", "replace")[:400]
             except Exception:
                 body = ""
-            raise UpstreamError(
-                f"Chat upstream returned {response.status_code}",
-                status=response.status_code,
+            _raise_chat_status_error(
+                spec=spec,
+                status_code=response.status_code,
                 body=body,
             )
 
@@ -578,7 +630,7 @@ async def completions(
                     exclude_tokens=excluded or None,
                 )
                 if acct is None:
-                    raise RateLimitError("No available accounts for this model tier")
+                    raise _no_available_account_error(spec)
 
                 token = acct.token
                 success = False
@@ -758,7 +810,11 @@ async def completions(
                                 exc.status,
                                 _upstream_body_excerpt(exc),
                             )
-                            raise
+                            raise _chat_exhausted_error(
+                                model,
+                                attempted_accounts=attempt + 1,
+                                last_exc=exc,
+                            ) from exc
 
                 finally:
                     await directory.release(acct)
@@ -799,7 +855,7 @@ async def completions(
             exclude_tokens=excluded or None,
         )
         if acct is None:
-            raise RateLimitError("No available accounts for this model tier")
+            raise _no_available_account_error(spec)
 
         token = acct.token
         success = False
@@ -853,7 +909,11 @@ async def completions(
                         exc.status,
                         _upstream_body_excerpt(exc),
                     )
-                    raise
+                    raise _chat_exhausted_error(
+                        model,
+                        attempted_accounts=attempt + 1,
+                        last_exc=exc,
+                    ) from exc
 
         finally:
             await directory.release(acct)
