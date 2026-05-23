@@ -203,20 +203,22 @@ class ModelsContentNegotiationTests(unittest.TestCase):
         self.assertIsNone(body["last_id"])
 
     def test_get_model_anthropic_header_returns_anthropic_format(self) -> None:
+        model = "grok-4.3"
         body = _body(
-            self._get_model("grok-4.20-0309", anthropic_version="2023-06-01")
+            self._get_model(model, anthropic_version="2023-06-01")
         )
 
         self.assertEqual(body["type"], "model")
-        self.assertEqual(body["id"], "grok-4.20-0309")
+        self.assertEqual(body["id"], model)
         self.assertIn("display_name", body)
         self.assertTrue(body["created_at"].endswith("Z"))
 
     def test_get_model_default_returns_openai_format(self) -> None:
-        body = _body(self._get_model("grok-4.20-0309"))
+        model = "grok-4.3"
+        body = _body(self._get_model(model))
 
         self.assertEqual(body["object"], "model")
-        self.assertEqual(body["id"], "grok-4.20-0309")
+        self.assertEqual(body["id"], model)
         self.assertIn("name", body)
 
     def test_get_model_unknown_returns_format_specific_404(self) -> None:
@@ -244,22 +246,22 @@ class ModelPayloadHelperTests(unittest.TestCase):
         from app.control.model.registry import resolve
         from app.products.openai.router import _anthropic_model_payload
 
-        spec = resolve("grok-4.20-0309")
+        spec = resolve("grok-4.3")
         payload = _anthropic_model_payload(spec, 0)
 
         self.assertEqual(payload["type"], "model")
-        self.assertEqual(payload["id"], "grok-4.20-0309")
+        self.assertEqual(payload["id"], "grok-4.3")
         self.assertEqual(payload["created_at"], "1970-01-01T00:00:00Z")
 
     def test_openai_model_payload_shape(self) -> None:
         from app.control.model.registry import resolve
         from app.products.openai.router import _openai_model_payload
 
-        spec = resolve("grok-4.20-0309")
+        spec = resolve("grok-4.3")
         payload = _openai_model_payload(spec, 0)
 
         self.assertEqual(payload["object"], "model")
-        self.assertEqual(payload["id"], "grok-4.20-0309")
+        self.assertEqual(payload["id"], "grok-4.3")
         self.assertEqual(payload["owned_by"], "xai")
         self.assertEqual(payload["created"], 0)
         self.assertEqual(payload["capability"], "chat")
@@ -281,10 +283,11 @@ class ModelPayloadHelperTests(unittest.TestCase):
         )
 
     def test_openai_model_payload_marks_image_models(self) -> None:
-        from app.control.model.registry import resolve
+        from app.control.model.registry import get
         from app.products.openai.router import _openai_model_payload
 
-        spec = resolve("grok-imagine-image")
+        spec = get("grok-imagine-image")
+        self.assertIsNotNone(spec)
         payload = _openai_model_payload(spec, 0)
 
         self.assertEqual(payload["object"], "model")
@@ -309,10 +312,11 @@ class ModelPayloadHelperTests(unittest.TestCase):
         )
 
     def test_openai_model_payload_marks_image_edit_models(self) -> None:
-        from app.control.model.registry import resolve
+        from app.control.model.registry import get
         from app.products.openai.router import _openai_model_payload
 
-        spec = resolve("grok-imagine-image-edit")
+        spec = get("grok-imagine-image-edit")
+        self.assertIsNotNone(spec)
         payload = _openai_model_payload(spec, 0)
 
         self.assertEqual(payload["object"], "model")

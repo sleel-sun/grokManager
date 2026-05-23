@@ -60,8 +60,11 @@ class VideoJobCompatibilityTests(unittest.TestCase):
         self.assertEqual(payload["content_url"], "/v1/videos/video_test/content")
 
     def test_video_job_completes_with_upstream_url_when_local_download_fails(self) -> None:
+        from app.control.model.registry import get as get_model
         from app.products.openai import video
 
+        spec = get_model("grok-imagine-video")
+        self.assertIsNotNone(spec)
         job = video._VideoJob(
             id="video_test",
             model="grok-imagine-video",
@@ -90,6 +93,10 @@ class VideoJobCompatibilityTests(unittest.TestCase):
         ), patch(
             "app.products.openai.video._fail_sync",
             new=AsyncMock(return_value=None),
+        ), patch.object(
+            video,
+            "resolve_model",
+            return_value=spec,
         ):
             asyncio.run(
                 video._run_video_job(

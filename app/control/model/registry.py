@@ -13,62 +13,62 @@ MODELS: tuple[ModelSpec, ...] = (
     # === Chat ==============================================================
 
     # Basic+
-    ModelSpec("grok-4.20-0309-non-reasoning",           ModeId.FAST,     Tier.BASIC, Capability.CHAT,       True, "Grok 4.20 0309 Non-Reasoning"),
-    ModelSpec("grok-4.20-0309",                         ModeId.AUTO,     Tier.BASIC, Capability.CHAT,       True, "Grok 4.20 0309"),
-    ModelSpec("grok-4.20-0309-reasoning",               ModeId.EXPERT,   Tier.BASIC, Capability.CHAT,       True, "Grok 4.20 0309 Reasoning"),
+    ModelSpec("grok-4.20-0309-non-reasoning",           ModeId.FAST,     Tier.BASIC, Capability.CHAT,       False, "Grok 4.20 0309 Non-Reasoning"),
+    ModelSpec("grok-4.20-0309",                         ModeId.AUTO,     Tier.BASIC, Capability.CHAT,       False, "Grok 4.20 0309"),
+    ModelSpec("grok-4.20-0309-reasoning",               ModeId.EXPERT,   Tier.BASIC, Capability.CHAT,       False, "Grok 4.20 0309 Reasoning"),
     # Super+
-    ModelSpec("grok-4.20-0309-non-reasoning-super",     ModeId.FAST,     Tier.SUPER, Capability.CHAT,       True, "Grok 4.20 0309 Non-Reasoning Super"),
-    ModelSpec("grok-4.20-0309-super",                   ModeId.AUTO,     Tier.SUPER, Capability.CHAT,       True, "Grok 4.20 0309 Super"),
-    ModelSpec("grok-4.20-0309-reasoning-super",         ModeId.EXPERT,   Tier.SUPER, Capability.CHAT,       True, "Grok 4.20 0309 Reasoning Super"),
+    ModelSpec("grok-4.20-0309-non-reasoning-super",     ModeId.FAST,     Tier.SUPER, Capability.CHAT,       False, "Grok 4.20 0309 Non-Reasoning Super"),
+    ModelSpec("grok-4.20-0309-super",                   ModeId.AUTO,     Tier.SUPER, Capability.CHAT,       False, "Grok 4.20 0309 Super"),
+    ModelSpec("grok-4.20-0309-reasoning-super",         ModeId.EXPERT,   Tier.SUPER, Capability.CHAT,       False, "Grok 4.20 0309 Reasoning Super"),
     # Heavy+
-    ModelSpec("grok-4.20-0309-non-reasoning-heavy",     ModeId.FAST,     Tier.HEAVY, Capability.CHAT,       True, "Grok 4.20 0309 Non-Reasoning Heavy"),
-    ModelSpec("grok-4.20-0309-heavy",                   ModeId.AUTO,     Tier.HEAVY, Capability.CHAT,       True, "Grok 4.20 0309 Heavy"),
-    ModelSpec("grok-4.20-0309-reasoning-heavy",         ModeId.EXPERT,   Tier.HEAVY, Capability.CHAT,       True, "Grok 4.20 0309 Reasoning Heavy"),
-    ModelSpec("grok-4.20-multi-agent-0309",             ModeId.HEAVY,    Tier.HEAVY, Capability.CHAT,       True, "Grok 4.20 Multi-Agent 0309"),
+    ModelSpec("grok-4.20-0309-non-reasoning-heavy",     ModeId.FAST,     Tier.HEAVY, Capability.CHAT,       False, "Grok 4.20 0309 Non-Reasoning Heavy"),
+    ModelSpec("grok-4.20-0309-heavy",                   ModeId.AUTO,     Tier.HEAVY, Capability.CHAT,       False, "Grok 4.20 0309 Heavy"),
+    ModelSpec("grok-4.20-0309-reasoning-heavy",         ModeId.EXPERT,   Tier.HEAVY, Capability.CHAT,       False, "Grok 4.20 0309 Reasoning Heavy"),
+    ModelSpec("grok-4.20-multi-agent-0309",             ModeId.HEAVY,    Tier.HEAVY, Capability.CHAT,       False, "Grok 4.20 Multi-Agent 0309"),
 
     # --- 硬优先级反向选池 (heavy → super → basic) ---
-    ModelSpec("grok-4.20-fast",                         ModeId.FAST,     Tier.BASIC, Capability.CHAT,       True, "Grok 4.20 Fast",          prefer_best=True),
-    ModelSpec("grok-4.20-auto",                         ModeId.AUTO,     Tier.BASIC, Capability.CHAT,       True, "Grok 4.20 Auto",          prefer_best=True),
-    ModelSpec("grok-4.20-expert",                       ModeId.EXPERT,   Tier.BASIC, Capability.CHAT,       True, "Grok 4.20 Expert",        prefer_best=True),
-    ModelSpec("grok-4.20-heavy",                        ModeId.HEAVY,    Tier.HEAVY, Capability.CHAT,       True, "Grok 4.20 Heavy",         prefer_best=True),
+    ModelSpec("grok-4.20-fast",                         ModeId.FAST,     Tier.BASIC, Capability.CHAT,       False, "Grok 4.20 Fast",          prefer_best=True),
+    ModelSpec("grok-4.20-auto",                         ModeId.AUTO,     Tier.BASIC, Capability.CHAT,       False, "Grok 4.20 Auto",          prefer_best=True),
+    ModelSpec("grok-4.20-expert",                       ModeId.EXPERT,   Tier.BASIC, Capability.CHAT,       False, "Grok 4.20 Expert",        prefer_best=True),
+    ModelSpec("grok-4.20-heavy",                        ModeId.HEAVY,    Tier.HEAVY, Capability.CHAT,       False, "Grok 4.20 Heavy",         prefer_best=True),
 
     # === xAI Console Responses via Grok SSO (basic/free pool first) ==========
-    ModelSpec("grok-4.20-0309-console",                 ModeId.AUTO,     Tier.BASIC, Capability.CHAT,       True, "Grok 4.20 0309 Console", upstream_profile="console_responses"),
-    ModelSpec("grok-4.20-0309-non-reasoning-console",   ModeId.FAST,     Tier.BASIC, Capability.CHAT,       True, "Grok 4.20 0309 Non-Reasoning Console", upstream_profile="console_responses"),
-    ModelSpec("grok-4.20-0309-reasoning-console",       ModeId.EXPERT,   Tier.BASIC, Capability.CHAT,       True, "Grok 4.20 0309 Reasoning Console", upstream_profile="console_responses"),
-    ModelSpec("grok-4.20-multi-agent-console",          ModeId.AUTO,     Tier.BASIC, Capability.CHAT,       True, "Grok 4.20 Multi-Agent Console", upstream_profile="console_responses"),
-    ModelSpec("grok-4.20-multi-agent-xhigh",            ModeId.AUTO,     Tier.BASIC, Capability.CHAT,       True, "Grok 4.20 Multi-Agent XHigh", upstream_profile="console_responses"),
-    ModelSpec("grok-4.20-multi-agent-high",             ModeId.AUTO,     Tier.BASIC, Capability.CHAT,       True, "Grok 4.20 Multi-Agent High", upstream_profile="console_responses"),
-    ModelSpec("grok-4.20-multi-agent-medium",           ModeId.AUTO,     Tier.BASIC, Capability.CHAT,       True, "Grok 4.20 Multi-Agent Medium", upstream_profile="console_responses"),
-    ModelSpec("grok-4.20-multi-agent-low",              ModeId.AUTO,     Tier.BASIC, Capability.CHAT,       True, "Grok 4.20 Multi-Agent Low", upstream_profile="console_responses"),
+    ModelSpec("grok-4.20-0309-console",                 ModeId.AUTO,     Tier.BASIC, Capability.CHAT,       False, "Grok 4.20 0309 Console", upstream_profile="console_responses"),
+    ModelSpec("grok-4.20-0309-non-reasoning-console",   ModeId.FAST,     Tier.BASIC, Capability.CHAT,       False, "Grok 4.20 0309 Non-Reasoning Console", upstream_profile="console_responses"),
+    ModelSpec("grok-4.20-0309-reasoning-console",       ModeId.EXPERT,   Tier.BASIC, Capability.CHAT,       False, "Grok 4.20 0309 Reasoning Console", upstream_profile="console_responses"),
+    ModelSpec("grok-4.20-multi-agent-console",          ModeId.AUTO,     Tier.BASIC, Capability.CHAT,       False, "Grok 4.20 Multi-Agent Console", upstream_profile="console_responses"),
+    ModelSpec("grok-4.20-multi-agent-xhigh",            ModeId.AUTO,     Tier.BASIC, Capability.CHAT,       False, "Grok 4.20 Multi-Agent XHigh", upstream_profile="console_responses"),
+    ModelSpec("grok-4.20-multi-agent-high",             ModeId.AUTO,     Tier.BASIC, Capability.CHAT,       False, "Grok 4.20 Multi-Agent High", upstream_profile="console_responses"),
+    ModelSpec("grok-4.20-multi-agent-medium",           ModeId.AUTO,     Tier.BASIC, Capability.CHAT,       False, "Grok 4.20 Multi-Agent Medium", upstream_profile="console_responses"),
+    ModelSpec("grok-4.20-multi-agent-low",              ModeId.AUTO,     Tier.BASIC, Capability.CHAT,       False, "Grok 4.20 Multi-Agent Low", upstream_profile="console_responses"),
     ModelSpec("grok-4.3",                               ModeId.AUTO,     Tier.BASIC, Capability.CHAT,       True, "Grok 4.3",               upstream_profile="console_responses", upstream_model="grok-4.3"),
-    ModelSpec("grok-4.3-console",                       ModeId.AUTO,     Tier.BASIC, Capability.CHAT,       True, "Grok 4.3 Console",       upstream_profile="console_responses"),
-    ModelSpec("grok-4.3-high",                          ModeId.AUTO,     Tier.BASIC, Capability.CHAT,       True, "Grok 4.3 High",          upstream_profile="console_responses"),
-    ModelSpec("grok-4.3-medium",                        ModeId.AUTO,     Tier.BASIC, Capability.CHAT,       True, "Grok 4.3 Medium",        upstream_profile="console_responses"),
-    ModelSpec("grok-4.3-low",                           ModeId.AUTO,     Tier.BASIC, Capability.CHAT,       True, "Grok 4.3 Low",           upstream_profile="console_responses"),
-    ModelSpec("grok-build-console",                     ModeId.AUTO,     Tier.BASIC, Capability.CHAT,       True, "Grok Build Console",     upstream_profile="console_responses"),
+    ModelSpec("grok-4.3-console",                       ModeId.AUTO,     Tier.BASIC, Capability.CHAT,       False, "Grok 4.3 Console",       upstream_profile="console_responses"),
+    ModelSpec("grok-4.3-high",                          ModeId.AUTO,     Tier.BASIC, Capability.CHAT,       False, "Grok 4.3 High",          upstream_profile="console_responses"),
+    ModelSpec("grok-4.3-medium",                        ModeId.AUTO,     Tier.BASIC, Capability.CHAT,       False, "Grok 4.3 Medium",        upstream_profile="console_responses"),
+    ModelSpec("grok-4.3-low",                           ModeId.AUTO,     Tier.BASIC, Capability.CHAT,       False, "Grok 4.3 Low",           upstream_profile="console_responses"),
+    ModelSpec("grok-build-console",                     ModeId.AUTO,     Tier.BASIC, Capability.CHAT,       False, "Grok Build Console",     upstream_profile="console_responses"),
 
     # === grok-4.3 (grok-420-computer-use-sa) ==================================
     # Super+（basic 池不支持此模式）
-    ModelSpec("grok-4.3-beta",                          ModeId.GROK_4_3, Tier.SUPER, Capability.CHAT,       True, "Grok 4.3 Beta"),
+    ModelSpec("grok-4.3-beta",                          ModeId.GROK_4_3, Tier.SUPER, Capability.CHAT,       False, "Grok 4.3 Beta"),
 
     # === Image ==============================================================
 
     # Basic+
-    ModelSpec("grok-imagine-image-lite",                ModeId.FAST,     Tier.BASIC, Capability.IMAGE,      True, "Grok Imagine Image Lite"),
+    ModelSpec("grok-imagine-image-lite",                ModeId.FAST,     Tier.BASIC, Capability.IMAGE,      False, "Grok Imagine Image Lite"),
     # Super+
-    ModelSpec("grok-imagine-image",                     ModeId.AUTO,     Tier.SUPER, Capability.IMAGE,      True, "Grok Imagine Image"),
-    ModelSpec("grok-imagine-image-pro",                 ModeId.AUTO,     Tier.SUPER, Capability.IMAGE,      True, "Grok Imagine Image Pro"),
+    ModelSpec("grok-imagine-image",                     ModeId.AUTO,     Tier.SUPER, Capability.IMAGE,      False, "Grok Imagine Image"),
+    ModelSpec("grok-imagine-image-pro",                 ModeId.AUTO,     Tier.SUPER, Capability.IMAGE,      False, "Grok Imagine Image Pro"),
 
     # === Image Edit =========================================================
 
     # Super+
-    ModelSpec("grok-imagine-image-edit",                ModeId.AUTO,     Tier.SUPER, Capability.IMAGE_EDIT, True, "Grok Imagine Image Edit"),
+    ModelSpec("grok-imagine-image-edit",                ModeId.AUTO,     Tier.SUPER, Capability.IMAGE_EDIT, False, "Grok Imagine Image Edit"),
 
     # === Video ==============================================================
 
     # Super+
-    ModelSpec("grok-imagine-video",                     ModeId.AUTO,     Tier.SUPER, Capability.VIDEO,      True, "Grok Imagine Video"),
+    ModelSpec("grok-imagine-video",                     ModeId.AUTO,     Tier.SUPER, Capability.VIDEO,      False, "Grok Imagine Video"),
 )
 # fmt: on
 
@@ -96,7 +96,7 @@ def get(model_name: str) -> ModelSpec | None:
 def resolve(model_name: str) -> ModelSpec:
     """Return the spec for *model_name*; raise ``ValueError`` if unknown."""
     spec = _BY_NAME.get(model_name)
-    if spec is None:
+    if spec is None or not spec.enabled:
         raise ValueError(f"Unknown model: {model_name!r}")
     return spec
 

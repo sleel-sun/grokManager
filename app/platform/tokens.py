@@ -15,9 +15,21 @@ PROMPT_OVERHEAD = 4
 _ENCODING_NAME = "o200k_base"
 
 
+class _ApproximateEncoding:
+    def encode(self, text: str, disallowed_special: tuple[str, ...] = ()) -> list[int]:
+        if not text:
+            return []
+        return [0] * max(1, (len(text.encode("utf-8")) + 3) // 4)
+
+
 @lru_cache(maxsize=1)
-def _get_encoding() -> tiktoken.Encoding:
-    return tiktoken.get_encoding(_ENCODING_NAME)
+def _get_encoding() -> Any:
+    for name in (_ENCODING_NAME, "cl100k_base", "p50k_base"):
+        try:
+            return tiktoken.get_encoding(name)
+        except Exception:
+            continue
+    return _ApproximateEncoding()
 
 
 def _coerce_text(value: Any) -> str:

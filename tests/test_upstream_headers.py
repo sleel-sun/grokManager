@@ -94,7 +94,7 @@ class OpenAIChatCompletionsHeaderTests(unittest.TestCase):
         from app.products.openai.schemas import ChatCompletionRequest
 
         req = ChatCompletionRequest.model_validate({
-            "model": "grok-4.20-0309-non-reasoning",
+            "model": "grok-4.3",
             "stream": True,
             "messages": [{"role": "user", "content": "hi"}],
         })
@@ -107,11 +107,11 @@ class OpenAIChatCompletionsHeaderTests(unittest.TestCase):
                    new=AsyncMock(return_value=_gen())):
             response = asyncio.run(chat_completions_endpoint(req))
 
-        self.assertEqual(response.headers.get("x-upstream-profile"), "grok_web")
-        self.assertEqual(response.headers.get("x-upstream-model"), "grok-4.20-0309-non-reasoning")
+        self.assertEqual(response.headers.get("x-upstream-profile"), "console_responses")
+        self.assertEqual(response.headers.get("x-upstream-model"), "grok-4.3")
         self.assertEqual(
             response.headers.get("x-upstream-endpoint"),
-            "https://grok.com/rest/app-chat/conversations/new",
+            "https://console.x.ai/v1/responses",
         )
 
 
@@ -144,7 +144,7 @@ class AnthropicMessagesHeaderTests(unittest.TestCase):
         )
 
         req = MessagesRequest.model_validate({
-            "model": "grok-4.20-0309-non-reasoning",
+            "model": "grok-4.3",
             "stream": True,
             "messages": [{"role": "user", "content": "hi"}],
         })
@@ -156,8 +156,9 @@ class AnthropicMessagesHeaderTests(unittest.TestCase):
                    new=AsyncMock(return_value=_gen())):
             response = asyncio.run(messages_endpoint(req))
 
-        self.assertEqual(response.headers.get("x-upstream-profile"), "grok_web")
-        self.assertEqual(response.headers.get("x-upstream-model"), "grok-4.20-0309-non-reasoning")
+        self.assertEqual(response.headers.get("x-upstream-profile"), "console_responses")
+        self.assertEqual(response.headers.get("x-upstream-model"), "grok-4.3")
+        self.assertEqual(response.headers.get("x-upstream-endpoint"), "https://console.x.ai/v1/responses")
 
 
 if __name__ == "__main__":

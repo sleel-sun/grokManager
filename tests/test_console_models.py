@@ -11,7 +11,24 @@ from app.dataplane.reverse.runtime.endpoint_table import CONSOLE_RESPONSES
 
 
 class ConsoleModelRoutingTests(unittest.TestCase):
-    REQUESTED_MODELS = (
+    VERIFIED_CHAT_MODELS = (
+        "grok-4.3",
+    )
+    UNAVAILABLE_CHAT_MODELS = (
+        "grok-4.20-0309-non-reasoning",
+        "grok-4.20-0309",
+        "grok-4.20-0309-reasoning",
+        "grok-4.20-0309-non-reasoning-super",
+        "grok-4.20-0309-super",
+        "grok-4.20-0309-reasoning-super",
+        "grok-4.20-0309-non-reasoning-heavy",
+        "grok-4.20-0309-heavy",
+        "grok-4.20-0309-reasoning-heavy",
+        "grok-4.20-multi-agent-0309",
+        "grok-4.20-fast",
+        "grok-4.20-auto",
+        "grok-4.20-expert",
+        "grok-4.20-heavy",
         "grok-4.20-0309-console",
         "grok-4.20-0309-non-reasoning-console",
         "grok-4.20-0309-reasoning-console",
@@ -25,32 +42,42 @@ class ConsoleModelRoutingTests(unittest.TestCase):
         "grok-4.3-medium",
         "grok-4.3-low",
         "grok-build-console",
-        "grok-4.20-fast",
+        "grok-4.3-beta",
     )
-    REQUESTED_CONSOLE_MODELS = tuple(
-        model for model in REQUESTED_MODELS if model != "grok-4.20-fast"
+    UNAVAILABLE_MEDIA_MODELS = (
+        "grok-imagine-image-lite",
+        "grok-imagine-image",
+        "grok-imagine-image-pro",
+        "grok-imagine-image-edit",
+        "grok-imagine-video",
     )
 
-    def test_requested_models_are_registered_and_enabled(self) -> None:
+    def test_verified_chat_models_are_registered_and_enabled(self) -> None:
         enabled_ids = {spec.model_name for spec in list_enabled()}
 
-        for model in self.REQUESTED_MODELS:
+        for model in self.VERIFIED_CHAT_MODELS:
             with self.subTest(model=model):
                 spec = resolve(model)
                 self.assertIn(model, enabled_ids)
                 self.assertTrue(spec.is_chat())
 
-    def test_requested_console_models_use_console_responses(self) -> None:
-        for model in self.REQUESTED_CONSOLE_MODELS:
-            with self.subTest(model=model):
-                spec = resolve(model)
-                self.assertEqual(spec.tier, Tier.BASIC)
-                self.assertEqual(spec.upstream_model_name(), model)
-                self.assertTrue(spec.uses_console_responses())
+    def test_real_unavailable_chat_models_are_hidden_and_rejected(self) -> None:
+        enabled_ids = {spec.model_name for spec in list_enabled()}
 
-                plan = build_plan(spec, {})
-                self.assertEqual(plan.endpoint, CONSOLE_RESPONSES)
-                self.assertEqual(plan.extra["upstream_model"], model)
+        for model in self.UNAVAILABLE_CHAT_MODELS:
+            with self.subTest(model=model):
+                self.assertNotIn(model, enabled_ids)
+                with self.assertRaises(ValueError):
+                    resolve(model)
+
+    def test_real_unavailable_media_models_are_hidden_and_rejected(self) -> None:
+        enabled_ids = {spec.model_name for spec in list_enabled()}
+
+        for model in self.UNAVAILABLE_MEDIA_MODELS:
+            with self.subTest(model=model):
+                self.assertNotIn(model, enabled_ids)
+                with self.assertRaises(ValueError):
+                    resolve(model)
 
     def test_grok_43_uses_free_sso_console_responses_route(self) -> None:
         spec = resolve("grok-4.3")

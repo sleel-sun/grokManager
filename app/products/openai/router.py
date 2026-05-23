@@ -402,7 +402,7 @@ async def chat_completions_endpoint(req: ChatCompletionRequest):
     )
 
     spec = model_registry.get(req.model)
-    if spec is None:
+    if spec is None or not spec.enabled:
         raise ValidationError(
             f"Model {req.model!r} does not exist or you do not have access to it.",
             param="model",

@@ -62,6 +62,7 @@ PYINSTALLER_ARGS=(
   --collect-all granian
   --collect-all curl_cffi
   --collect-all tiktoken
+  --collect-submodules tiktoken_ext
   --collect-data certifi
   --hidden-import app.main
   --hidden-import app.control.account.backends.local

@@ -92,11 +92,15 @@ def _log_task_exception(task: "asyncio.Task") -> None:
 
 
 def _upstream_body_excerpt(exc: UpstreamError, *, limit: int = 240) -> str:
+    body = _upstream_body(exc).replace("\n", "\\n")
+    return body[:limit] or "-"
+
+
+def _upstream_body(exc: UpstreamError) -> str:
     details = getattr(exc, "details", {})
     if not isinstance(details, dict):
-        return "-"
-    body = str(details.get("body", "") or "").replace("\n", "\\n")
-    return body[:limit] or "-"
+        return ""
+    return str(details.get("body", "") or "")
 
 
 def _transport_upstream_error(exc: BaseException, *, context: str) -> UpstreamError:
@@ -189,7 +193,36 @@ def _configured_retry_codes(cfg) -> frozenset[int]:
 
 def _should_retry_upstream(exc: UpstreamError, retry_codes: frozenset[int]) -> bool:
     """Return whether this upstream error should switch to another token."""
+    if _is_account_scoped_forbidden(exc):
+        return True
     return exc.status in retry_codes or is_invalid_credentials_error(exc)
+
+
+_CLOUDFLARE_CHALLENGE_MARKERS = (
+    "just a moment",
+    "cf-challenge",
+    "cf-mitigated",
+    "cloudflare",
+)
+_CHAT_ACCOUNT_RETRY_MIN_RETRIES = 5
+
+
+def _is_account_scoped_forbidden(exc: UpstreamError) -> bool:
+    """Treat empty/non-CF 403 responses as account entitlement failures."""
+    if exc.status != 403:
+        return False
+    haystack = f"{_upstream_body(exc)} {exc}".lower()
+    return not any(marker in haystack for marker in _CLOUDFLARE_CHALLENGE_MARKERS)
+
+
+def _chat_max_retries(cfg) -> int:
+    """Use enough retries to rotate past account-specific 403 failures."""
+    configured = max(0, selection_max_retries())
+    account_min = max(
+        0,
+        cfg.get_int("chat.account_retry_min_retries", _CHAT_ACCOUNT_RETRY_MIN_RETRIES),
+    )
+    return max(configured, account_min)
 
 
 def _feedback_kind(exc: BaseException) -> "FeedbackKind":
@@ -519,7 +552,7 @@ async def completions(
         raise RateLimitError("Account directory not initialised")
     directory = _acct_dir
 
-    max_retries = selection_max_retries()
+    max_retries = _chat_max_retries(cfg)
     retry_codes = _configured_retry_codes(cfg)
     response_id = make_response_id()
     timeout_s = cfg.get_float("chat.timeout", 120.0)

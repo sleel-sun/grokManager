@@ -7,26 +7,39 @@ Streaming emits standard Responses API SSE events.
 import asyncio
 from typing import Any, AsyncGenerator
 
-import orjson
-
 from app.platform.logging.logger import logger
 from app.platform.config.snapshot import get_config
 from app.platform.errors import RateLimitError, UpstreamError
 from app.platform.runtime.clock import now_s
-from app.platform.tokens import estimate_prompt_tokens, estimate_tokens, estimate_tool_call_tokens
+from app.platform.tokens import (
+    estimate_prompt_tokens,
+    estimate_tokens,
+    estimate_tool_call_tokens,
+)
 from app.control.model.enums import ModeId
 from app.control.model.registry import resolve as resolve_model
 from app.control.account.enums import FeedbackKind
 from app.dataplane.reverse.protocol.xai_chat import classify_line
-from app.products._account_selection import reserve_account, selection_max_retries
+from app.products._account_selection import reserve_account
 
-from .chat import _stream_chat, _extract_message, _resolve_image, _quota_sync, _fail_sync, _parse_retry_codes, _feedback_kind, _log_task_exception, _upstream_body_excerpt, _new_stream_adapter
-from .chat import _configured_retry_codes, _should_retry_upstream
-from ._format import (
-    make_resp_id, build_resp_usage, make_resp_object, format_sse,
+from .chat import (
+    _chat_max_retries,
+    _extract_message,
+    _fail_sync,
+    _feedback_kind,
+    _log_task_exception,
+    _new_stream_adapter,
+    _quota_sync,
+    _resolve_image,
+    _stream_chat,
+    _upstream_body_excerpt,
 )
+from .chat import _configured_retry_codes, _should_retry_upstream
+from ._format import build_resp_usage, format_sse, make_resp_id, make_resp_object
 from app.dataplane.reverse.protocol.tool_prompt import (
-    build_tool_system_prompt, extract_tool_names, inject_into_message, tool_calls_to_xml,
+    build_tool_system_prompt,
+    extract_tool_names,
+    inject_into_message,
 )
 from app.dataplane.reverse.protocol.tool_parser import parse_tool_calls
 from ._tool_sieve import ToolSieve
@@ -221,8 +234,6 @@ async def create(
 
     cfg     = get_config()
     spec    = resolve_model(model)
-    mode_id = int(spec.mode_id)   # cast once, reuse everywhere
-
     messages: list[dict] = []
     if instructions:
         messages.append({"role": "system", "content": instructions})
@@ -247,7 +258,7 @@ async def create(
         raise RateLimitError("Account directory not initialised")
     directory = _acct_dir
 
-    max_retries  = selection_max_retries()
+    max_retries  = _chat_max_retries(cfg)
     retry_codes  = _configured_retry_codes(cfg)
     response_id  = make_resp_id("resp")
     reasoning_id = make_resp_id("rs")

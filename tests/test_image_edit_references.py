@@ -164,9 +164,12 @@ class ImageGenerationOutputTests(unittest.TestCase):
 class ImageGenerationRetryTests(unittest.TestCase):
     def test_lite_generation_retries_next_account_after_403(self) -> None:
         from app.dataplane import account as account_module
+        from app.control.model.registry import get as get_model
         from app.products.openai import images
 
         directory = _FakeImageDirectory()
+        spec = get_model("grok-imagine-image-lite")
+        self.assertIsNotNone(spec)
 
         async def fake_stream_lite(token: str, *_args, **_kwargs):
             if token == "bad-token":
@@ -192,7 +195,7 @@ class ImageGenerationRetryTests(unittest.TestCase):
                 patch.object(images, "_fail_sync", new=AsyncMock(return_value=None)),
             ):
                 return await images._run_lite_request(
-                    spec=images.resolve_model("grok-imagine-image-lite"),
+                    spec=spec,
                     prompt="draw a cat",
                     timeout_s=1,
                     response_format="url",
@@ -208,9 +211,12 @@ class ImageGenerationRetryTests(unittest.TestCase):
 
     def test_ws_generation_retries_next_account_after_rate_limit_event(self) -> None:
         from app.dataplane import account as account_module
+        from app.control.model.registry import get as get_model
         from app.products.openai import images
 
         directory = _FakeImageDirectory()
+        spec = get_model("grok-imagine-image")
+        self.assertIsNotNone(spec)
         cfg = _FakeConfig(
             {
                 "features.enable_nsfw": True,
@@ -239,6 +245,7 @@ class ImageGenerationRetryTests(unittest.TestCase):
                 patch.object(account_module, "_directory", directory),
                 patch.object(images, "selection_max_retries", return_value=1),
                 patch.object(images, "get_config", return_value=cfg),
+                patch.object(images, "resolve_model", return_value=spec),
                 patch.object(images, "stream_images", side_effect=fake_stream_images),
                 patch.object(
                     images,
