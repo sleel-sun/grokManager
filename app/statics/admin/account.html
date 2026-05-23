@@ -625,6 +625,52 @@
       white-space:normal;
       line-height:1.35;
     }
+    #modal-model-permissions .modal { width:min(860px,94vw) }
+    #modal-model-permissions .dialog-label { width:72px }
+    .model-permission-result {
+      max-height:360px;
+      overflow:auto;
+      border:1px solid var(--border);
+      border-radius:14px;
+      background:#fff;
+    }
+    .model-permission-result table {
+      min-width:780px;
+      border-collapse:collapse;
+    }
+    .model-permission-result th,
+    .model-permission-result td {
+      padding:9px 10px;
+      font-size:12px;
+      white-space:nowrap;
+      border-bottom:1px solid #f1ede7;
+    }
+    .model-permission-result tr:last-child td { border-bottom:0 }
+    .model-permission-summary {
+      display:flex;
+      align-items:center;
+      gap:6px;
+      flex-wrap:wrap;
+      margin-top:8px;
+    }
+    .perm-badge {
+      display:inline-flex;
+      align-items:center;
+      height:20px;
+      padding:0 8px;
+      border-radius:999px;
+      font-size:11px;
+      font-weight:600;
+      background:#f7f7f7;
+      color:#6d6d6d;
+    }
+    .perm-badge-supported { color:#3e8f69; background:#f2f8f4 }
+    .perm-badge-no-quota,
+    .perm-badge-not-found,
+    .perm-badge-upstream-error { color:#b66a63; background:#fbf3f2 }
+    .perm-badge-no-accounts,
+    .perm-badge-not-routed { color:#b47a3d; background:#fbf5ed }
+    .perm-model-list { min-height:96px }
     .modal { box-shadow:none }
     .dialog-body { display:grid; gap:12px }
     .dialog-help {
@@ -930,6 +976,9 @@
       <button type="button" onclick="doExport()" id="btn-export" class="toolbar-icon-btn">
         <svg viewBox="0 0 24 24" stroke-width="1.8"><path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M5 21h14"/></svg>
       </button>
+      <button type="button" onclick="openModelPermissionModal()" id="btn-model-permissions" class="toolbar-icon-btn">
+        <svg viewBox="0 0 24 24" stroke-width="1.8"><path d="M12 3 5 6v5c0 4.4 2.8 8.3 7 10 4.2-1.7 7-5.6 7-10V6z"/><path d="M9 12l2 2 4-4"/></svg>
+      </button>
       <button type="button" onclick="batchNSFW()" id="btn-nsfw" class="row-nsfw-btn" style="display:none">
         <svg viewBox="0 0 20 20" aria-hidden="true">
           <circle cx="10" cy="10" r="7.25"/>
@@ -1066,6 +1115,38 @@
   </div>
 </div>
 
+<!-- ── Model Permission Modal ────────────────────────────────────────────── -->
+<div class="modal-overlay" id="modal-model-permissions">
+  <div class="modal">
+    <div class="modal-title">账号池模型权限检测</div>
+    <div class="dialog-help">按账号池抽样真实请求检测模型权限，会消耗少量对话额度。留空模型列表时检测全部已启用对话模型。</div>
+    <div class="dialog-body">
+      <div class="dialog-field">
+        <span class="dialog-label">账号池</span>
+        <select class="input" id="perm-pool" style="flex:1">
+          <option value="">全部账号池</option>
+          <option value="basic">普通池 basic</option>
+          <option value="super">高级池 super</option>
+          <option value="heavy">重型池 heavy</option>
+        </select>
+      </div>
+      <div class="dialog-field">
+        <span class="dialog-label">抽样数量</span>
+        <input class="input" id="perm-sample-size" type="number" min="1" max="20" value="1" style="flex:1">
+      </div>
+      <div>
+        <div class="dialog-help">模型 ID（可选，每行一个）</div>
+        <textarea class="input dialog-textarea perm-model-list" id="perm-models" placeholder="grok-4.3&#10;grok-4.20-0309&#10;grok-image-image-lite"></textarea>
+      </div>
+      <div id="perm-results" class="dialog-help">尚未检测。</div>
+    </div>
+    <div class="dialog-actions">
+      <button onclick="closeModal('modal-model-permissions')" class="dialog-btn">关闭</button>
+      <button onclick="runModelPermissionCheck()" id="btn-run-model-permissions" class="dialog-btn dialog-btn-primary">开始检测</button>
+    </div>
+  </div>
+</div>
+
 <!-- ── Confirm Modal ───────────────────────────────────────────────────────── -->
 <div class="modal-overlay" id="modal-confirm">
   <div class="modal" style="max-width:400px">
@@ -1117,6 +1198,7 @@ function applyAccountI18n() {
   const toolbarTips = [
     ['btn-filter', 'account.filter', '筛选'],
     ['btn-export', 'account.export', '导出数据'],
+    ['btn-model-permissions', 'account.modelPermissions', '模型权限检测'],
     ['btn-nsfw', 'account.batchNsfw', '开启 NSFW'],
     ['btn-refresh', 'account.batchRefresh', '刷新选中'],
     ['btn-delete', 'account.batchDelete', '删除选中'],
@@ -1598,6 +1680,14 @@ function fmtRate(success, fail) {
 }
 function mask(t) { return t.length > 20 ? t.slice(0,8) + '…' + t.slice(-8) : t; }
 function xe(s) { return s.replace(/\\/g,'\\\\').replace(/'/g,"\\'").replace(/"/g,'&quot;'); }
+function xh(s) {
+  return String(s ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
 function fmtDate(d) {
   if (!d) return tr('account.na', null, '—');
   const dt = new Date(typeof d === 'number' ? d : d);
@@ -1964,6 +2054,112 @@ function batchNSFW() {
       (ok, fail) => showToast(tr('account.nsfwDone', { ok, fail }, `NSFW 完成：成功 ${ok}，失败 ${fail}`), 'success')
     )
   );
+}
+
+// ── Model Permissions ─────────────────────────────────────────────────────
+function openModelPermissionModal() {
+  const result = document.getElementById('perm-results');
+  if (result && !result.dataset.touched) result.textContent = '尚未检测。';
+  openModal('modal-model-permissions');
+}
+
+function parsePermissionModels() {
+  const raw = document.getElementById('perm-models')?.value || '';
+  const models = raw.split(/\r?\n|,/).map(s => s.trim()).filter(Boolean);
+  return [...new Set(models)];
+}
+
+function permissionStatus(status) {
+  const m = {
+    supported: ['支持', 'perm-badge-supported'],
+    no_accounts: ['账号池无可用账号', 'perm-badge-no-accounts'],
+    pool_not_routed: ['账号池未路由', 'perm-badge-not-routed'],
+    no_quota_or_entitlement: ['无额度或无权限', 'perm-badge-no-quota'],
+    upstream_model_not_found: ['上游无此模型', 'perm-badge-not-found'],
+    invalid_credentials: ['凭证无效', 'perm-badge-no-quota'],
+    cloudflare_challenge: ['Cloudflare 拦截', 'perm-badge-upstream-error'],
+    unsupported_probe_type: ['暂不支持检测', 'perm-badge-not-routed'],
+    upstream_error: ['上游错误', 'perm-badge-upstream-error'],
+  };
+  return m[status] || [status || '未知', ''];
+}
+
+function renderPermissionResults(data) {
+  const box = document.getElementById('perm-results');
+  if (!box) return;
+  box.dataset.touched = '1';
+  const rows = Array.isArray(data.results) ? data.results : [];
+  if (!rows.length) {
+    box.innerHTML = '没有可检测的模型或账号池。';
+    return;
+  }
+  const summary = data.summary?.by_status || {};
+  const summaryHtml = Object.entries(summary)
+    .filter(([, count]) => Number(count) > 0)
+    .map(([status, count]) => {
+      const [label, cls] = permissionStatus(status);
+      return `<span class="perm-badge ${cls}">${xh(label)} ${xh(count)}</span>`;
+    }).join('');
+  const checked = data.summary?.checked ?? rows.length;
+  const body = rows.map(row => {
+    const [label, cls] = permissionStatus(row.status);
+    const accountCount = row.accounts_checked ?? 0;
+    const code = row.status_code ? `HTTP ${row.status_code}` : '-';
+    const upstream = row.upstream_model || row.mode_id || '-';
+    return `<tr>
+      <td>${xh(row.model)}</td>
+      <td>${xh(row.pool)}</td>
+      <td><span class="perm-badge ${cls}">${xh(label)}</span></td>
+      <td>${xh(accountCount)}</td>
+      <td>${xh(code)}</td>
+      <td>${xh(upstream)}</td>
+      <td title="${xh(row.message)}">${xh(row.message || '')}</td>
+    </tr>`;
+  }).join('');
+  box.innerHTML = `
+    <div class="model-permission-summary"><span class="perm-badge">检测 ${xh(checked)} 项</span>${summaryHtml || '<span class="perm-badge">无汇总</span>'}</div>
+    <div class="model-permission-result" style="margin-top:10px">
+      <table>
+        <thead>
+          <tr>
+            <th>模型</th>
+            <th>账号池</th>
+            <th>状态</th>
+            <th>检测账号</th>
+            <th>状态码</th>
+            <th>上游模型</th>
+            <th>说明</th>
+          </tr>
+        </thead>
+        <tbody>${body}</tbody>
+      </table>
+    </div>`;
+}
+
+async function runModelPermissionCheck() {
+  const btn = document.getElementById('btn-run-model-permissions');
+  const result = document.getElementById('perm-results');
+  const pool = document.getElementById('perm-pool')?.value || '';
+  const sampleSize = Math.max(1, Math.min(20, Number(document.getElementById('perm-sample-size')?.value || 1)));
+  const models = parsePermissionModels();
+  const payload = { sample_size: sampleSize, timeout_s: 30 };
+  if (pool) payload.pools = [pool];
+  if (models.length) payload.models = models;
+  try {
+    if (btn) btn.disabled = true;
+    if (result) {
+      result.dataset.touched = '1';
+      result.textContent = '正在检测模型权限，请稍候…';
+    }
+    const data = await _api('POST', '/model-permissions/check', payload);
+    renderPermissionResults(data);
+    showToast('模型权限检测完成', 'success');
+  } catch (e) {
+    if (result) result.textContent = `检测失败：${e.message}`;
+    showToast(`检测失败：${e.message}`, 'error');
+  } finally {
+    if (btn) btn.disabled = false;
+  }
 }
 
 // ── Modal ──────────────────────────────────────────────────────────────────
