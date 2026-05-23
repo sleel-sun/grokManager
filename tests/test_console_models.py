@@ -44,7 +44,7 @@ class ConsoleModelRoutingTests(unittest.TestCase):
         "grok-build-console",
         "grok-4.3-beta",
     )
-    UNAVAILABLE_MEDIA_MODELS = (
+    AVAILABLE_MEDIA_MODELS = (
         "grok-imagine-image-lite",
         "grok-imagine-image",
         "grok-imagine-image-pro",
@@ -70,14 +70,14 @@ class ConsoleModelRoutingTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     resolve(model)
 
-    def test_real_unavailable_media_models_are_hidden_and_rejected(self) -> None:
+    def test_media_models_stay_visible_for_runtime_account_retry(self) -> None:
         enabled_ids = {spec.model_name for spec in list_enabled()}
 
-        for model in self.UNAVAILABLE_MEDIA_MODELS:
+        for model in self.AVAILABLE_MEDIA_MODELS:
             with self.subTest(model=model):
-                self.assertNotIn(model, enabled_ids)
-                with self.assertRaises(ValueError):
-                    resolve(model)
+                spec = resolve(model)
+                self.assertIn(model, enabled_ids)
+                self.assertTrue(spec.is_image() or spec.is_image_edit() or spec.is_video())
 
     def test_grok_43_uses_free_sso_console_responses_route(self) -> None:
         spec = resolve("grok-4.3")

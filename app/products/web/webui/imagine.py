@@ -13,11 +13,14 @@ from app.platform.config.snapshot import get_config
 from app.platform.logging.logger import logger
 from app.platform.runtime.clock import now_s
 from app.control.account.enums import FeedbackKind
-from app.products._account_selection import selection_max_retries
-from app.products.openai.chat import _feedback_kind
 from app.products.openai.images import (
+    _image_feedback_kind,
+    _image_max_retries,
+    _image_pool_candidates,
     _image_retry_codes,
     _image_stream_error_to_upstream_error,
+    _rotate_pool_candidates,
+    _schedule_account_sync,
     _should_retry_image_upstream,
     resolve_aspect_ratio,
 )
@@ -42,7 +45,11 @@ def _image_event_error_payload(event: dict, run_id: str) -> dict:
     }
 
 
-async def _acquire_token(exclude_tokens: list[str] | None = None):
+async def _acquire_token(
+    exclude_tokens: list[str] | None = None,
+    *,
+    attempt: int = 0,
+):
     from app.dataplane.account import _directory as _acct_dir
     if _acct_dir is None:
         return None, None
@@ -51,7 +58,7 @@ async def _acquire_token(exclude_tokens: list[str] | None = None):
     if spec is None:
         return None, None
     acct = await _acct_dir.reserve(
-        pool_candidates=spec.pool_candidates(),
+        pool_candidates=_rotate_pool_candidates(_image_pool_candidates(spec), attempt),
         mode_id=int(spec.mode_id),
         exclude_tokens=exclude_tokens or None,
         now_s_override=now_s(),
@@ -137,13 +144,14 @@ async def imagine_ws(websocket: WebSocket):
         })
 
         enable_nsfw = nsfw if nsfw is not None else get_config().get_bool("features.enable_nsfw", True)
-        max_retries = get_config().get_int("image.max_retries", selection_max_retries())
-        retry_codes = _image_retry_codes(get_config())
+        cfg = get_config()
+        max_retries = _image_max_retries(cfg)
+        retry_codes = _image_retry_codes(cfg)
         excluded: list[str] = []
         last_exc = None
         try:
             for attempt in range(max_retries + 1):
-                token, acct = await _acquire_token(excluded or None)
+                token, acct = await _acquire_token(excluded or None, attempt=attempt)
                 if not token:
                     await _send({
                         "type": "error",
@@ -214,15 +222,20 @@ async def imagine_ws(websocket: WebSocket):
                             kind = (
                                 FeedbackKind.SUCCESS
                                 if success
-                                else _feedback_kind(fail_exc)
-                                if fail_exc
-                                else FeedbackKind.SERVER_ERROR
+                                else _image_feedback_kind(fail_exc)
                             )
+                            mode_id = int(getattr(acct, "mode_id", 0))
                             await _acct_dir.feedback(
                                 token,
                                 kind,
-                                int(getattr(acct, "mode_id", 0)),
+                                mode_id,
                                 now_s_val=now_s(),
+                            )
+                            _schedule_account_sync(
+                                token,
+                                mode_id,
+                                success=success,
+                                fail_exc=fail_exc,
                             )
 
             await _send({

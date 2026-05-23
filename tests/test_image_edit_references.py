@@ -162,6 +162,20 @@ class ImageGenerationOutputTests(unittest.TestCase):
 
 
 class ImageGenerationRetryTests(unittest.TestCase):
+    def test_media_pool_candidates_include_all_pools_with_rotation(self) -> None:
+        from app.control.model.registry import get as get_model
+        from app.products.openai import images
+
+        spec = get_model("grok-imagine-image")
+        self.assertIsNotNone(spec)
+
+        candidates = images._image_pool_candidates(spec)
+
+        self.assertEqual(candidates, (1, 2, 0))
+        self.assertEqual(images._rotate_pool_candidates(candidates, 0), (1, 2, 0))
+        self.assertEqual(images._rotate_pool_candidates(candidates, 1), (2, 0, 1))
+        self.assertEqual(images._rotate_pool_candidates(candidates, 2), (0, 1, 2))
+
     def test_lite_generation_retries_next_account_after_403(self) -> None:
         from app.dataplane import account as account_module
         from app.control.model.registry import get as get_model
@@ -192,7 +206,7 @@ class ImageGenerationRetryTests(unittest.TestCase):
                 patch.object(images, "StreamAdapter", FakeStreamAdapter),
                 patch.object(images, "_resolve_image_output", new=AsyncMock(side_effect=fake_resolve)),
                 patch.object(images, "_quota_sync", new=AsyncMock(return_value=None)),
-                patch.object(images, "_fail_sync", new=AsyncMock(return_value=None)),
+                patch.object(images, "_image_fail_sync", new=AsyncMock(return_value=None)),
             ):
                 return await images._run_lite_request(
                     spec=spec,
@@ -206,7 +220,7 @@ class ImageGenerationRetryTests(unittest.TestCase):
         self.assertEqual(output.api_value, "https://assets.grok.com/image.jpg")
         self.assertEqual(directory.reserved, [(), ("bad-token",)])
         self.assertEqual(directory.released, ["bad-token", "good-token"])
-        self.assertEqual(directory.feedback_calls[0][1], FeedbackKind.FORBIDDEN)
+        self.assertEqual(directory.feedback_calls[0][1], FeedbackKind.RATE_LIMITED)
         self.assertEqual(directory.feedback_calls[1][1], FeedbackKind.SUCCESS)
 
     def test_ws_generation_retries_next_account_after_rate_limit_event(self) -> None:
@@ -240,6 +254,8 @@ class ImageGenerationRetryTests(unittest.TestCase):
                 "image_id": "image-1",
             }
 
+        fail_sync = AsyncMock(return_value=None)
+
         async def run():
             with (
                 patch.object(account_module, "_directory", directory),
@@ -247,6 +263,8 @@ class ImageGenerationRetryTests(unittest.TestCase):
                 patch.object(images, "get_config", return_value=cfg),
                 patch.object(images, "resolve_model", return_value=spec),
                 patch.object(images, "stream_images", side_effect=fake_stream_images),
+                patch.object(images, "_quota_sync", new=AsyncMock(return_value=None)),
+                patch.object(images, "_image_fail_sync", new=fail_sync),
                 patch.object(
                     images,
                     "_resolve_image_output",
@@ -267,6 +285,188 @@ class ImageGenerationRetryTests(unittest.TestCase):
         self.assertEqual(directory.released, ["bad-token", "good-token"])
         self.assertEqual(directory.feedback_calls[0][1], FeedbackKind.RATE_LIMITED)
         self.assertEqual(directory.feedback_calls[1][1], FeedbackKind.SUCCESS)
+        fail_sync.assert_called_once()
+        self.assertEqual(fail_sync.call_args.args[0], "bad-token")
+        self.assertEqual(fail_sync.call_args.args[2].status, 429)
+
+    def test_ws_generation_retries_next_account_after_transport_502(self) -> None:
+        from app.dataplane import account as account_module
+        from app.control.model.registry import get as get_model
+        from app.products.openai import images
+
+        directory = _FakeImageDirectory()
+        spec = get_model("grok-imagine-image")
+        self.assertIsNotNone(spec)
+        cfg = _FakeConfig(
+            {
+                "features.enable_nsfw": True,
+                "features.image_format": "grok_url",
+                "retry.on_codes": "429",
+            }
+        )
+
+        async def fake_stream_images(token: str, *_args, **_kwargs):
+            if token == "bad-token":
+                raise UpstreamError("Cannot connect to host grok.com:443", status=502)
+            yield {
+                "type": "image",
+                "is_final": True,
+                "url": "https://assets.grok.com/users/user-1/image-1/content",
+                "image_id": "image-1",
+            }
+
+        fail_sync = AsyncMock(return_value=None)
+
+        async def run():
+            with (
+                patch.object(account_module, "_directory", directory),
+                patch.object(images, "selection_max_retries", return_value=1),
+                patch.object(images, "get_config", return_value=cfg),
+                patch.object(images, "resolve_model", return_value=spec),
+                patch.object(images, "stream_images", side_effect=fake_stream_images),
+                patch.object(images, "_quota_sync", new=AsyncMock(return_value=None)),
+                patch.object(images, "_image_fail_sync", new=fail_sync),
+                patch.object(
+                    images,
+                    "_resolve_image_output",
+                    new=AsyncMock(return_value=images._ImageOutput("ok-url", "![image](ok-url)")),
+                ),
+            ):
+                return await images.generate(
+                    model="grok-imagine-image",
+                    prompt="draw a cat",
+                    n=1,
+                    stream=False,
+                )
+
+        payload = asyncio.run(run())
+
+        self.assertEqual(payload["data"], [{"url": "ok-url"}])
+        self.assertEqual(directory.reserved, [(), ("bad-token",)])
+        self.assertEqual(directory.feedback_calls[0][1], FeedbackKind.SERVER_ERROR)
+        fail_sync.assert_called_once()
+        self.assertEqual(fail_sync.call_args.args[2].status, 502)
+
+    def test_image_failure_sync_does_not_refresh_chat_quotas(self) -> None:
+        from app.products.openai import images
+
+        class FakeRefreshService:
+            def __init__(self) -> None:
+                self.recorded: list[tuple[str, int, BaseException | None]] = []
+                self.refresh_called = False
+
+            async def record_failure_async(self, token, mode_id, exc=None):
+                self.recorded.append((token, mode_id, exc))
+
+            async def refresh_on_demand(self):
+                self.refresh_called = True
+                raise AssertionError("image failures must not refresh chat quotas")
+
+        svc = FakeRefreshService()
+
+        with patch.object(images, "get_refresh_service", return_value=svc):
+            asyncio.run(
+                images._image_fail_sync(
+                    "bad-token",
+                    0,
+                    UpstreamError("Image upstream returned 429", status=429),
+                )
+            )
+
+        self.assertFalse(svc.refresh_called)
+        self.assertEqual(len(svc.recorded), 1)
+        self.assertEqual(svc.recorded[0][0], "bad-token")
+
+    def test_image_account_forbidden_persists_as_quota_exhausted(self) -> None:
+        from app.products.openai import images
+
+        class FakeRefreshService:
+            def __init__(self) -> None:
+                self.recorded: list[tuple[str, int, BaseException | None]] = []
+
+            async def record_failure_async(self, token, mode_id, exc=None):
+                self.recorded.append((token, mode_id, exc))
+
+        svc = FakeRefreshService()
+
+        with patch.object(images, "get_refresh_service", return_value=svc):
+            asyncio.run(
+                images._image_fail_sync(
+                    "bad-token",
+                    0,
+                    UpstreamError("Image-generation upstream returned 403", status=403),
+                )
+            )
+
+        self.assertEqual(len(svc.recorded), 1)
+        persisted_exc = svc.recorded[0][2]
+        self.assertIsInstance(persisted_exc, UpstreamError)
+        self.assertEqual(persisted_exc.status, 429)
+
+    def test_image_edit_retries_next_account_after_reference_upload_403(self) -> None:
+        from app.dataplane import account as account_module
+        from app.control.model.registry import get as get_model
+        from app.products.openai import images
+
+        directory = _FakeImageDirectory()
+        spec = get_model("grok-imagine-image-edit")
+        self.assertIsNotNone(spec)
+        cfg = _FakeConfig(
+            {
+                "features.image_format": "grok_url",
+                "retry.on_codes": "429",
+            }
+        )
+
+        async def fake_prepare_references(token: str, _image_inputs: list[str]):
+            if token == "bad-token":
+                raise UpstreamError("Asset upload returned 403", status=403)
+            return ["https://assets.grok.com/users/user-1/asset-1/content"]
+
+        async def fake_create_post(*_args, **_kwargs):
+            return {"post": {"id": "post-1"}}
+
+        async def fake_collect_images(**_kwargs):
+            return [images._ImageOutput("ok-url", "![image](ok-url)")]
+
+        fail_sync = AsyncMock(return_value=None)
+
+        async def run():
+            with (
+                patch.object(account_module, "_directory", directory),
+                patch.object(images, "selection_max_retries", return_value=1),
+                patch.object(images, "get_config", return_value=cfg),
+                patch.object(images, "resolve_model", return_value=spec),
+                patch.object(images, "_prepare_edit_references", side_effect=fake_prepare_references),
+                patch.object(images, "create_media_post", side_effect=fake_create_post),
+                patch.object(images, "_collect_edit_images", side_effect=fake_collect_images),
+                patch.object(images, "_quota_sync", new=AsyncMock(return_value=None)),
+                patch.object(images, "_image_fail_sync", new=fail_sync),
+            ):
+                return await images.edit(
+                    model="grok-imagine-image-edit",
+                    messages=[
+                        {
+                            "role": "user",
+                            "content": [
+                                {"type": "text", "text": "make it brighter"},
+                                {"type": "image_url", "image_url": {"url": "data:image/png;base64,AA=="}},
+                            ],
+                        }
+                    ],
+                    n=1,
+                    stream=False,
+                )
+
+        payload = asyncio.run(run())
+
+        self.assertEqual(payload["data"], [{"url": "ok-url"}])
+        self.assertEqual(directory.reserved, [(), ("bad-token",)])
+        self.assertEqual(directory.released, ["bad-token", "good-token"])
+        self.assertEqual(directory.feedback_calls[0][1], FeedbackKind.RATE_LIMITED)
+        self.assertEqual(directory.feedback_calls[1][1], FeedbackKind.SUCCESS)
+        fail_sync.assert_called_once()
+        self.assertEqual(fail_sync.call_args.args[0], "bad-token")
 
 
 if __name__ == "__main__":

@@ -14,9 +14,10 @@ import orjson
 
 from app.platform.logging.logger import logger
 from app.platform.config.snapshot import get_config
-from app.platform.errors import RateLimitError, UpstreamError, ValidationError
+from app.platform.errors import AppError, RateLimitError, UpstreamError, ValidationError
 from app.platform.runtime.clock import now_s
 from app.platform.storage import save_local_image
+from app.control.account.runtime import get_refresh_service
 from app.control.model.registry import resolve as resolve_model
 from app.control.model.enums import ModeId
 from app.control.model.spec import ModelSpec
@@ -29,6 +30,7 @@ from app.dataplane.reverse.protocol.xai_chat import (
     classify_line,
 )
 from app.dataplane.reverse.protocol.xai_assets import infer_content_type, resolve_asset_reference, resolve_download_url
+from app.dataplane.reverse.protocol.xai_usage import is_invalid_credentials_error
 from app.dataplane.reverse.protocol.xai_image_edit import (
     IMAGE_POST_MEDIA_TYPE,
     build_image_edit_payload,
@@ -56,8 +58,8 @@ from ._format import (
 )
 from .chat import (
     _configured_retry_codes,
-    _fail_sync,
     _feedback_kind,
+    _log_task_exception,
     _quota_sync,
     _should_retry_upstream,
 )
@@ -268,6 +270,7 @@ def _output_content(image: _ImageOutput, *, chat_format: bool) -> str:
 _LITE_IMAGE_MODELS = frozenset({"grok-imagine-image-lite"})
 # WS models that use quality mode (enable_pro=True).
 _PRO_IMAGE_MODELS  = frozenset({"grok-imagine-image-pro"})
+_ALL_ACCOUNT_POOLS = (0, 1, 2)
 
 
 def _is_cloudflare_challenge_body(body: str) -> bool:
@@ -292,11 +295,90 @@ def _image_retry_codes(cfg) -> frozenset[int]:
     stale birth-date/NSFW state, or blocked image mode) that should swap
     accounts. Cloudflare challenge 403 is handled separately and is not retried.
     """
-    return _configured_retry_codes(cfg) | frozenset({403})
+    return _configured_retry_codes(cfg) | frozenset({403, 502})
 
 
 def _image_max_retries(cfg) -> int:
-    return max(0, cfg.get_int("image.max_retries", selection_max_retries()))
+    configured = cfg.get_int("image.max_retries", selection_max_retries())
+    floor = cfg.get_int("image.account_retry_min_retries", 20)
+    return max(0, configured, floor)
+
+
+def _image_pool_candidates(spec: ModelSpec) -> tuple[int, ...]:
+    """Media quotas are account-scoped, so try every pool while preserving spec priority."""
+    ordered: list[int] = []
+    for pool_id in (*spec.pool_candidates(), *_ALL_ACCOUNT_POOLS):
+        if pool_id not in ordered:
+            ordered.append(pool_id)
+    return tuple(ordered)
+
+
+def _rotate_pool_candidates(candidates: tuple[int, ...], attempt: int) -> tuple[int, ...]:
+    if not candidates:
+        return candidates
+    offset = attempt % len(candidates)
+    return candidates[offset:] + candidates[:offset]
+
+
+def _is_image_account_forbidden(exc: BaseException | None) -> bool:
+    return (
+        isinstance(exc, UpstreamError)
+        and exc.status == 403
+        and not _is_cloudflare_challenge_body(_upstream_error_body(exc))
+        and not is_invalid_credentials_error(exc)
+    )
+
+
+def _image_feedback_kind(exc: BaseException | None) -> FeedbackKind:
+    if isinstance(exc, UpstreamError) and (exc.status == 429 or _is_image_account_forbidden(exc)):
+        return FeedbackKind.RATE_LIMITED
+    return _feedback_kind(exc)
+
+
+def _image_failure_for_quota_record(exc: BaseException | None) -> BaseException | None:
+    if _is_image_account_forbidden(exc):
+        return UpstreamError(
+            "Image account unavailable for this media mode",
+            status=429,
+            body=_upstream_error_body(exc),
+        )
+    return exc
+
+
+async def _image_fail_sync(
+    token: str, mode_id: int, exc: BaseException | None = None
+) -> None:
+    """Persist media failure metadata without refreshing chat quotas back over it."""
+    try:
+        svc = get_refresh_service()
+        if svc:
+            await svc.record_failure_async(
+                token,
+                mode_id,
+                _image_failure_for_quota_record(exc),
+            )
+    except Exception as err:
+        logger.warning(
+            "image fail sync error: token={}... mode_id={} error={}",
+            token[:10],
+            mode_id,
+            err,
+        )
+
+
+def _schedule_account_sync(
+    token: str,
+    mode_id: int,
+    *,
+    success: bool,
+    fail_exc: BaseException | None,
+) -> None:
+    task = (
+        asyncio.create_task(_quota_sync(token, mode_id))
+        if success
+        else asyncio.create_task(_image_fail_sync(token, mode_id, fail_exc))
+    )
+    task.add_done_callback(_log_task_exception)
 
 
 def _upstream_error_body(exc: UpstreamError) -> str:
@@ -314,6 +396,21 @@ def _image_stream_error_to_upstream_error(ev: dict[str, Any], *, prefix: str) ->
     message = str(ev.get("error") or "unknown").strip() or "unknown"
     status = 429 if code == "rate_limit_exceeded" or "rate limit" in message.lower() else 502
     return UpstreamError(f"{prefix}: {message}", status=status, body=message)
+
+
+def _image_exhausted_error(
+    operation: str,
+    attempted_accounts: int,
+    last_exc: UpstreamError,
+) -> AppError:
+    if last_exc.status not in {403, 429}:
+        return last_exc
+    if last_exc.status == 403 and _is_cloudflare_challenge_body(_upstream_error_body(last_exc)):
+        return last_exc
+    return RateLimitError(
+        f"{operation} has no available account quota after "
+        f"{attempted_accounts} account attempts; last upstream status={last_exc.status}"
+    )
 
 
 async def generate(
@@ -363,6 +460,7 @@ async def generate(
     _ws_mode_id = int(spec.mode_id)
     max_retries = _image_max_retries(cfg)
     retry_codes = _image_retry_codes(cfg)
+    pool_candidates = _image_pool_candidates(spec)
 
     if stream:
         async def _sse_stream() -> AsyncGenerator[str, None]:
@@ -371,14 +469,18 @@ async def generate(
 
             for attempt in range(max_retries + 1):
                 acct = await directory.reserve(
-                    pool_candidates=spec.pool_candidates(),
+                    pool_candidates=_rotate_pool_candidates(pool_candidates, attempt),
                     mode_id=_ws_mode_id,
                     exclude_tokens=excluded or None,
                     now_s_override=now_s(),
                 )
                 if acct is None:
                     if last_exc is not None:
-                        raise last_exc
+                        raise _image_exhausted_error(
+                            "Image generation",
+                            len(excluded),
+                            last_exc,
+                        )
                     raise RateLimitError("No available accounts for image generation")
 
                 token = acct.token
@@ -448,7 +550,11 @@ async def generate(
                     last_exc = exc
                     should_retry = attempt < max_retries and _should_retry_image_upstream(exc, retry_codes)
                     if not should_retry:
-                        raise
+                        raise _image_exhausted_error(
+                            "Image generation",
+                            len(excluded) + 1,
+                            exc,
+                        )
                     logger.warning(
                         "image stream retry scheduled: attempt={}/{} status={} token={}...",
                         attempt + 1,
@@ -464,18 +570,26 @@ async def generate(
                     kind = (
                         FeedbackKind.SUCCESS
                         if success
-                        else _feedback_kind(fail_exc)
-                        if fail_exc
-                        else FeedbackKind.SERVER_ERROR
+                        else _image_feedback_kind(fail_exc)
                     )
                     await directory.feedback(token, kind, _ws_mode_id, now_s_val=now_s())
+                    _schedule_account_sync(
+                        token,
+                        _ws_mode_id,
+                        success=success,
+                        fail_exc=fail_exc,
+                    )
 
                 if should_retry:
                     excluded.append(token)
                     continue
 
             if last_exc is not None:
-                raise last_exc
+                raise _image_exhausted_error(
+                    "Image generation",
+                    len(excluded),
+                    last_exc,
+                )
             raise RateLimitError("No available accounts for image generation")
 
         return _sse_stream()
@@ -488,14 +602,18 @@ async def generate(
     completed = False
     for attempt in range(max_retries + 1):
         acct = await directory.reserve(
-            pool_candidates=spec.pool_candidates(),
+            pool_candidates=_rotate_pool_candidates(pool_candidates, attempt),
             mode_id=_ws_mode_id,
             exclude_tokens=excluded or None,
             now_s_override=now_s(),
         )
         if acct is None:
             if last_exc is not None:
-                raise last_exc
+                raise _image_exhausted_error(
+                    "Image generation",
+                    len(excluded),
+                    last_exc,
+                )
             raise RateLimitError("No available accounts for image generation")
 
         token = acct.token
@@ -561,7 +679,11 @@ async def generate(
             last_exc = exc
             should_retry = attempt < max_retries and _should_retry_image_upstream(exc, retry_codes)
             if not should_retry:
-                raise
+                raise _image_exhausted_error(
+                    "Image generation",
+                    len(excluded) + 1,
+                    exc,
+                )
             logger.warning(
                 "image retry scheduled: attempt={}/{} status={} token={}...",
                 attempt + 1,
@@ -577,11 +699,15 @@ async def generate(
             kind = (
                 FeedbackKind.SUCCESS
                 if success
-                else _feedback_kind(fail_exc)
-                if fail_exc
-                else FeedbackKind.SERVER_ERROR
+                else _image_feedback_kind(fail_exc)
             )
             await directory.feedback(token, kind, _ws_mode_id, now_s_val=now_s())
+            _schedule_account_sync(
+                token,
+                _ws_mode_id,
+                success=success,
+                fail_exc=fail_exc,
+            )
 
         if completed:
             break
@@ -591,7 +717,11 @@ async def generate(
 
     if not completed:
         if last_exc is not None:
-            raise last_exc
+            raise _image_exhausted_error(
+                "Image generation",
+                len(excluded),
+                last_exc,
+            )
         raise RateLimitError("No available accounts for image generation")
 
     if chat_format:
@@ -1122,19 +1252,24 @@ async def _run_lite_request(
     mode_id = int(spec.mode_id)
     max_retries = _image_max_retries(get_config())
     retry_codes = _image_retry_codes(get_config())
+    pool_candidates = _image_pool_candidates(spec)
     excluded: list[str] = []
     last_exc: UpstreamError | None = None
 
     for attempt in range(max_retries + 1):
         acct = await directory.reserve(
-            pool_candidates=spec.pool_candidates(),
+            pool_candidates=_rotate_pool_candidates(pool_candidates, attempt),
             mode_id=mode_id,
             exclude_tokens=excluded or None,
             now_s_override=now_s(),
         )
         if acct is None:
             if last_exc is not None:
-                raise last_exc
+                raise _image_exhausted_error(
+                    "Image generation",
+                    len(excluded),
+                    last_exc,
+                )
             raise RateLimitError("No available accounts for image generation")
 
         token = acct.token
@@ -1177,7 +1312,11 @@ async def _run_lite_request(
             last_exc = exc
             should_retry = attempt < max_retries and _should_retry_image_upstream(exc, retry_codes)
             if not should_retry:
-                raise
+                raise _image_exhausted_error(
+                    "Image generation",
+                    len(excluded) + 1,
+                    exc,
+                )
             logger.warning(
                 "lite image retry scheduled: attempt={}/{} status={} token={}...",
                 attempt + 1,
@@ -1193,22 +1332,26 @@ async def _run_lite_request(
             kind = (
                 FeedbackKind.SUCCESS
                 if success
-                else _feedback_kind(fail_exc)
-                if fail_exc
-                else FeedbackKind.SERVER_ERROR
+                else _image_feedback_kind(fail_exc)
             )
             await directory.feedback(token, kind, mode_id)
-            if success:
-                asyncio.create_task(_quota_sync(token, mode_id))
-            else:
-                asyncio.create_task(_fail_sync(token, mode_id, fail_exc))
+            _schedule_account_sync(
+                token,
+                mode_id,
+                success=success,
+                fail_exc=fail_exc,
+            )
 
         if should_retry:
             excluded.append(token)
             continue
 
     if last_exc is not None:
-        raise last_exc
+        raise _image_exhausted_error(
+            "Image generation",
+            len(excluded),
+            last_exc,
+        )
     raise RateLimitError("No available accounts for image generation")
 
 
@@ -1253,6 +1396,29 @@ async def _run_lite_batch(
     return []
 
 
+async def _prepare_edit_session(
+    token: str,
+    prompt: str,
+    image_inputs: list[str],
+) -> tuple[list[str], str]:
+    image_references = await _prepare_edit_references(token, image_inputs)
+    if not image_references:
+        raise UpstreamError("All image uploads failed; cannot proceed with image edit")
+
+    post = await create_media_post(
+        token,
+        media_type=IMAGE_POST_MEDIA_TYPE,
+        prompt=prompt,
+    )
+    post_data = post.get("post")
+    if not isinstance(post_data, dict):
+        raise UpstreamError("Image edit create-post returned no post payload")
+    parent_post_id = str(post_data.get("id") or "").strip()
+    if not parent_post_id:
+        raise UpstreamError("Image edit create-post returned no post id")
+    return image_references, parent_post_id
+
+
 async def edit(
     *,
     model:           str,
@@ -1277,139 +1443,258 @@ async def edit(
     if _acct_dir is None:
         raise RateLimitError("Account directory not initialised")
 
-    acct = await _acct_dir.reserve(
-        pool_candidates = spec.pool_candidates(),
-        mode_id         = int(spec.mode_id),
-        now_s_override  = now_s(),
-    )
-    if acct is None:
-        raise RateLimitError("No available accounts for image edit")
-
-    token       = acct.token
+    mode_id = int(spec.mode_id)
+    max_retries = _image_max_retries(cfg)
+    retry_codes = _image_retry_codes(cfg)
+    pool_candidates = _image_pool_candidates(spec)
     response_id = make_response_id()
-
-    try:
-        image_references = await _prepare_edit_references(token, image_inputs)
-        if not image_references:
-            raise UpstreamError("All image uploads failed; cannot proceed with image edit")
-
-        post = await create_media_post(
-            token,
-            media_type=IMAGE_POST_MEDIA_TYPE,
-            prompt=prompt,
-        )
-        post_data = post.get("post")
-        if not isinstance(post_data, dict):
-            raise UpstreamError("Image edit create-post returned no post payload")
-        parent_post_id = str(post_data.get("id") or "").strip()
-        if not parent_post_id:
-            raise UpstreamError("Image edit create-post returned no post id")
-    except Exception:
-        await _acct_dir.release(acct)
-        raise
 
     if stream:
         async def _sse_stream() -> AsyncGenerator[str, None]:
-            success = False
-            fail_exc: BaseException | None = None
-            progress_map: dict[int, int] = {}
-            last_progress = -1
-            queue: asyncio.Queue[tuple[int, int]] = asyncio.Queue()
-            try:
-                async def _progress(index: int, progress: int) -> None:
-                    progress_map[index] = _clamp_progress(progress)
-                    await queue.put((
-                        _compute_progress_percent(progress_map, n),
-                        _completed_items(progress_map),
-                    ))
+            excluded: list[str] = []
+            last_exc: UpstreamError | None = None
 
-                task = asyncio.create_task(
-                    _collect_edit_images(
-                        token=token,
-                        prompt=prompt,
-                        image_references=image_references,
-                        parent_post_id=parent_post_id,
-                        requested_n=n,
-                        response_format=response_format,
-                        timeout_s=timeout_s,
-                        progress_cb=_progress,
-                    )
+            for attempt in range(max_retries + 1):
+                acct = await _acct_dir.reserve(
+                    pool_candidates=_rotate_pool_candidates(pool_candidates, attempt),
+                    mode_id=mode_id,
+                    exclude_tokens=excluded or None,
+                    now_s_override=now_s(),
                 )
-                while not task.done() or not queue.empty():
-                    try:
-                        aggregate, completed = await asyncio.wait_for(queue.get(), timeout=0.1)
-                    except asyncio.TimeoutError:
-                        continue
-                    if chat_format and aggregate > last_progress:
-                        last_progress = aggregate
-                        chunk = make_thinking_chunk(
-                            response_id,
-                            model,
-                            _progress_reason("图片", aggregate, completed=completed, total=n),
+                if acct is None:
+                    if last_exc is not None:
+                        raise _image_exhausted_error(
+                            "Image edit",
+                            len(excluded),
+                            last_exc,
                         )
-                        yield f"data: {orjson.dumps(chunk).decode()}\n\n"
-                images = await task
-                for image in images:
-                    content = _output_content(image, chat_format=chat_format)
-                    chunk   = make_stream_chunk(response_id, model, content)
-                    yield f"data: {orjson.dumps(chunk).decode()}\n\n"
+                    raise RateLimitError("No available accounts for image edit")
 
-                final = make_stream_chunk(response_id, model, "", is_final=True)
-                yield f"data: {orjson.dumps(final).decode()}\n\n"
-                yield "data: [DONE]\n\n"
-                success = True
-            except BaseException as exc:
-                fail_exc = exc
-                raise
-            finally:
-                await _acct_dir.release(acct)
-                kind = FeedbackKind.SUCCESS if success else _feedback_kind(fail_exc) if fail_exc else FeedbackKind.SERVER_ERROR
-                await _acct_dir.feedback(token, kind, int(spec.mode_id))
-                if success:
-                    asyncio.create_task(_quota_sync(token, int(spec.mode_id)))
-                else:
-                    asyncio.create_task(_fail_sync(token, int(spec.mode_id), fail_exc))
+                token = acct.token
+                success = False
+                should_retry = False
+                should_feedback = True
+                fail_exc: BaseException | None = None
+                progress_map: dict[int, int] = {}
+                last_progress = -1
+                queue: asyncio.Queue[tuple[int, int]] = asyncio.Queue()
+                try:
+                    image_references, parent_post_id = await _prepare_edit_session(
+                        token,
+                        prompt,
+                        image_inputs,
+                    )
+
+                    async def _progress(index: int, progress: int) -> None:
+                        progress_map[index] = _clamp_progress(progress)
+                        await queue.put(
+                            (
+                                _compute_progress_percent(progress_map, n),
+                                _completed_items(progress_map),
+                            )
+                        )
+
+                    task = asyncio.create_task(
+                        _collect_edit_images(
+                            token=token,
+                            prompt=prompt,
+                            image_references=image_references,
+                            parent_post_id=parent_post_id,
+                            requested_n=n,
+                            response_format=response_format,
+                            timeout_s=timeout_s,
+                            progress_cb=_progress,
+                        )
+                    )
+                    while not task.done() or not queue.empty():
+                        try:
+                            aggregate, completed = await asyncio.wait_for(queue.get(), timeout=0.1)
+                        except asyncio.TimeoutError:
+                            continue
+                        if chat_format and aggregate > last_progress:
+                            last_progress = aggregate
+                            chunk = make_thinking_chunk(
+                                response_id,
+                                model,
+                                _progress_reason("图片", aggregate, completed=completed, total=n),
+                            )
+                            yield f"data: {orjson.dumps(chunk).decode()}\n\n"
+                    images = await task
+                    for image in images:
+                        content = _output_content(image, chat_format=chat_format)
+                        chunk = make_stream_chunk(response_id, model, content)
+                        yield f"data: {orjson.dumps(chunk).decode()}\n\n"
+
+                    final = make_stream_chunk(response_id, model, "", is_final=True)
+                    yield f"data: {orjson.dumps(final).decode()}\n\n"
+                    yield "data: [DONE]\n\n"
+                    success = True
+                    return
+                except ValidationError:
+                    should_feedback = False
+                    raise
+                except UpstreamError as exc:
+                    fail_exc = exc
+                    last_exc = exc
+                    should_retry = attempt < max_retries and _should_retry_image_upstream(exc, retry_codes)
+                    if not should_retry:
+                        raise _image_exhausted_error(
+                            "Image edit",
+                            len(excluded) + 1,
+                            exc,
+                        )
+                    logger.warning(
+                        "image edit stream retry scheduled: attempt={}/{} status={} token={}...",
+                        attempt + 1,
+                        max_retries,
+                        exc.status,
+                        token[:8],
+                    )
+                except BaseException as exc:
+                    fail_exc = exc
+                    raise
+                finally:
+                    await _acct_dir.release(acct)
+                    if should_feedback:
+                        kind = (
+                            FeedbackKind.SUCCESS
+                            if success
+                            else _image_feedback_kind(fail_exc)
+                        )
+                        await _acct_dir.feedback(token, kind, mode_id)
+                        _schedule_account_sync(
+                            token,
+                            mode_id,
+                            success=success,
+                            fail_exc=fail_exc,
+                        )
+
+                if should_retry:
+                    excluded.append(token)
+                    continue
+
+            if last_exc is not None:
+                raise _image_exhausted_error(
+                    "Image edit",
+                    len(excluded),
+                    last_exc,
+                )
+            raise RateLimitError("No available accounts for image edit")
 
         return _sse_stream()
 
-    success = False
-    fail_exc: BaseException | None = None
+    excluded: list[str] = []
+    last_exc: UpstreamError | None = None
+    images: list[_ImageOutput] = []
     reasoning_updates: list[str] = []
-    progress_map: dict[int, int] = {}
-    try:
-        async def _progress(index: int, progress: int) -> None:
-            progress_map[index] = _clamp_progress(progress)
-            if chat_format:
-                _append_reason_update(
-                    reasoning_updates,
-                    "图片",
-                    _compute_progress_percent(progress_map, n),
-                    completed=_completed_items(progress_map),
-                    total=n,
+    completed = False
+
+    for attempt in range(max_retries + 1):
+        acct = await _acct_dir.reserve(
+            pool_candidates=_rotate_pool_candidates(pool_candidates, attempt),
+            mode_id=mode_id,
+            exclude_tokens=excluded or None,
+            now_s_override=now_s(),
+        )
+        if acct is None:
+            if last_exc is not None:
+                raise _image_exhausted_error(
+                    "Image edit",
+                    len(excluded),
+                    last_exc,
+                )
+            raise RateLimitError("No available accounts for image edit")
+
+        token = acct.token
+        success = False
+        should_retry = False
+        should_feedback = True
+        fail_exc: BaseException | None = None
+        reasoning_updates = []
+        progress_map: dict[int, int] = {}
+        try:
+            image_references, parent_post_id = await _prepare_edit_session(
+                token,
+                prompt,
+                image_inputs,
+            )
+
+            async def _progress(index: int, progress: int) -> None:
+                progress_map[index] = _clamp_progress(progress)
+                if chat_format:
+                    _append_reason_update(
+                        reasoning_updates,
+                        "图片",
+                        _compute_progress_percent(progress_map, n),
+                        completed=_completed_items(progress_map),
+                        total=n,
+                    )
+
+            images = await _collect_edit_images(
+                token=token,
+                prompt=prompt,
+                image_references=image_references,
+                parent_post_id=parent_post_id,
+                requested_n=n,
+                response_format=response_format,
+                timeout_s=timeout_s,
+                progress_cb=_progress,
+            )
+            success = True
+            completed = True
+        except ValidationError:
+            should_feedback = False
+            raise
+        except UpstreamError as exc:
+            fail_exc = exc
+            last_exc = exc
+            should_retry = attempt < max_retries and _should_retry_image_upstream(exc, retry_codes)
+            if not should_retry:
+                raise _image_exhausted_error(
+                    "Image edit",
+                    len(excluded) + 1,
+                    exc,
+                )
+            logger.warning(
+                "image edit retry scheduled: attempt={}/{} status={} token={}...",
+                attempt + 1,
+                max_retries,
+                exc.status,
+                token[:8],
+            )
+        except BaseException as exc:
+            fail_exc = exc
+            raise
+        finally:
+            await _acct_dir.release(acct)
+            if should_feedback:
+                kind = (
+                    FeedbackKind.SUCCESS
+                    if success
+                    else _image_feedback_kind(fail_exc)
+                )
+                await _acct_dir.feedback(token, kind, mode_id)
+                _schedule_account_sync(
+                    token,
+                    mode_id,
+                    success=success,
+                    fail_exc=fail_exc,
                 )
 
-        images = await _collect_edit_images(
-            token=token,
-            prompt=prompt,
-            image_references=image_references,
-            parent_post_id=parent_post_id,
-            requested_n=n,
-            response_format=response_format,
-            timeout_s=timeout_s,
-            progress_cb=_progress,
-        )
-        success = True
-    except BaseException as exc:
-        fail_exc = exc
-        raise
-    finally:
-        await _acct_dir.release(acct)
-        kind = FeedbackKind.SUCCESS if success else _feedback_kind(fail_exc) if fail_exc else FeedbackKind.SERVER_ERROR
-        await _acct_dir.feedback(token, kind, int(spec.mode_id))
-        if success:
-            asyncio.create_task(_quota_sync(token, int(spec.mode_id)))
-        else:
-            asyncio.create_task(_fail_sync(token, int(spec.mode_id), fail_exc))
+        if completed:
+            break
+        if should_retry:
+            excluded.append(token)
+            continue
+
+    if not completed:
+        if last_exc is not None:
+            raise _image_exhausted_error(
+                "Image edit",
+                len(excluded),
+                last_exc,
+            )
+        raise RateLimitError("No available accounts for image edit")
 
     if chat_format:
         content = "\n\n".join(image.markdown_value for image in images)
