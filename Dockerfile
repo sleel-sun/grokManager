@@ -27,7 +27,7 @@ COPY --from=ghcr.io/astral-sh/uv:0.6 /uv /uvx /bin/
 
 COPY pyproject.toml uv.lock ./
 
-RUN uv sync --frozen --no-dev --no-install-project \
+RUN uv sync --frozen --no-dev --extra maintainer --no-install-project \
     && find /opt/venv -type d \
          \( -name "__pycache__" -o -name "tests" -o -name "test" -o -name "testing" \) \
          -prune -exec rm -rf {} + \
@@ -48,9 +48,19 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 ENV PATH="$VIRTUAL_ENV/bin:$PATH"
 
+COPY --from=ghcr.io/astral-sh/uv:0.6 /uv /uvx /bin/
+
 RUN apk add --no-cache \
     tzdata \
     ca-certificates \
+    chromium \
+    xvfb \
+    dbus \
+    nss \
+    freetype \
+    harfbuzz \
+    font-noto \
+    font-noto-cjk \
     libffi \
     openssl \
     libgcc \
@@ -66,7 +76,7 @@ COPY app ./app
 COPY scripts ./scripts
 
 RUN mkdir -p /app/data /app/logs \
-    && chmod +x /app/scripts/entrypoint.sh /app/scripts/init_storage.sh
+    && chmod +x /app/scripts/entrypoint.sh /app/scripts/init_storage.sh /app/scripts/run_maintainer.sh
 
 EXPOSE 8000
 
