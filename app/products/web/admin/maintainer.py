@@ -211,6 +211,21 @@ def build_runtime_config(
     }
 
 
+def _running_in_container() -> bool:
+    return Path("/.dockerenv").exists()
+
+
+def _default_web_browser_options() -> dict[str, bool]:
+    linux_without_display = os.name == "posix" and not os.getenv("DISPLAY") and Path("/proc").exists()
+    linux_safe = _running_in_container() or linux_without_display
+    return {
+        "headless": os.getenv("MAINTAINER_HEADLESS", "").strip().lower() in {"1", "true", "yes", "on"},
+        "use_xvfb": os.getenv("MAINTAINER_USE_XVFB", "").strip().lower() in {"1", "true", "yes", "on"} or linux_safe,
+        "no_sandbox": os.getenv("MAINTAINER_NO_SANDBOX", "").strip().lower() in {"1", "true", "yes", "on"} or _running_in_container(),
+        "disable_dev_shm": os.getenv("MAINTAINER_DISABLE_DEV_SHM", "").strip().lower() in {"1", "true", "yes", "on"} or _running_in_container(),
+    }
+
+
 def build_saved_config_response(payload: dict[str, Any]) -> dict[str, Any]:
     """Serialize saved maintainer config without exposing secret values."""
     email_conf = payload.get("email") if isinstance(payload.get("email"), dict) else {}
@@ -241,6 +256,8 @@ def build_saved_config_response(payload: dict[str, Any]) -> dict[str, Any]:
     if pool not in {"basic", "super", "heavy"}:
         pool = "basic"
 
+    browser_defaults = _default_web_browser_options()
+
     return {
         "email_worker_domain": str(email_conf.get("worker_domain") or ""),
         "email_domains": domains,
@@ -249,10 +266,10 @@ def build_saved_config_response(payload: dict[str, Any]) -> dict[str, Any]:
         "pool": pool,
         "count": count,
         "workers": workers,
-        "headless": bool(web_conf.get("headless", False)),
-        "use_xvfb": bool(web_conf.get("use_xvfb", False)),
-        "no_sandbox": bool(web_conf.get("no_sandbox", False)),
-        "disable_dev_shm": bool(web_conf.get("disable_dev_shm", False)),
+        "headless": bool(web_conf.get("headless", browser_defaults["headless"])),
+        "use_xvfb": bool(web_conf.get("use_xvfb", browser_defaults["use_xvfb"])),
+        "no_sandbox": bool(web_conf.get("no_sandbox", browser_defaults["no_sandbox"])),
+        "disable_dev_shm": bool(web_conf.get("disable_dev_shm", browser_defaults["disable_dev_shm"])),
         "window_size": str(web_conf.get("window_size") or "1440,900"),
         "extract_numbers": bool(web_conf.get("extract_numbers", False)),
     }

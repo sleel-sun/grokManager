@@ -42,6 +42,44 @@ services:
       - ./logs:/app/logs
     restart: unless-stopped
 
+  maintainer:
+    container_name: grokmanager-maintainer
+    image: ${GROKMANAGER_IMAGE:-grokmanager:local}
+    build:
+      context: .
+      dockerfile: Dockerfile
+    depends_on:
+      grokmanager:
+        condition: service_healthy
+    environment:
+      TZ: ${TZ:-Asia/Shanghai}
+      DATA_DIR: /app/data
+      LOG_DIR: /app/logs
+      GROK_APP_APP_KEY: ${GROK_APP_APP_KEY:-}
+      GROK_MAINTAINER_CONFIG: /app/data/maintainer/compose/maintainer.config.json
+      MAINTAINER_API_BASE_URL: http://grokmanager:8000
+      MAINTAINER_API_ENDPOINT: http://grokmanager:8000/admin/api/tokens/add
+      MAINTAINER_API_TOKEN: ${MAINTAINER_API_TOKEN:-}
+      MAINTAINER_EMAIL_WORKER_DOMAIN: ${MAINTAINER_EMAIL_WORKER_DOMAIN:-}
+      MAINTAINER_EMAIL_DOMAINS: ${MAINTAINER_EMAIL_DOMAINS:-}
+      MAINTAINER_EMAIL_ADMIN_PASSWORD: ${MAINTAINER_EMAIL_ADMIN_PASSWORD:-}
+      MAINTAINER_VERIFY_SSL: ${MAINTAINER_VERIFY_SSL:-true}
+      MAINTAINER_POOL: ${MAINTAINER_POOL:-basic}
+      MAINTAINER_COUNT: ${MAINTAINER_COUNT:-1}
+      MAINTAINER_WORKERS: ${MAINTAINER_WORKERS:-1}
+      MAINTAINER_INTERVAL_SEC: ${MAINTAINER_INTERVAL_SEC:-3600}
+      MAINTAINER_HEADLESS: ${MAINTAINER_HEADLESS:-false}
+      MAINTAINER_USE_XVFB: ${MAINTAINER_USE_XVFB:-true}
+      MAINTAINER_NO_SANDBOX: ${MAINTAINER_NO_SANDBOX:-true}
+      MAINTAINER_DISABLE_DEV_SHM: ${MAINTAINER_DISABLE_DEV_SHM:-true}
+      MAINTAINER_WINDOW_SIZE: ${MAINTAINER_WINDOW_SIZE:-1440,900}
+      MAINTAINER_CHROME_ARGS: ${MAINTAINER_CHROME_ARGS:-}
+    volumes:
+      - ./data:/app/data
+      - ./logs:/app/logs
+    command: ["/app/scripts/run_maintainer.sh"]
+    restart: unless-stopped
+
   # 如果出口 IP 不干净，可取消以下注释使用 Warp 作为落地代理
   # 启用后将运行时配置里的 proxy.egress.proxy_url 设为 socks5://warp:1080
   # warp:

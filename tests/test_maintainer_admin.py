@@ -1,4 +1,5 @@
 import unittest
+from unittest.mock import patch
 
 from app.products.web.admin.maintainer import (
     MaintainerRunRequest,
@@ -103,6 +104,15 @@ class MaintainerAdminTests(unittest.TestCase):
         # to schedule larger batches — the cap is now gone.
         large = build_saved_config_response({"run": {"count": 500, "workers": 1}})
         self.assertEqual(large["count"], 500)
+
+    def test_empty_saved_config_defaults_to_linux_safe_browser_options_in_container(self) -> None:
+        with patch("app.products.web.admin.maintainer._running_in_container", return_value=True):
+            response = build_saved_config_response({})
+
+        self.assertFalse(response["headless"])
+        self.assertTrue(response["use_xvfb"])
+        self.assertTrue(response["no_sandbox"])
+        self.assertTrue(response["disable_dev_shm"])
 
     def test_run_request_accepts_workers_above_old_cap(self) -> None:
         # Pydantic no longer rejects workers>8. Operators may schedule any
