@@ -95,6 +95,95 @@ class ConsoleModelRoutingTests(unittest.TestCase):
         self.assertEqual(plan.referer, "https://console.x.ai/")
         self.assertEqual(plan.extra["upstream_model"], "grok-4.3")
 
+    def test_grok_420_auto_and_expert_require_paid_pools(self) -> None:
+        for model, mode in (
+            ("grok-4.20-auto", ModeId.AUTO),
+            ("grok-4.20-expert", ModeId.EXPERT),
+        ):
+            with self.subTest(model=model):
+                spec = resolve(model)
+                payload = _openai_model_payload(
+                    spec,
+                    created=123,
+                    available_pools=frozenset({"basic"}),
+                )
+
+                self.assertEqual(spec.tier, Tier.SUPER)
+                self.assertEqual(spec.mode_id, mode)
+                self.assertEqual(spec.pool_candidates(), (2, 1))
+                self.assertEqual(payload["availability"]["status"], "unavailable")
+                self.assertEqual(
+                    payload["availability"]["required_pools"],
+                    ["heavy", "super"],
+                )
+
+    def test_console_effort_aliases_route_to_real_upstream_models(self) -> None:
+        expected = {
+            "grok-4.20-0309-console": "grok-4.20-0309",
+            "grok-4.20-0309-reasoning-console": "grok-4.20-0309-reasoning",
+            "grok-4.20-0309-non-reasoning-console": "grok-4.20-0309-non-reasoning",
+            "grok-4.20-multi-agent-console": "grok-4.20-multi-agent",
+            "grok-4.20-multi-agent-xhigh": "grok-4.20-multi-agent",
+            "grok-4.20-multi-agent-high": "grok-4.20-multi-agent",
+            "grok-4.20-multi-agent-medium": "grok-4.20-multi-agent",
+            "grok-4.20-multi-agent-low": "grok-4.20-multi-agent",
+            "grok-4.3-console": "grok-4.3",
+            "grok-4.3-high": "grok-4.3",
+            "grok-4.3-medium": "grok-4.3",
+            "grok-4.3-low": "grok-4.3",
+            "grok-build-console": "grok-build-0.1",
+        }
+
+        for public_model, upstream_model in expected.items():
+            with self.subTest(model=public_model):
+                spec = resolve(public_model)
+
+                self.assertTrue(spec.uses_console_responses())
+                self.assertEqual(spec.upstream_model_name(), upstream_model)
+
+    def test_console_reasoning_effort_payload_policy(self) -> None:
+        cases = (
+            ("grok-4.3-console", None, "medium"),
+            ("grok-4.3-console", "high", "high"),
+            ("grok-4.3-console", "none", None),
+            ("grok-4.3-low", "high", "low"),
+            ("grok-4.3-medium", None, "medium"),
+            ("grok-4.3-high", "low", "high"),
+            ("grok-4.20-multi-agent-console", None, "medium"),
+            ("grok-4.20-multi-agent-console", "xhigh", "xhigh"),
+            ("grok-4.20-multi-agent-low", "high", "low"),
+            ("grok-4.20-multi-agent-medium", None, "medium"),
+            ("grok-4.20-multi-agent-high", "low", "high"),
+            ("grok-4.20-multi-agent-xhigh", None, "xhigh"),
+            ("grok-4.20-0309-console", "high", None),
+            ("grok-4.20-0309-reasoning-console", None, None),
+            ("grok-4.20-0309-non-reasoning-console", None, None),
+            ("grok-build-console", "high", None),
+        )
+
+        for model, requested_effort, expected_effort in cases:
+            with self.subTest(model=model, requested_effort=requested_effort):
+                spec = resolve(model)
+                request_overrides = (
+                    {"_reasoning_effort": requested_effort}
+                    if requested_effort is not None
+                    else None
+                )
+
+                payload = build_console_responses_payload(
+                    model=spec.upstream_model_name(),
+                    public_model=spec.model_name,
+                    spec=spec,
+                    message="[user]: hi",
+                    stream=True,
+                    request_overrides=request_overrides,
+                )
+
+                if expected_effort is None:
+                    self.assertNotIn("reasoning", payload)
+                else:
+                    self.assertEqual(payload["reasoning"], {"effort": expected_effort})
+
     def test_grok_42_reasoning_is_not_registered(self) -> None:
         # grok-4.2-reasoning / grok-4.2reasoning were stale registry entries:
         # xAI Console returns 404 for those model names (no "4.2" line exists

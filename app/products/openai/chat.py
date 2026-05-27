@@ -488,6 +488,8 @@ async def _stream_chat(
             model=spec.upstream_model_name(),
             message=message,
             stream=True,
+            public_model=spec.model_name,
+            spec=spec,
             request_overrides=request_overrides,
         )
         transport_context = "Console Responses transport failed"

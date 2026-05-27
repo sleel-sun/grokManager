@@ -230,6 +230,7 @@ async def create(
     top_p:        float,
     tools:        list[dict] | None = None,
     tool_choice:  Any = None,
+    request_overrides: dict | None = None,
 ) -> dict | AsyncGenerator[str, None]:
 
     cfg     = get_config()
@@ -309,6 +310,7 @@ async def create(
                         message   = message,
                         files     = files,
                         spec      = spec,
+                        request_overrides=request_overrides,
                         timeout_s = timeout_s,
                     ):
                         if tool_calls_emitted:
@@ -643,6 +645,7 @@ async def create(
                     message   = message,
                     files     = files,
                     spec      = spec,
+                    request_overrides=request_overrides,
                     timeout_s = timeout_s,
                 ):
                     event_type, data = classify_line(line)

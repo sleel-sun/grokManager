@@ -519,6 +519,9 @@ async def chat_completions_endpoint(req: ChatCompletionRequest):
             request_overrides: dict | None = None
             if req.deepsearch:
                 request_overrides = {"deepsearchPreset": req.deepsearch}
+            if spec.uses_console_responses() and req.reasoning_effort is not None:
+                request_overrides = request_overrides or {}
+                request_overrides["_reasoning_effort"] = req.reasoning_effort
             # reasoning_effort=None → config default; "none" → off; otherwise → on.
             if req.reasoning_effort is None:
                 emit_think: bool | None = None
@@ -637,6 +640,10 @@ async def responses_endpoint(req: ResponsesCreateRequest):
     else:
         emit_think = True
 
+    request_overrides: dict | None = None
+    if spec.uses_console_responses() and isinstance(req.reasoning, dict) and "effort" in req.reasoning:
+        request_overrides = {"_reasoning_effort": req.reasoning.get("effort")}
+
     from .responses import create as responses_create
 
     result = await responses_create(
@@ -649,6 +656,7 @@ async def responses_endpoint(req: ResponsesCreateRequest):
         top_p=req.top_p or 0.95,
         tools=req.tools or None,
         tool_choice=req.tool_choice,
+        request_overrides=request_overrides,
     )
 
     upstream_headers = build_upstream_response_headers(spec)

@@ -4,7 +4,11 @@ from typing import Any
 
 import orjson
 
+from app.control.model.spec import ModelSpec
 from app.dataplane.reverse.protocol.xai_chat import FrameEvent
+
+
+_REQUESTED_REASONING_EFFORT_KEY = "_reasoning_effort"
 
 
 def _display_model_name(model: str) -> str:
@@ -25,6 +29,8 @@ def build_console_responses_payload(
     model: str,
     message: str,
     stream: bool = True,
+    public_model: str | None = None,
+    spec: ModelSpec | None = None,
     request_overrides: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build a Responses-compatible payload for console.x.ai/v1/responses."""
@@ -34,10 +40,27 @@ def build_console_responses_payload(
             {
                 key: value
                 for key, value in request_overrides.items()
-                if value is not None and key not in {"model", "input"}
+                if value is not None
+                and key
+                not in {
+                    "model",
+                    "input",
+                    "reasoning",
+                    "reasoning_effort",
+                    _REQUESTED_REASONING_EFFORT_KEY,
+                }
             }
         )
-    identity = _identity_instructions(model)
+    requested_effort = _extract_requested_reasoning_effort(request_overrides)
+    effort = (
+        spec.console_reasoning_effort(requested_effort)
+        if spec is not None
+        else requested_effort
+    )
+    if effort:
+        payload["reasoning"] = {"effort": effort}
+
+    identity = _identity_instructions(public_model or model)
     existing_instructions = str(payload.get("instructions") or "").strip()
     payload["instructions"] = (
         f"{existing_instructions}\n\n{identity}"
@@ -48,6 +71,25 @@ def build_console_responses_payload(
     payload["input"] = message
     payload["stream"] = stream
     return payload
+
+
+def _extract_requested_reasoning_effort(
+    request_overrides: dict[str, Any] | None,
+) -> str | None:
+    if not request_overrides:
+        return None
+    if _REQUESTED_REASONING_EFFORT_KEY in request_overrides:
+        value = request_overrides.get(_REQUESTED_REASONING_EFFORT_KEY)
+        return str(value).strip().lower() if value is not None else None
+    if "reasoning_effort" in request_overrides:
+        value = request_overrides.get("reasoning_effort")
+        return str(value).strip().lower() if value is not None else None
+
+    reasoning = request_overrides.get("reasoning")
+    if isinstance(reasoning, dict):
+        value = reasoning.get("effort")
+        return str(value).strip().lower() if value is not None else None
+    return None
 
 
 class ConsoleResponsesStreamAdapter:

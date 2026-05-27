@@ -5,7 +5,7 @@ import os
 from pathlib import Path
 from typing import Any
 
-from .loader import _deep_merge, get_nested, load_toml
+from .loader import _deep_merge, apply_env_overrides, get_nested, load_toml
 from .backends import ConfigBackend, create_config_backend
 
 _BASE_DIR = Path(__file__).resolve().parents[3]  # project root
@@ -141,15 +141,7 @@ class ConfigSnapshot:
 # ---------------------------------------------------------------------------
 
 def _apply_env(data: dict[str, Any], prefix: str = "GROK_") -> dict[str, Any]:
-    prefix_len = len(prefix)
-    for env_key, env_val in os.environ.items():
-        if not env_key.startswith(prefix):
-            continue
-        parts = env_key[prefix_len:].lower().split("_", 1)
-        if len(parts) == 2:
-            section, key = parts
-            data.setdefault(section, {})[key] = env_val
-    return data
+    return apply_env_overrides(data, env_prefix=prefix)
 
 
 # Module-level singleton — imported everywhere.
