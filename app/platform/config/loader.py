@@ -7,6 +7,32 @@ from typing import Any
 import tomllib
 
 
+_ENV_PATH_ALIASES: dict[str, tuple[str, ...]] = {
+    "GROK_PROXY_EGRESS_MODE": ("proxy", "egress", "mode"),
+    "GROK_PROXY_EGRESS_PROXY_URL": ("proxy", "egress", "proxy_url"),
+    "GROK_PROXY_EGRESS_PROXY_POOL": ("proxy", "egress", "proxy_pool"),
+    "GROK_PROXY_EGRESS_RESOURCE_PROXY_URL": ("proxy", "egress", "resource_proxy_url"),
+    "GROK_PROXY_EGRESS_RESOURCE_PROXY_POOL": ("proxy", "egress", "resource_proxy_pool"),
+    "GROK_PROXY_EGRESS_SKIP_SSL_VERIFY": ("proxy", "egress", "skip_ssl_verify"),
+    "GROK_PROXY_CLEARANCE_MODE": ("proxy", "clearance", "mode"),
+    "GROK_PROXY_CLEARANCE_CF_COOKIES": ("proxy", "clearance", "cf_cookies"),
+    "GROK_PROXY_CLEARANCE_USER_AGENT": ("proxy", "clearance", "user_agent"),
+    "GROK_PROXY_CLEARANCE_BROWSER": ("proxy", "clearance", "browser"),
+    "GROK_PROXY_CLEARANCE_FLARESOLVERR_URL": ("proxy", "clearance", "flaresolverr_url"),
+    "GROK_PROXY_CLEARANCE_TIMEOUT_SEC": ("proxy", "clearance", "timeout_sec"),
+    "GROK_PROXY_CLEARANCE_REFRESH_INTERVAL": ("proxy", "clearance", "refresh_interval"),
+}
+
+_LEGACY_ENV_PATH_ALIASES: dict[str, tuple[tuple[str, ...], ...]] = {
+    "FLARESOLVERR_URL": (
+        ("proxy", "clearance", "mode"),
+        ("proxy", "clearance", "flaresolverr_url"),
+    ),
+    "CF_REFRESH_INTERVAL": (("proxy", "clearance", "refresh_interval"),),
+    "CF_TIMEOUT": (("proxy", "clearance", "timeout_sec"),),
+}
+
+
 def _flatten(mapping: dict[str, Any], prefix: str = "") -> dict[str, Any]:
     """Flatten a nested dict into dotted keys."""
     out: dict[str, Any] = {}
@@ -28,6 +54,50 @@ def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any
         else:
             result[k] = v
     return result
+
+
+def _set_nested(data: dict[str, Any], path: tuple[str, ...], value: Any) -> None:
+    node = data
+    for key in path[:-1]:
+        child = node.get(key)
+        if not isinstance(child, dict):
+            child = {}
+            node[key] = child
+        node = child
+    node[path[-1]] = value
+
+
+def apply_env_overrides(
+    data: dict[str, Any],
+    *,
+    env: dict[str, str] | None = None,
+    env_prefix: str = "GROK_",
+) -> dict[str, Any]:
+    """Apply environment overrides, including explicit nested proxy aliases."""
+    environ = os.environ if env is None else env
+
+    for env_key, paths in _LEGACY_ENV_PATH_ALIASES.items():
+        env_val = environ.get(env_key)
+        if env_val is None:
+            continue
+        for path in paths:
+            value = "flaresolverr" if env_key == "FLARESOLVERR_URL" and path[-1] == "mode" else env_val
+            _set_nested(data, path, value)
+
+    for env_key, path in _ENV_PATH_ALIASES.items():
+        env_val = environ.get(env_key)
+        if env_val is not None:
+            _set_nested(data, path, env_val)
+
+    prefix_len = len(env_prefix)
+    for env_key, env_val in environ.items():
+        if not env_key.startswith(env_prefix) or env_key in _ENV_PATH_ALIASES:
+            continue
+        parts = env_key[prefix_len:].lower().split("_", 1)
+        if len(parts) == 2:
+            section, key = parts
+            data.setdefault(section, {})[key] = env_val
+    return data
 
 
 def load_toml(path: Path) -> dict[str, Any]:
@@ -53,15 +123,7 @@ def load_config(
         user = load_toml(user_path)
         data = _deep_merge(data, user)
 
-    # Environment overrides (GROK_PROXY_BASE_PROXY_URL → proxy.base_proxy_url)
-    prefix_len = len(env_prefix)
-    for env_key, env_val in os.environ.items():
-        if not env_key.startswith(env_prefix):
-            continue
-        parts = env_key[prefix_len:].lower().split("_", 1)
-        if len(parts) == 2:
-            section, key = parts
-            data.setdefault(section, {})[key] = env_val
+    data = apply_env_overrides(data, env_prefix=env_prefix)
 
     return data
 

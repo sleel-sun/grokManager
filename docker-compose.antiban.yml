@@ -1,0 +1,58 @@
+services:
+  grokmanager:
+    depends_on:
+      privoxy:
+        condition: service_started
+      flaresolverr:
+        condition: service_started
+    environment:
+      # Anti-403 stack: app traffic and FlareSolverr challenges leave through WARP.
+      GROK_PROXY_EGRESS_MODE: ${GROK_PROXY_EGRESS_MODE:-single_proxy}
+      GROK_PROXY_EGRESS_PROXY_URL: ${GROK_PROXY_EGRESS_PROXY_URL:-http://privoxy:8118}
+      GROK_PROXY_EGRESS_RESOURCE_PROXY_URL: ${GROK_PROXY_EGRESS_RESOURCE_PROXY_URL:-http://privoxy:8118}
+      GROK_PROXY_CLEARANCE_MODE: ${GROK_PROXY_CLEARANCE_MODE:-flaresolverr}
+      GROK_PROXY_CLEARANCE_FLARESOLVERR_URL: ${GROK_PROXY_CLEARANCE_FLARESOLVERR_URL:-http://flaresolverr:8191}
+      GROK_PROXY_CLEARANCE_REFRESH_INTERVAL: ${GROK_PROXY_CLEARANCE_REFRESH_INTERVAL:-600}
+      GROK_PROXY_CLEARANCE_TIMEOUT_SEC: ${GROK_PROXY_CLEARANCE_TIMEOUT_SEC:-60}
+
+  maintainer:
+    environment:
+      MAINTAINER_PROXY: ${MAINTAINER_PROXY:-http://privoxy:8118}
+
+  warp:
+    container_name: grokmanager-warp
+    image: caomingjun/warp:latest
+    restart: unless-stopped
+    cap_add:
+      - NET_ADMIN
+    environment:
+      WARP_SLEEP: ${WARP_SLEEP:-2}
+    ports:
+      - "${WARP_SOCKS_HOST:-127.0.0.1}:${WARP_SOCKS_PORT:-1080}:1080"
+
+  privoxy:
+    container_name: grokmanager-privoxy
+    image: vimagick/privoxy:latest
+    restart: unless-stopped
+    depends_on:
+      warp:
+        condition: service_started
+    volumes:
+      - ./deploy/anti-ban/privoxy/config:/etc/privoxy/config:ro
+    command: ["privoxy", "--no-daemon", "/etc/privoxy/config"]
+    ports:
+      - "${PRIVOXY_HOST:-127.0.0.1}:${PRIVOXY_PORT:-8118}:8118"
+
+  flaresolverr:
+    container_name: grokmanager-flaresolverr
+    image: ghcr.io/flaresolverr/flaresolverr:latest
+    restart: unless-stopped
+    depends_on:
+      privoxy:
+        condition: service_started
+    environment:
+      TZ: ${TZ:-Asia/Shanghai}
+      LOG_LEVEL: ${FLARESOLVERR_LOG_LEVEL:-info}
+      PROXY_URL: ${FLARESOLVERR_PROXY_URL:-http://privoxy:8118}
+    ports:
+      - "${FLARESOLVERR_HOST:-127.0.0.1}:${FLARESOLVERR_PORT:-8191}:8191"

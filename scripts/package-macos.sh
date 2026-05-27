@@ -12,6 +12,7 @@ ENTRYPOINT="${ROOT_DIR}/scripts/macos_launcher.py"
 SPEC_DIR="${PACKAGE_ROOT}/spec"
 WORK_DIR="${PACKAGE_ROOT}/work"
 BUILD_DIST_DIR="${PACKAGE_ROOT}/dist"
+BUNDLE_STAGE_DIR="${PACKAGE_ROOT}/bundle"
 DIST_DIR="${ROOT_DIR}/dist"
 ARCH_NAME="$(uname -m)"
 ZIP_PATH="${DIST_DIR}/${APP_NAME}-macos-${ARCH_NAME}.zip"
@@ -58,6 +59,11 @@ PYINSTALLER_ARGS=(
   --paths "$ROOT_DIR"
   --add-data "${ROOT_DIR}/app/statics:app/statics"
   --add-data "${ROOT_DIR}/config.defaults.toml:."
+  --add-data "${ROOT_DIR}/docker-compose.yml:."
+  --add-data "${ROOT_DIR}/docker-compose.antiban.yml:."
+  --add-data "${ROOT_DIR}/deploy/anti-ban:deploy/anti-ban"
+  --add-data "${ROOT_DIR}/scripts/deploy-antiban-local.sh:scripts"
+  --add-data "${ROOT_DIR}/scripts/grokmanager-antiban.command:scripts"
   --add-data "${ROOT_DIR}/pyproject.toml:."
   --collect-all granian
   --collect-all curl_cffi
@@ -110,9 +116,14 @@ fi
 
 if [[ "$ZIP" -eq 1 ]]; then
   rm -f "$ZIP_PATH"
+  rm -rf "$BUNDLE_STAGE_DIR"
+  mkdir -p "$BUNDLE_STAGE_DIR"
+  cp -R "$APP_PATH" "$BUNDLE_STAGE_DIR/$(basename "$APP_PATH")"
+  cp "$ROOT_DIR/scripts/grokmanager-antiban.command" "$BUNDLE_STAGE_DIR/Start Anti-Ban.command"
+  chmod +x "$BUNDLE_STAGE_DIR/Start Anti-Ban.command"
   (
-    cd "$(dirname "$APP_PATH")"
-    COPYFILE_DISABLE=1 /usr/bin/zip -qry "$ZIP_PATH" "$(basename "$APP_PATH")"
+    cd "$BUNDLE_STAGE_DIR"
+    COPYFILE_DISABLE=1 /usr/bin/zip -qry "$ZIP_PATH" "$(basename "$APP_PATH")" "Start Anti-Ban.command"
   )
 fi
 

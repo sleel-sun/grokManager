@@ -126,6 +126,52 @@ If you only want the API service without the browser maintainer:
 docker compose up -d --build grokmanager
 ```
 
+To use the anti-403 deployment stack inspired by `jiujiu532/grok2api`, layer the anti-ban Compose override:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.antiban.yml up -d --build
+```
+
+The anti-ban stack also starts:
+- `warp`: WARP SOCKS5 egress
+- `privoxy`: HTTP proxy forwarding to WARP SOCKS5
+- `flaresolverr`: Cloudflare clearance refresh through the same egress
+
+The override automatically writes these runtime settings for `grokmanager`:
+- `proxy.egress.mode=single_proxy`
+- `proxy.egress.proxy_url=http://privoxy:8118`
+- `proxy.clearance.mode=flaresolverr`
+- `proxy.clearance.flaresolverr_url=http://flaresolverr:8191`
+
+### Non-Docker One-Click Anti-Ban Deployment
+
+If you do not want to use Docker, run the local bootstrap script. It writes an isolated anti-ban runtime environment, tries to switch the official Cloudflare WARP client to local proxy mode, and tries to start a local FlareSolverr executable:
+
+```bash
+./scripts/deploy-antiban-local.sh
+```
+
+Default endpoints:
+- WARP local proxy: `http://127.0.0.1:40000`
+- FlareSolverr: `http://127.0.0.1:8191`
+- grokManager: `http://127.0.0.1:8000`
+
+Customize the endpoints if needed:
+
+```bash
+ANTI_BAN_PROXY_URL=socks5h://127.0.0.1:1080 \
+FLARESOLVERR_BIN=/path/to/flaresolverr \
+./scripts/deploy-antiban-local.sh --server-port 8000
+```
+
+The script also creates a reusable launcher:
+
+```bash
+./.antiban/run-grokmanager-antiban.sh
+```
+
+The macOS package zip also includes `Start Anti-Ban.command` at the zip root; double-click it to write `~/Library/Application Support/grokManager/.env` and launch the app with anti-ban settings.
+
 For the first full-stack deployment, set at least:
 - `GROK_APP_APP_KEY`
 - `GROK_APP_API_KEY`
@@ -296,10 +342,30 @@ Runtime config can also be overridden with `GROK_`-prefixed environment variable
 | `grok-4.20-0309-reasoning-heavy` | `expert` | `heavy` |
 | `grok-4.20-multi-agent-0309` | `heavy` | `heavy` |
 | `grok-4.20-fast` | `fast` | `basic`, prefers higher-tier pools |
-| `grok-4.20-auto` | `auto` | `basic`, prefers higher-tier pools |
-| `grok-4.20-expert` | `expert` | `basic`, prefers higher-tier pools |
+| `grok-4.20-auto` | `auto` | `super`, prefers heavy then falls back to super |
+| `grok-4.20-expert` | `expert` | `super`, prefers heavy then falls back to super |
 | `grok-4.20-heavy` | `heavy` | `heavy` |
 | `grok-4.3-beta` | `grok-420-computer-use-sa` | `super` |
+
+#### Console Free-Account Models
+
+These models route through xAI Console Responses with `basic` pool accounts. Public model aliases are mapped to real upstream model IDs and inject `reasoning.effort` as shown below.
+
+| Model | Upstream model | reasoning effort | Notes |
+| :-- | :-- | :-- | :-- |
+| `grok-4.3-console` | `grok-4.3` | caller-provided, defaults to `medium`; explicit `none` disables it | Free account |
+| `grok-4.3-low` | `grok-4.3` | fixed `low` | Free account |
+| `grok-4.3-medium` | `grok-4.3` | fixed `medium` | Free account |
+| `grok-4.3-high` | `grok-4.3` | fixed `high` | Free account |
+| `grok-4.20-0309-console` | `grok-4.20-0309` | default | Free account |
+| `grok-4.20-0309-reasoning-console` | `grok-4.20-0309-reasoning` | fixed reasoning model | Free account |
+| `grok-4.20-0309-non-reasoning-console` | `grok-4.20-0309-non-reasoning` | no reasoning | Free account |
+| `grok-4.20-multi-agent-console` | `grok-4.20-multi-agent` | caller-provided, defaults to `medium` | Free account, multi-agent; effort controls agent count |
+| `grok-4.20-multi-agent-low` | `grok-4.20-multi-agent` | fixed `low` | Free account, multi-agent, 4 agents |
+| `grok-4.20-multi-agent-medium` | `grok-4.20-multi-agent` | fixed `medium` | Free account, multi-agent, 4 agents |
+| `grok-4.20-multi-agent-high` | `grok-4.20-multi-agent` | fixed `high` | Free account, multi-agent, 16 agents |
+| `grok-4.20-multi-agent-xhigh` | `grok-4.20-multi-agent` | fixed `xhigh` | Free account, multi-agent, 16 agents |
+| `grok-build-console` | `grok-build-0.1` | default | Free account, Grok Build 0.1 |
 
 ### Image
 

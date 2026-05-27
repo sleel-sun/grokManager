@@ -155,6 +155,52 @@ docker compose up -d --build
 docker compose up -d --build grokmanager
 ```
 
+如果需要参考 `jiujiu532/grok2api` 的防 403 / 防封部署方式，可叠加防封版 Compose：
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.antiban.yml up -d --build
+```
+
+防封版会额外拉起：
+- `warp`：WARP SOCKS5 出口
+- `privoxy`：把 HTTP 代理转发到 WARP SOCKS5
+- `flaresolverr`：通过同一出口刷新 Cloudflare clearance
+
+该 override 会自动给 `grokmanager` 写入：
+- `proxy.egress.mode=single_proxy`
+- `proxy.egress.proxy_url=http://privoxy:8118`
+- `proxy.clearance.mode=flaresolverr`
+- `proxy.clearance.flaresolverr_url=http://flaresolverr:8191`
+
+### 非 Docker 一键防封部署
+
+如果不想使用 Docker，可以使用本机一键脚本。它会写入独立的防封运行环境，尝试把官方 Cloudflare WARP 切到本地代理模式，并尝试启动本机 FlareSolverr：
+
+```bash
+./scripts/deploy-antiban-local.sh
+```
+
+默认端口：
+- WARP 本地代理：`http://127.0.0.1:40000`
+- FlareSolverr：`http://127.0.0.1:8191`
+- grokManager：`http://127.0.0.1:8000`
+
+可自定义：
+
+```bash
+ANTI_BAN_PROXY_URL=socks5h://127.0.0.1:1080 \
+FLARESOLVERR_BIN=/path/to/flaresolverr \
+./scripts/deploy-antiban-local.sh --server-port 8000
+```
+
+脚本会生成可重复使用的启动器：
+
+```bash
+./.antiban/run-grokmanager-antiban.sh
+```
+
+macOS 打包产物的 zip 根目录会额外包含 `Start Anti-Ban.command`，双击即可写入 `~/Library/Application Support/grokManager/.env` 并以防封配置启动 APP。
+
 首次用 Compose 部署时，建议至少先在 `.env` 里设置：
 - `GROK_APP_APP_KEY`
 - `GROK_APP_API_KEY`
@@ -363,11 +409,31 @@ uv run grokmanager-maintainer --count 5 --workers 2  # 2 个并发 worker × 每
 | `grok-4.20-0309-reasoning-heavy` | `expert` | `heavy` |
 | `grok-4.20-multi-agent-0309` | `heavy` | `heavy` |
 | `grok-4.20-fast` | `fast` | `basic`，优先使用高等级账号池 |
-| `grok-4.20-auto` | `auto` | `basic`，优先使用高等级账号池 |
-| `grok-4.20-expert` | `expert` | `basic`，优先使用高等级账号池 |
+| `grok-4.20-auto` | `auto` | `super`，优先使用 heavy 后回退 super |
+| `grok-4.20-expert` | `expert` | `super`，优先使用 heavy 后回退 super |
 | `grok-4.20-heavy` | `heavy` | `heavy` |
 | `grok-4.3` | `auto` | `basic`（走 xAI Console Responses 上游，命中 `https://console.x.ai`） |
 | `grok-4.3-beta` | `grok-420-computer-use-sa` | `super` |
+
+#### Console 免费账号模型
+
+这些模型走 xAI Console Responses 上游，使用 `basic` 池账号；公开模型名会映射到真实上游模型，并按下表注入 `reasoning.effort`。
+
+| 模型名 | 上游模型 | reasoning effort | 说明 |
+| :-- | :-- | :-- | :-- |
+| `grok-4.3-console` | `grok-4.3` | 用户传入，默认 `medium`；显式 `none` 关闭 | 免费账号 |
+| `grok-4.3-low` | `grok-4.3` | 固定 `low` | 免费账号 |
+| `grok-4.3-medium` | `grok-4.3` | 固定 `medium` | 免费账号 |
+| `grok-4.3-high` | `grok-4.3` | 固定 `high` | 免费账号 |
+| `grok-4.20-0309-console` | `grok-4.20-0309` | 默认 | 免费账号 |
+| `grok-4.20-0309-reasoning-console` | `grok-4.20-0309-reasoning` | 固定 reasoning 模型 | 免费账号 |
+| `grok-4.20-0309-non-reasoning-console` | `grok-4.20-0309-non-reasoning` | 无 reasoning | 免费账号 |
+| `grok-4.20-multi-agent-console` | `grok-4.20-multi-agent` | 用户传入，默认 `medium` | 免费账号，多智能体，agent 数量由 effort 决定 |
+| `grok-4.20-multi-agent-low` | `grok-4.20-multi-agent` | 固定 `low` | 免费账号，多智能体，4 agents |
+| `grok-4.20-multi-agent-medium` | `grok-4.20-multi-agent` | 固定 `medium` | 免费账号，多智能体，4 agents |
+| `grok-4.20-multi-agent-high` | `grok-4.20-multi-agent` | 固定 `high` | 免费账号，多智能体，16 agents |
+| `grok-4.20-multi-agent-xhigh` | `grok-4.20-multi-agent` | 固定 `xhigh` | 免费账号，多智能体，16 agents |
+| `grok-build-console` | `grok-build-0.1` | 默认 | 免费账号，Grok Build 0.1 |
 
 ### Image
 
