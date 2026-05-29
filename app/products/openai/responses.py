@@ -485,8 +485,15 @@ async def create(
                     else:
                         # Normal text path
                         msg_idx = 1 if reasoning_started else 0
+                        extract_images = getattr(
+                            adapter, "extract_generated_images_from_text", None
+                        )
+                        if callable(extract_images):
+                            text_buf[:] = [extract_images("".join(text_buf))]
                         for url, img_id in adapter.image_urls:
                             img_text = await _resolve_image(token, url, img_id)
+                            if not img_text:
+                                continue
                             img_md   = img_text + "\n"
                             text_buf.append(img_md)
                             if message_started:
@@ -693,6 +700,9 @@ async def create(
         excluded.append(token)
 
     full_text = "".join(adapter.text_buf)
+    extract_images = getattr(adapter, "extract_generated_images_from_text", None)
+    if callable(extract_images):
+        full_text = extract_images(full_text)
     if adapter.image_urls:
         img_texts = await asyncio.gather(
             *[_resolve_image(token, url, img_id) for url, img_id in adapter.image_urls],
@@ -702,6 +712,8 @@ async def create(
             if isinstance(img_text, BaseException):
                 logger.warning("responses image resolve failed: error={}", img_text)
             elif isinstance(img_text, str):
+                if not img_text:
+                    continue
                 if full_text:
                     full_text += "\n\n"
                 full_text += img_text

@@ -180,17 +180,23 @@ def _app_url() -> str:
     return get_config().get_str("app.app_url", "").rstrip("/")
 
 
+_LOCAL_IMAGE_ID_RE = re.compile(r"^[0-9a-fA-F\-]{16,36}$")
+
+
 def _local_image_url(file_id: str) -> str:
     app_url = _app_url()
-    return f"{app_url}/v1/files/image?id={file_id}"
+    path = f"/v1/files/image?id={file_id}"
+    return f"{app_url}{path}" if app_url else path
 
 
 def _extract_image_file_id(url: str) -> str:
+    """Return a file ID accepted by /v1/files/image for an upstream image URL."""
     parts = [part for part in url.split("/") if part]
+    ignored = {"image", "images", "original", "thumbnail", "content"}
     for part in reversed(parts):
         stem = part.split(".", 1)[0]
-        if stem and stem not in {"image", "original", "thumbnail"}:
-            return stem
+        if stem and stem not in ignored and _LOCAL_IMAGE_ID_RE.fullmatch(stem):
+            return stem.lower()
     return hashlib.sha1(url.encode("utf-8")).hexdigest()[:32]
 
 
@@ -222,7 +228,7 @@ async def _resolve_image_output(
     image_format = _normalize_image_delivery_format(
         get_config().get_str("features.image_format", "grok_url")
     )
-    should_localize = fmt == "url" and image_format in {"local_url", "local_md"} and bool(_app_url())
+    should_localize = fmt == "url" and image_format in {"local_url", "local_md"}
     if fmt == "url" and not should_localize:
         return _upstream_image_output(url)
 

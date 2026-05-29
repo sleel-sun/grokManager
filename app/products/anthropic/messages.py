@@ -529,6 +529,8 @@ async def create(
                         for url, img_id in adapter.image_urls:
                             img_text = await _resolve_image(token, url, img_id)
                             if isinstance(img_text, str):
+                                if not img_text:
+                                    continue
                                 chunk = img_text + "\n"
                                 text_buf.append(chunk)
                                 if text_started:
@@ -706,6 +708,8 @@ async def create(
             if isinstance(img_text, BaseException):
                 logger.warning("messages image resolve failed: error={}", img_text)
             elif isinstance(img_text, str):
+                if not img_text:
+                    continue
                 full_text = (full_text + "\n\n" if full_text else "") + img_text
 
     references = adapter.references_suffix()

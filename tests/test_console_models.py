@@ -235,6 +235,135 @@ class ConsoleModelRoutingTests(unittest.TestCase):
         self.assertEqual(adapter.thinking_buf, ["checking"])
         self.assertEqual(adapter.text_buf, ["done"])
 
+    def test_console_responses_stream_adapter_parses_image_generation_result(self) -> None:
+        adapter = ConsoleResponsesStreamAdapter()
+
+        events = adapter.feed(
+            '{"type":"response.output_item.done","item":{'
+            '"id":"ig_123","type":"image_generation_call","result":"'
+            + ("a" * 120)
+            + '"}}'
+        )
+
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0].kind, "image")
+        self.assertTrue(events[0].content.startswith("data:image/png;base64,"))
+        self.assertEqual(adapter.image_urls, [(events[0].content, "ig_123")])
+
+    def test_console_responses_stream_adapter_parses_image_generation_url_result(self) -> None:
+        adapter = ConsoleResponsesStreamAdapter()
+
+        events = adapter.feed(
+            '{"type":"response.image_generation_call.completed",'
+            '"item_id":"ig_123",'
+            '"result":"https://imgen.x.ai/generated/image-content?token=abc"}'
+        )
+
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0].kind, "image")
+        self.assertEqual(
+            events[0].content,
+            "https://imgen.x.ai/generated/image-content?token=abc",
+        )
+        self.assertEqual(adapter.image_urls, [(events[0].content, "ig_123")])
+
+    def test_console_responses_stream_adapter_extracts_markdown_image_delta(self) -> None:
+        adapter = ConsoleResponsesStreamAdapter()
+
+        events = adapter.feed(
+            '{"type":"response.output_text.delta",'
+            '"delta":"Here is the image: ![image](https://imgen.x.ai/generated/image-content?token=abc)"}'
+        )
+
+        self.assertEqual([(ev.kind, ev.content) for ev in events], [
+            ("image", "https://imgen.x.ai/generated/image-content?token=abc"),
+            ("text", "Here is the image: "),
+        ])
+        self.assertEqual(adapter.text_buf, ["Here is the image: "])
+        self.assertEqual(
+            adapter.image_urls,
+            [("https://imgen.x.ai/generated/image-content?token=abc", events[0].image_id)],
+        )
+
+    def test_console_responses_stream_adapter_extracts_bare_grok_image_delta(self) -> None:
+        adapter = ConsoleResponsesStreamAdapter()
+        url = "https://grok.x.ai/generated-image-city-skyline-dawn-mist-cinematic-wide.jpg"
+
+        events = adapter.feed(
+            '{"type":"response.output_text.delta",'
+            f'"delta":"Generated: {url}."'
+            '}'
+        )
+
+        self.assertEqual([(ev.kind, ev.content) for ev in events], [
+            ("image", url),
+            ("text", "Generated: ."),
+        ])
+        self.assertEqual(adapter.image_urls, [(url, events[0].image_id)])
+
+    def test_console_responses_stream_adapter_extracts_split_bare_grok_image_after_join(self) -> None:
+        adapter = ConsoleResponsesStreamAdapter()
+
+        adapter.feed(
+            '{"type":"response.output_text.delta",'
+            '"delta":"Generated: https://grok.x.ai/generated-image-shanghai-"}'
+        )
+        adapter.feed(
+            '{"type":"response.output_text.delta",'
+            '"delta":"pudong-golden-hour-realistic-cinematic-wide.jpg"}'
+        )
+        cleaned = adapter.extract_generated_images_from_text("".join(adapter.text_buf))
+
+        self.assertEqual(cleaned, "Generated: ")
+        self.assertEqual(
+            adapter.image_urls[0][0],
+            "https://grok.x.ai/generated-image-shanghai-pudong-golden-hour-realistic-cinematic-wide.jpg",
+        )
+
+    def test_console_responses_stream_adapter_does_not_emit_partial_image_url(self) -> None:
+        adapter = ConsoleResponsesStreamAdapter()
+
+        first_events = adapter.feed(
+            '{"type":"response.output_text.delta",'
+            '"delta":"Generated: https://grok.x.ai/generated-image-shanghai-"}'
+        )
+        second_events = adapter.feed(
+            '{"type":"response.output_text.delta",'
+            '"delta":"pudong-golden-hour-realistic-cinematic-wide.jpg"}'
+        )
+
+        self.assertEqual([(ev.kind, ev.content) for ev in first_events], [
+            ("text", "Generated: "),
+        ])
+        self.assertEqual([(ev.kind, ev.content) for ev in second_events], [
+            (
+                "image",
+                "https://grok.x.ai/generated-image-shanghai-pudong-golden-hour-realistic-cinematic-wide.jpg",
+            ),
+        ])
+        self.assertEqual(adapter.text_buf, ["Generated: "])
+        self.assertEqual(
+            adapter.image_urls[0][0],
+            "https://grok.x.ai/generated-image-shanghai-pudong-golden-hour-realistic-cinematic-wide.jpg",
+        )
+
+    def test_console_responses_stream_adapter_parses_completed_image_url(self) -> None:
+        adapter = ConsoleResponsesStreamAdapter()
+
+        events = adapter.feed(
+            '{"type":"response.completed","response":{"output":[{'
+            '"type":"output_image","image_url":"/images/123e4567-e89b-12d3-a456-426614174000.jpg"'
+            '}]}}'
+        )
+
+        image_events = [ev for ev in events if ev.kind == "image"]
+        self.assertEqual(len(image_events), 1)
+        self.assertEqual(
+            image_events[0].content,
+            "https://assets.grok.com/images/123e4567-e89b-12d3-a456-426614174000.jpg",
+        )
+        self.assertIn(("soft_stop", ""), [(ev.kind, ev.content) for ev in events])
+
 
 if __name__ == "__main__":
     unittest.main()

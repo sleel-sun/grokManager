@@ -2,6 +2,8 @@
 
 import asyncio
 import base64
+import binascii
+import hashlib
 import re
 from typing import Any, AsyncGenerator
 
@@ -299,6 +301,36 @@ async def _download_image_bytes(token: str, url: str) -> tuple[bytes, str]:
     return b"".join(chunks), (content_type or infer_content_type(url) or "image/jpeg")
 
 
+_LOCAL_IMAGE_ID_RE = re.compile(r"^[0-9a-fA-F\-]{16,36}$")
+_DATA_IMAGE_RE = re.compile(r"^data:(image/[^;,]+);base64,(.*)$", re.IGNORECASE | re.DOTALL)
+_GROK_GENERATED_IMAGE_URL_RE = re.compile(
+    r"^https?://grok\.x\.ai/generated-image-[^?#]+\.(?:png|jpe?g|webp|gif)"
+    r"(?:[?#].*)?$",
+    re.IGNORECASE,
+)
+
+
+def _safe_image_file_id(url: str, image_id: str) -> str:
+    candidate = (image_id or "").strip().split(".", 1)[0]
+    if _LOCAL_IMAGE_ID_RE.fullmatch(candidate):
+        return candidate.lower()
+    return hashlib.sha1((url or candidate).encode("utf-8")).hexdigest()[:32]
+
+
+def _decode_data_image(url: str) -> tuple[bytes, str] | None:
+    match = _DATA_IMAGE_RE.match((url or "").strip())
+    if not match:
+        return None
+    try:
+        return base64.b64decode(match.group(2), validate=True), match.group(1)
+    except (ValueError, TypeError, binascii.Error):
+        return None
+
+
+def _is_inaccessible_generated_image_url(url: str) -> bool:
+    return bool(_GROK_GENERATED_IMAGE_URL_RE.match((url or "").strip()))
+
+
 def _save_image(raw: bytes, mime: str, image_id: str) -> str:
     """Save raw bytes to ``${DATA_DIR}/files/images`` and return the file ID."""
     return save_local_image(raw, mime, image_id)
@@ -316,6 +348,27 @@ async def _resolve_image(token: str, url: str, image_id: str) -> str:
     """
     cfg = get_config()
     fmt = _normalize_image_format(cfg.get_str("features.image_format", "grok_url"))
+    data_image = _decode_data_image(url)
+    if data_image is not None:
+        raw, mime = data_image
+        if fmt == "base64":
+            b64 = base64.b64encode(raw).decode()
+            return f"![image](data:{mime};base64,{b64})"
+        if fmt in {"local_url", "local_md"}:
+            file_id = await asyncio.to_thread(
+                _save_image,
+                raw,
+                mime,
+                _safe_image_file_id(url, image_id),
+            )
+            app_url = cfg.get_str("app.app_url", "").rstrip("/")
+            local_url = (
+                f"{app_url}/v1/files/image?id={file_id}"
+                if app_url
+                else f"/v1/files/image?id={file_id}"
+            )
+            return local_url if fmt == "local_url" else f"![image]({local_url})"
+        return url if fmt == "grok_url" else f"![image]({url})"
 
     # Formats that don't need downloading
     if fmt == "grok_url":
@@ -327,6 +380,12 @@ async def _resolve_image(token: str, url: str, image_id: str) -> str:
     try:
         raw, mime = await _download_image_bytes(token, url)
     except Exception as exc:
+        if _is_inaccessible_generated_image_url(url):
+            logger.warning(
+                "chat image download failed: dropping_inaccessible_grok_generated_url error={}",
+                exc,
+            )
+            return ""
         logger.warning(
             "chat image download failed: fallback_to=upstream_url error={}", exc
         )
@@ -337,7 +396,12 @@ async def _resolve_image(token: str, url: str, image_id: str) -> str:
         return f"![image](data:{mime};base64,{b64})"
 
     # local_url / local_md: save to disk and return local path
-    file_id = await asyncio.to_thread(_save_image, raw, mime, image_id)
+    file_id = await asyncio.to_thread(
+        _save_image,
+        raw,
+        mime,
+        _safe_image_file_id(url, image_id),
+    )
     app_url = cfg.get_str("app.app_url", "").rstrip("/")
     local_url = (
         f"{app_url}/v1/files/image?id={file_id}"
@@ -752,8 +816,15 @@ async def completions(
                                 )
 
                         if not tool_calls_emitted:
+                            extract_images = getattr(
+                                adapter, "extract_generated_images_from_text", None
+                            )
+                            if callable(extract_images):
+                                extract_images("".join(adapter.text_buf))
                             for url, img_id in adapter.image_urls:
                                 img_text = await _resolve_image(token, url, img_id)
+                                if not img_text:
+                                    continue
                                 chunk = make_stream_chunk(
                                     response_id, model, img_text + "\n"
                                 )
@@ -941,6 +1012,9 @@ async def completions(
         excluded.append(token)
 
     full_text = "".join(adapter.text_buf)
+    extract_images = getattr(adapter, "extract_generated_images_from_text", None)
+    if callable(extract_images):
+        full_text = extract_images(full_text)
     if adapter.image_urls:
         img_texts = await asyncio.gather(
             *[_resolve_image(token, url, img_id) for url, img_id in adapter.image_urls],
@@ -950,6 +1024,8 @@ async def completions(
             if isinstance(img_text, BaseException):
                 logger.warning("chat image resolve failed: error={}", img_text)
             elif isinstance(img_text, str):
+                if not img_text:
+                    continue
                 if full_text:
                     full_text += "\n\n"
                 full_text += img_text

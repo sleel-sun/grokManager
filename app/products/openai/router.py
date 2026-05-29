@@ -861,11 +861,25 @@ async def serve_image(id: str = Query(..., description="Image file ID")):
         raise ValidationError("Invalid file ID", param="id")
 
     img_dir = image_files_dir()
-    for ext in (".jpg", ".png"):
+    mime_by_ext = {
+        ".jpg": "image/jpeg",
+        ".jpeg": "image/jpeg",
+        ".png": "image/png",
+        ".webp": "image/webp",
+        ".gif": "image/gif",
+        ".bmp": "image/bmp",
+    }
+    matches = []
+    for ext, mime in mime_by_ext.items():
         path = img_dir / f"{id}{ext}"
         if path.exists():
-            mime = "image/png" if ext == ".png" else "image/jpeg"
-            return FileResponse(path, media_type=mime)
+            matches.append((path, mime))
+    if matches:
+        path, mime = max(
+            matches,
+            key=lambda item: item[0].stat().st_mtime_ns,
+        )
+        return FileResponse(path, media_type=mime)
 
     raise ValidationError(f"Image {id!r} not found", param="id")
 

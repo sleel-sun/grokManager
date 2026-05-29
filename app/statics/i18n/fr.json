@@ -92,7 +92,11 @@
       "errorText": "La connexion n’a pas abouti. Vérifiez l’accès au micro puis réessayez.",
       "endedText": "La session vocale est terminée. Vous pouvez en démarrer une nouvelle à tout moment.",
       "livekitLoadFailed": "Échec du chargement du SDK LiveKit",
-      "invalidToken": "Réponse de jeton vocal invalide"
+      "invalidToken": "Réponse de jeton vocal invalide",
+      "microphoneUnsupported": "Ce navigateur ou cette page non HTTPS ne peut pas ouvrir le micro. Utilisez HTTPS ou localhost.",
+      "microphoneRequired": "Autorisez l’accès au micro dans le navigateur avant de connecter la voix.",
+      "microphoneUnavailable": "Impossible d’ouvrir le micro. Vérifiez l’autorisation du navigateur ou si une autre application l’utilise.",
+      "webrtcConnectionFailed": "LiveKit a renvoyé un jeton vocal, mais le navigateur n’a pas pu établir de connexion WebRTC. Une réponse OK de livekit.grok.com confirme seulement l’accès HTTPS ; wss://livekit.grok.com/rtc et le trafic WebRTC ICE/TURN doivent aussi être autorisés."
     },
     "masonry": {
       "pageTitle": "grokManager - Masonry",
@@ -121,6 +125,8 @@
       "errors": {
         "enterPrompt": "Veuillez saisir un prompt",
         "requestFailed": "Échec de la requête",
+        "imagePoolUnavailable": "La génération d’images Masonry nécessite des comptes Super ou Heavy. Importez d’abord des comptes Super/Heavy.",
+        "imageRateLimited": "Les comptes image Super/Heavy disponibles sont limités. Attendez la réinitialisation du quota ou importez plus de comptes Super/Heavy.",
         "initFailed": "Échec de l’initialisation de la page Masonry"
       }
     }

@@ -1,5 +1,6 @@
 """XAI app-chat protocol — payload builder and SSE stream adapter."""
 
+import hashlib
 import re
 from dataclasses import dataclass
 from typing import Any
@@ -150,6 +151,52 @@ _GROK_RENDER_RE = re.compile(
 )
 
 _IMAGE_BASE = "https://assets.grok.com/"
+_IMAGE_URL_KEYS = {
+    "imageUrl",
+    "image_url",
+    "generatedImageUrl",
+    "generated_image_url",
+    "assetUrl",
+    "asset_url",
+    "contentUrl",
+    "content_url",
+    "cdnUrl",
+    "cdn_url",
+    "downloadUrl",
+    "download_url",
+    "mediaUrl",
+    "media_url",
+    "src",
+    "url",
+}
+_IMAGE_ID_KEYS = {
+    "imageUuid",
+    "image_uuid",
+    "imageId",
+    "image_id",
+    "assetId",
+    "asset_id",
+    "itemId",
+    "item_id",
+    "id",
+}
+_IMAGE_ID_FROM_URL_RE = re.compile(r"(?:/images/|/)([0-9a-fA-F\-]{16,36})(?:[./]|$)")
+_MARKDOWN_IMAGE_RE = re.compile(
+    r"!\[[^\]]*\]\(\s*(?P<url><[^>]+>|[^)\s]+)(?:\s+['\"][^'\"]*['\"])?\s*\)"
+)
+_BARE_IMAGE_URL_RE = re.compile(r"(?P<url>https?://[^\s<>\]\)\"']+)")
+_TRAILING_URL_RE = re.compile(r"https?://[^\s<>\]\)\"']*$")
+_MARKDOWN_IMAGE_OPENER_RE = re.compile(r"!\[[^\]]*\]\($")
+_COMPLETE_IMAGE_URL_RE = re.compile(
+    r"\.(?:png|jpe?g|gif|webp|bmp)(?:[?#][^\s<>\]\)\"']*)?$",
+    re.IGNORECASE,
+)
+_IMAGE_HOST_MARKERS = (
+    "assets.grok.com",
+    "grok.x.ai",
+    "imgen.x.ai",
+    "imagine-public.x.ai",
+)
 
 # 工具使用卡片 → emoji 单行格式化映射（详细模式专用）
 # 格式: tool_name → (emoji, (可展示的参数 key 列表))
@@ -188,6 +235,8 @@ class StreamAdapter:
         "_content_started",
         "_web_search_results",
         "_web_search_urls_seen",
+        "_seen_image_urls",
+        "_pending_text",
         "thinking_buf",
         "text_buf",
         "image_urls",
@@ -209,6 +258,8 @@ class StreamAdapter:
         self._reasoning = ReasoningAggregator() if self._summary_mode else None
         self._web_search_results: list[dict] = []
         self._web_search_urls_seen: set[str] = set()
+        self._seen_image_urls: set[str] = set()
+        self._pending_text = ""
         self.thinking_buf: list[str] = []
         self.text_buf: list[str] = []
         self.image_urls: list[tuple[str, str]] = []   # [(url, imageUuid), ...]
@@ -386,13 +437,18 @@ class StreamAdapter:
         # ── final text token (needs cleaning) ─────────────────────
         if token is not None and think is not True and tag == "final":
             self._content_started = True
-            cleaned, local_anns = self._clean_token(token)
+            raw_token = self._pending_text + str(token)
+            self._pending_text = ""
+            cleaned, local_anns = self._clean_token(raw_token)
+            cleaned, self._pending_text = _split_trailing_incomplete_image_url(cleaned)
             if cleaned:
                 # 先发 text 事件（OpenAI 顺序：text.delta 先，annotation.added 后）
                 self.text_buf.append(cleaned)
                 events.append(FrameEvent("text", cleaned))
                 # 再发 annotation 事件：局部位置 → 绝对位置
                 for ann in local_anns:
+                    if ann.get("local_end", 0) > len(cleaned):
+                        continue
                     ann["start_index"] = self._text_offset + ann.pop("local_start")
                     ann["end_index"] = self._text_offset + ann.pop("local_end")
                     self._annotations.append(ann)
@@ -433,14 +489,22 @@ class StreamAdapter:
             uuid = chunk.get("imageUuid", "")
             events: list[FrameEvent] = []
             try:
-                if progress is not None:
+                if progress is not None and int(progress) < 100:
                     events.append(FrameEvent("image_progress", str(int(progress)), uuid))
             except (TypeError, ValueError):
                 pass
             if chunk.get("progress") == 100 and not chunk.get("moderated"):
-                url = _IMAGE_BASE + chunk["imageUrl"]
-                self.image_urls.append((url, uuid))
-                events.append(FrameEvent("image", url, uuid))
+                self._remember_image_url(
+                    events,
+                    chunk.get("imageUrl", ""),
+                    uuid,
+                )
+            return events
+
+        if _card_may_contain_generated_image(jd):
+            events: list[FrameEvent] = []
+            for url, image_id in _iter_image_candidates(jd):
+                self._remember_image_url(events, url, image_id)
             return events
 
         return []
@@ -452,10 +516,11 @@ class StreamAdapter:
     # 返回 (cleaned_text, local_annotations)，annotations 含局部 start/end
     def _clean_token(self, token: str) -> tuple[str, list[dict]]:
         if "<grok:render" not in token:
-            return token, []
+            return self._extract_markdown_images(token), []
         cleaned = _GROK_RENDER_RE.sub(self._render_replace, token)
         # 去除引用标签替换后残留的独占空白行（如 "\n [[1]](...)" → " [[1]](...)"）
         cleaned = cleaned.lstrip("\n") if cleaned.startswith("\n") and "[[" in cleaned else cleaned
+        cleaned = self._extract_markdown_images(cleaned)
 
         # 从 cleaned 中定位 pending citations 的局部位置（游标递进防碰撞）
         local_annotations: list[dict] = []
@@ -493,6 +558,8 @@ class StreamAdapter:
             return f"![{title}]({thumb})"
 
         if render_type == "render_generated_image":
+            for url, image_id in _iter_image_candidates(card):
+                self._remember_image_url([], url, image_id)
             return ""   # actual URL emitted by progress=100 card frame
 
         if render_type == "render_inline_citation":
@@ -617,6 +684,205 @@ class StreamAdapter:
         lowered = re.sub(r"https?://\S+", "", lowered)
         lowered = re.sub(r"[^\w\u4e00-\u9fff]+", "", lowered)
         return lowered
+
+    def _remember_image_url(self, events: list[FrameEvent], url: str, image_id: str = "") -> None:
+        normalized = _normalize_image_url(url)
+        if not normalized or normalized in self._seen_image_urls:
+            return
+        resolved_id = image_id or _image_id_from_url(normalized)
+        self._seen_image_urls.add(normalized)
+        self.image_urls.append((normalized, resolved_id))
+        events.append(FrameEvent("image", normalized, resolved_id))
+
+    def _extract_markdown_images(self, text: str) -> str:
+        def _remember(raw_url: str) -> bool:
+            if not _looks_like_image_asset_url(raw_url):
+                return False
+            self._remember_image_url([], raw_url)
+            return True
+
+        def _replace(match: re.Match) -> str:
+            raw_url = match.group("url").strip().strip("<>")
+            if not _remember(raw_url):
+                return match.group(0)
+            return ""
+
+        def _replace_bare(match: re.Match) -> str:
+            raw_url = match.group("url").strip()
+            image_url = raw_url.rstrip(".,;:!?")
+            suffix = raw_url[len(image_url):]
+            if not _looks_like_complete_image_url(image_url):
+                return match.group(0)
+            if not _remember(image_url):
+                return match.group(0)
+            return suffix
+
+        cleaned = _MARKDOWN_IMAGE_RE.sub(_replace, text)
+        return _BARE_IMAGE_URL_RE.sub(_replace_bare, cleaned)
+
+    def extract_generated_images_from_text(self, text: str) -> str:
+        """Extract generated image URLs after all text chunks have been joined."""
+        return self._extract_markdown_images(text)
+
+
+def _normalize_image_url(value: str) -> str:
+    url = str(value or "").strip()
+    if not url:
+        return ""
+    lowered = url.lower()
+    if lowered.startswith(("http://", "https://", "data:image/")):
+        return url
+    if url.startswith("//"):
+        return f"https:{url}"
+    if url.startswith("/"):
+        return f"{_IMAGE_BASE.rstrip('/')}{url}"
+    return f"{_IMAGE_BASE}{url.lstrip('/')}"
+
+
+def _looks_like_image_asset_url(value: str, *, trust_url: bool = False) -> bool:
+    url = str(value or "").strip()
+    if not url:
+        return False
+    lowered = url.lower()
+    if lowered.startswith("data:image/"):
+        return True
+    normalized = _normalize_image_url(url).lower()
+    if trust_url and (
+        lowered.startswith(("http://", "https://", "//", "/"))
+        or lowered.startswith(("images/", "image/", "content/"))
+    ):
+        return True
+    return (
+        any(marker in normalized for marker in _IMAGE_HOST_MARKERS)
+        or "/images/" in normalized
+        or normalized.endswith((".png", ".jpg", ".jpeg", ".webp", ".gif"))
+        or "/content" in normalized
+        or "image" in normalized
+    )
+
+
+def _looks_like_complete_image_url(value: str) -> bool:
+    url = str(value or "").strip()
+    if not url:
+        return False
+    lowered = url.lower()
+    return (
+        lowered.startswith("data:image/")
+        or bool(_COMPLETE_IMAGE_URL_RE.search(url))
+        or lowered.endswith("/content")
+        or "/content?" in lowered
+    )
+
+
+def _looks_like_incomplete_image_url(value: str) -> bool:
+    url = str(value or "").strip().lower()
+    if not url:
+        return False
+    normalized = _normalize_image_url(url).lower()
+    return (
+        any(marker in normalized for marker in _IMAGE_HOST_MARKERS)
+        or "/images/" in normalized
+        or "/content" in normalized
+        or "generated-image" in normalized
+    )
+
+
+def _split_trailing_incomplete_image_url(text: str) -> tuple[str, str]:
+    """Hold a trailing image URL fragment until a later chunk completes it."""
+    match = _TRAILING_URL_RE.search(text or "")
+    if not match:
+        return text, ""
+    url = match.group(0)
+    if _looks_like_complete_image_url(url) or not _looks_like_incomplete_image_url(url):
+        return text, ""
+
+    safe = text[: match.start()]
+    pending = text[match.start():]
+    opener = _MARKDOWN_IMAGE_OPENER_RE.search(safe)
+    if opener:
+        pending = safe[opener.start():] + pending
+        safe = safe[: opener.start()]
+    return safe, pending
+
+
+def _image_id_from_url(url: str) -> str:
+    match = _IMAGE_ID_FROM_URL_RE.search(url or "")
+    if match:
+        return match.group(1).lower()
+    return hashlib.sha1((url or "").encode("utf-8")).hexdigest()[:32]
+
+
+def _card_may_contain_generated_image(obj: Any) -> bool:
+    if isinstance(obj, dict):
+        for key, value in obj.items():
+            lowered = str(key).lower()
+            if (
+                "generated" in lowered
+                or lowered in {"image_chunk", "imagegeneration", "image_generation"}
+                or lowered.endswith("imageurl")
+            ):
+                return True
+            if isinstance(value, (dict, list)) and _card_may_contain_generated_image(value):
+                return True
+    elif isinstance(obj, list):
+        return any(_card_may_contain_generated_image(item) for item in obj)
+    return False
+
+
+def _key_indicates_image_url(key: str) -> bool:
+    lowered = str(key or "").lower()
+    return (
+        key in _IMAGE_URL_KEYS
+        or lowered in _IMAGE_URL_KEYS
+        or lowered.endswith("imageurl")
+        or lowered.endswith("image_url")
+        or (
+            ("image" in lowered or "asset" in lowered or "media" in lowered)
+            and ("url" in lowered or lowered in {"src", "href"})
+        )
+    )
+
+
+def _key_indicates_image_scope(key: str) -> bool:
+    lowered = str(key or "").lower()
+    return (
+        "generated" in lowered
+        or "image" in lowered
+        or "asset" in lowered
+        or "media" in lowered
+    )
+
+
+def _iter_image_candidates(obj: Any, inherited_id: str = "", in_image_scope: bool = False):
+    if isinstance(obj, dict):
+        obj_type = str(obj.get("type") or obj.get("cardType") or obj.get("card_type") or "")
+        image_scope = in_image_scope or _key_indicates_image_scope(obj_type)
+        local_id = inherited_id
+        for key in _IMAGE_ID_KEYS:
+            if key == "id" and not image_scope:
+                continue
+            value = obj.get(key)
+            if isinstance(value, str) and value.strip():
+                local_id = value.strip()
+                break
+
+        result = obj.get("result")
+        if image_scope and isinstance(result, str) and _looks_like_image_asset_url(result, trust_url=True):
+            yield result, local_id
+
+        for key, value in obj.items():
+            child_scope = image_scope or _key_indicates_image_scope(key)
+            if (
+                _key_indicates_image_url(key)
+                and isinstance(value, str)
+                and _looks_like_image_asset_url(value, trust_url=child_scope)
+            ):
+                yield value, local_id
+            elif isinstance(value, (dict, list)):
+                yield from _iter_image_candidates(value, local_id, child_scope)
+    elif isinstance(obj, list):
+        for item in obj:
+            yield from _iter_image_candidates(item, inherited_id, in_image_scope)
 
 
 __all__ = [

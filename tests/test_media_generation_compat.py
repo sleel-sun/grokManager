@@ -34,6 +34,35 @@ class _FakeDirectory:
         return None
 
 
+class _FakeConfig:
+    def __init__(self, values: dict[str, object]) -> None:
+        self._values = values
+
+    def get_str(self, key: str, default: str = "") -> str:
+        return str(self._values.get(key, default))
+
+
+class ChatGeneratedImageCompatibilityTests(unittest.TestCase):
+    def test_local_image_format_drops_inaccessible_grok_generated_url(self) -> None:
+        from app.products.openai import chat
+
+        url = "https://grok.x.ai/generated-image-shanghai-pudong-golden-hour-realistic-cinematic-wide.jpg"
+        cfg = _FakeConfig(
+            {
+                "app.app_url": "https://cloudmanager.cn",
+                "features.image_format": "local_url",
+            }
+        )
+
+        with patch("app.products.openai.chat.get_config", return_value=cfg), patch(
+            "app.products.openai.chat._download_image_bytes",
+            new=AsyncMock(side_effect=UpstreamError("download returned 403", status=403)),
+        ):
+            resolved = asyncio.run(chat._resolve_image("token", url, ""))
+
+        self.assertEqual(resolved, "")
+
+
 class VideoJobCompatibilityTests(unittest.TestCase):
     def test_completed_video_job_payload_exposes_video_urls(self) -> None:
         from app.products.openai.video import _VideoJob
@@ -114,6 +143,20 @@ class VideoJobCompatibilityTests(unittest.TestCase):
         self.assertEqual(job.video_url, artifact.video_url)
         self.assertEqual(job.content_path, "")
         self.assertIsNone(job.error)
+
+
+class LocalImageCacheCompatibilityTests(unittest.TestCase):
+    def test_image_suffix_prefers_webp_signature_over_fallback_mime(self) -> None:
+        from app.platform.storage.media_cache import LocalMediaCacheStore
+
+        class FakeConfig:
+            def get_int(self, _key: str, default: int = 0) -> int:
+                return default
+
+        store = LocalMediaCacheStore(config_provider=FakeConfig)
+        raw = b"RIFF" + (b"\x00" * 4) + b"WEBP" + b"payload"
+
+        self.assertEqual(store._image_suffix(raw, "image/jpeg"), ".webp")
 
 
 if __name__ == "__main__":

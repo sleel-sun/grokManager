@@ -25,6 +25,8 @@ _EXTENSION_MIME: dict[str, str] = {
     ".jpeg": "image/jpeg",
     ".png":  "image/png",
     ".webp": "image/webp",
+    ".gif":  "image/gif",
+    ".bmp":  "image/bmp",
     ".mp4":  "video/mp4",
     ".webm": "video/webm",
 }

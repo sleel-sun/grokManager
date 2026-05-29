@@ -26,6 +26,14 @@ _LOW_WATERMARK_RATIO = 0.60
 _TABLE = "local_media_files"
 _IMAGE_EXTS = frozenset({".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp"})
 _VIDEO_EXTS = frozenset({".mp4", ".mov", ".m4v", ".webm", ".avi", ".mkv"})
+_IMAGE_MIME_EXTS = {
+    "image/jpeg": ".jpg",
+    "image/jpg": ".jpg",
+    "image/png": ".png",
+    "image/webp": ".webp",
+    "image/gif": ".gif",
+    "image/bmp": ".bmp",
+}
 
 
 class LocalMediaCacheStore:
@@ -42,7 +50,7 @@ class LocalMediaCacheStore:
 
     def save_image(self, raw: bytes, mime: str, file_id: str) -> str:
         """Persist an image and return the stable local file ID."""
-        ext = ".png" if "png" in mime.lower() else ".jpg"
+        ext = self._image_suffix(raw, mime)
         self._save("image", file_id=file_id, raw=raw, suffix=ext)
         return file_id
 
@@ -150,6 +158,23 @@ class LocalMediaCacheStore:
 
     def _allowed_exts(self, media_type: MediaType) -> frozenset[str]:
         return _IMAGE_EXTS if media_type == "image" else _VIDEO_EXTS
+
+    def _image_suffix(self, raw: bytes, mime: str) -> str:
+        # Prefer byte signatures because generated asset URLs often end with
+        # /content and do not expose a reliable extension before download.
+        if raw.startswith(b"\x89PNG\r\n\x1a\n"):
+            return ".png"
+        if raw.startswith(b"\xff\xd8\xff"):
+            return ".jpg"
+        if raw.startswith((b"GIF87a", b"GIF89a")):
+            return ".gif"
+        if raw.startswith(b"BM"):
+            return ".bmp"
+        if len(raw) >= 12 and raw[:4] == b"RIFF" and raw[8:12] == b"WEBP":
+            return ".webp"
+
+        normalized = (mime or "").split(";", 1)[0].strip().lower()
+        return _IMAGE_MIME_EXTS.get(normalized, ".jpg")
 
     def _iter_files(self, media_type: MediaType):
         allowed = self._allowed_exts(media_type)

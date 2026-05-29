@@ -108,6 +108,16 @@ class ImageGenerationErrorTests(unittest.TestCase):
 
 
 class ImageGenerationOutputTests(unittest.TestCase):
+    def test_content_asset_url_file_id_falls_back_to_route_safe_hash(self) -> None:
+        from app.products.openai import images
+
+        file_id = images._extract_image_file_id(
+            "https://assets.grok.com/users/user-1/asset-1/content"
+        )
+
+        self.assertRegex(file_id, r"^[0-9a-f]{32}$")
+        self.assertNotEqual(file_id, "content")
+
     def test_grok_url_format_does_not_download_even_when_app_url_is_configured(self) -> None:
         from app.products.openai import images
 
@@ -133,6 +143,39 @@ class ImageGenerationOutputTests(unittest.TestCase):
 
         self.assertEqual(output.api_value, url)
         self.assertEqual(output.markdown_value, f"![image]({url})")
+
+    def test_local_url_format_saves_with_relative_url_when_app_url_is_empty(self) -> None:
+        from app.products.openai import images
+
+        url = "https://assets.grok.com/users/user-1/asset-1/content"
+        cfg = _FakeConfig(
+            {
+                "app.app_url": "",
+                "features.image_format": "local_url",
+            }
+        )
+
+        saved_ids: list[str] = []
+
+        def fake_save(_raw: bytes, _mime: str, file_id: str) -> str:
+            saved_ids.append(file_id)
+            return file_id
+
+        with patch("app.products.openai.images.get_config", return_value=cfg), patch(
+            "app.products.openai.images._download_image_bytes",
+            new=AsyncMock(return_value=(b"image-bytes", "image/jpeg")),
+        ), patch("app.products.openai.images._save_image", side_effect=fake_save):
+            output = asyncio.run(
+                images._resolve_image_output(
+                    token="token",
+                    url=url,
+                    response_format="url",
+                )
+            )
+
+        self.assertEqual(saved_ids, [images._extract_image_file_id(url)])
+        self.assertEqual(output.api_value, f"/v1/files/image?id={saved_ids[0]}")
+        self.assertEqual(output.markdown_value, f"![image](/v1/files/image?id={saved_ids[0]})")
 
     def test_local_url_format_falls_back_to_upstream_url_when_download_fails(self) -> None:
         from app.products.openai import images

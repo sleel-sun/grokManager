@@ -1,3 +1,4 @@
+import json
 import os
 import tempfile
 import unittest
@@ -7,6 +8,9 @@ from unittest.mock import MagicMock, patch
 
 from app.maintainer.runner import (
     build_profile,
+    click_email_signup_button,
+    fill_profile_and_submit,
+    _prewarm_cloudflare_clearance,
     _build_worker_output,
     _compute_worker_chrome_user_data_dir,
     _configure_browser_options,
@@ -42,6 +46,177 @@ class MaintainerRunnerTests(unittest.TestCase):
         self.assertEqual((given_name, family_name), ("Ava", "Chen"))
         self.assertNotEqual((given_name, family_name), ("Neo", "Lin"))
         self.assertTrue(password.startswith("N"))
+
+    def test_click_email_signup_button_accepts_direct_email_form(self) -> None:
+        mock_page = MagicMock()
+        mock_page.run_js.return_value = {"status": "email-form-ready"}
+
+        with (
+            patch("app.maintainer.runner.page", mock_page),
+            patch("app.maintainer.runner.refresh_active_page", return_value=mock_page),
+            patch("app.maintainer.runner.time.sleep"),
+        ):
+            self.assertTrue(click_email_signup_button(timeout=1))
+
+    def test_click_email_signup_button_error_includes_diagnostics(self) -> None:
+        mock_page = MagicMock()
+        mock_page.run_js.return_value = {
+            "status": "not-found",
+            "url": "https://accounts.x.ai/sign-up?redirect=grok-com",
+            "readyState": "complete",
+            "candidates": ["Continue with Google", "Continue with Apple"],
+        }
+
+        with (
+            patch("app.maintainer.runner.page", mock_page),
+            patch("app.maintainer.runner.refresh_active_page", return_value=mock_page),
+            patch("app.maintainer.runner.time.time", side_effect=[0.0, 0.0, 2.0]),
+            patch("app.maintainer.runner.time.sleep"),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "候选按钮=Continue with Google"):
+                click_email_signup_button(timeout=1)
+
+    def test_click_email_signup_button_reports_cloudflare_block(self) -> None:
+        mock_page = MagicMock()
+        mock_page.run_js.return_value = {
+            "status": "cloudflare-blocked",
+            "url": "https://accounts.x.ai/sign-up?redirect=grok-com",
+            "readyState": "complete",
+            "title": "Attention Required! | Cloudflare",
+        }
+
+        with (
+            patch("app.maintainer.runner.page", mock_page),
+            patch("app.maintainer.runner.refresh_active_page", return_value=mock_page),
+            patch("app.maintainer.runner._click_cloudflare_challenge", return_value="not-found"),
+            patch("app.maintainer.runner.time.time", side_effect=[0.0, 0.0, 2.0]),
+            patch("app.maintainer.runner.time.sleep"),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "Cloudflare 硬拦截"):
+                click_email_signup_button(timeout=1)
+
+    def test_click_email_signup_button_attempts_cloudflare_click(self) -> None:
+        mock_page = MagicMock()
+        mock_page.run_js.side_effect = [
+            {
+                "status": "cloudflare-challenge",
+                "url": "https://accounts.x.ai/sign-up?redirect=grok-com",
+                "readyState": "complete",
+                "title": "Just a moment...",
+            },
+            {"status": "email-form-ready"},
+        ]
+
+        with (
+            patch("app.maintainer.runner.page", mock_page),
+            patch("app.maintainer.runner.refresh_active_page", return_value=mock_page),
+            patch(
+                "app.maintainer.runner._click_cloudflare_challenge",
+                return_value="iframe-coordinate",
+            ) as click_mock,
+            patch("app.maintainer.runner.time.sleep"),
+        ):
+            self.assertTrue(click_email_signup_button(timeout=1))
+
+        click_mock.assert_called_once()
+
+    def test_prewarm_cloudflare_clearance_injects_flaresolverr_cookies(self) -> None:
+        class _Response:
+            def __enter__(self) -> "_Response":
+                return self
+
+            def __exit__(self, *_args: object) -> None:
+                return None
+
+            def read(self) -> bytes:
+                return json.dumps(
+                    {
+                        "status": "ok",
+                        "solution": {
+                            "userAgent": "Mozilla/5.0 Test",
+                            "cookies": [
+                                {
+                                    "name": "cf_clearance",
+                                    "value": "clearance-value",
+                                    "domain": ".x.ai",
+                                    "path": "/",
+                                    "secure": True,
+                                    "httpOnly": True,
+                                    "sameSite": "None",
+                                    "expiry": 1780000000,
+                                }
+                            ],
+                        },
+                    }
+                ).encode("utf-8")
+
+        mock_page = MagicMock()
+
+        with (
+            patch.dict(
+                os.environ,
+                {"MAINTAINER_FLARESOLVERR_URL": "http://flaresolverr:8191"},
+                clear=True,
+            ),
+            patch("app.maintainer.runner.page", mock_page),
+            patch("app.maintainer.runner.urllib_request.urlopen", return_value=_Response()),
+        ):
+            self.assertTrue(_prewarm_cloudflare_clearance())
+
+        mock_page.run_cdp.assert_any_call(
+            "Network.setUserAgentOverride",
+            userAgent="Mozilla/5.0 Test",
+        )
+        set_cookie_call = mock_page.run_cdp.call_args_list[-1]
+        self.assertEqual(set_cookie_call.args[0], "Network.setCookies")
+        self.assertEqual(set_cookie_call.kwargs["cookies"][0]["name"], "cf_clearance")
+
+    def test_fill_profile_does_not_treat_debug_text_as_clicked(self) -> None:
+        mock_page = MagicMock()
+        mock_page.run_js.side_effect = [
+            "filled",
+            True,
+            "not-found",
+            "NO_BUTTON: Continue with Google",
+        ]
+        mock_page.ele.return_value = None
+
+        with (
+            patch("app.maintainer.runner.page", mock_page),
+            patch(
+                "app.maintainer.runner.build_profile",
+                return_value=("Ava", "Chen", "Nabc!a7#def"),
+            ),
+            patch("app.maintainer.runner.time.time", side_effect=[0.0, 0.0, 2.0]),
+            patch("app.maintainer.runner.time.sleep"),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "未找到最终注册表单"):
+                fill_profile_and_submit(timeout=1)
+
+    def test_fill_profile_clicks_submit_when_turnstile_is_absent(self) -> None:
+        mock_page = MagicMock()
+        mock_button = MagicMock()
+        mock_page.run_js.side_effect = [
+            "filled",
+            True,
+            "not-found",
+            "not-found",
+        ]
+        mock_page.ele.return_value = mock_button
+
+        with (
+            patch("app.maintainer.runner.page", mock_page),
+            patch(
+                "app.maintainer.runner.build_profile",
+                return_value=("Ava", "Chen", "Nabc!a7#def"),
+            ),
+            patch("app.maintainer.runner.time.time", return_value=0.0),
+            patch("app.maintainer.runner.time.sleep"),
+        ):
+            profile = fill_profile_and_submit(timeout=1)
+
+        self.assertEqual(profile["given_name"], "Ava")
+        mock_button.click.assert_called_once()
 
 
 class MaintainerBatchHelpersTests(unittest.TestCase):
@@ -656,6 +831,18 @@ class MaintainerChromeUserDataDirTests(unittest.TestCase):
         self.assertIn("--foo", opts.arguments)
         self.assertIn("--bar=baz", opts.arguments)
         self.assertIn("--quoted=value with space", opts.arguments)
+
+    def test_configure_browser_options_uses_maintainer_proxy(self) -> None:
+        env = {
+            k: v
+            for k, v in os.environ.items()
+            if not k.startswith("MAINTAINER_")
+        }
+        env["MAINTAINER_PROXY"] = "http://127.0.0.1:8118"
+        with patch.dict(os.environ, env, clear=True):
+            opts = _configure_browser_options()
+
+        self.assertIn("--proxy-server=http://127.0.0.1:8118", opts.arguments)
 
     def test_worker_entry_sets_unique_chrome_debug_port_env(self) -> None:
         class _Queue:

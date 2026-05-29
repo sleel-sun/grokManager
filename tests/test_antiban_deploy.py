@@ -28,6 +28,10 @@ class AntiBanComposeTests(unittest.TestCase):
             "GROK_PROXY_CLEARANCE_FLARESOLVERR_URL: ${GROK_PROXY_CLEARANCE_FLARESOLVERR_URL:-http://flaresolverr:8191}",
             compose,
         )
+        self.assertIn(
+            "MAINTAINER_FLARESOLVERR_URL: ${MAINTAINER_FLARESOLVERR_URL:-http://flaresolverr:8191}",
+            compose,
+        )
         self.assertIn("forward-socks5t / warp:1080 .", privoxy)
 
     def test_macos_package_includes_antiban_deployment_assets(self) -> None:

@@ -283,6 +283,29 @@ def redact_state(state: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def build_completion_status(
+    tokens: list[str],
+    *,
+    stopped: bool,
+    progress: dict[str, Any] | None = None,
+) -> tuple[str, str]:
+    """Build the final UI status after a maintainer run exits."""
+    token_count = len(tokens)
+    if stopped:
+        return "stopped", f"注册任务已停止，已采集 {token_count} 个 token"
+
+    if token_count:
+        return "completed", f"注册任务完成，采集 {token_count} 个 token"
+
+    errors = [
+        str(item.get("last_error", "")).strip()
+        for item in (progress or {}).values()
+        if isinstance(item, dict) and str(item.get("last_error", "")).strip()
+    ]
+    detail = f"，最后错误: {errors[-1]}" if errors else "，请查看 maintainer 日志"
+    return "failed", f"注册任务未采集到 token{detail}"
+
+
 def _maintainer_available() -> bool:
     return importlib.util.find_spec("DrissionPage") is not None
 
@@ -359,12 +382,17 @@ def _log_tail(line_count: int = 80) -> list[str]:
 
 
 def _env_for_request(req: MaintainerRunRequest, config_path: Path) -> dict[str, str]:
+    # 无 DISPLAY 且非 Windows → 自动启用 headless，避免 BrowserConnectError
+    _no_display = not os.environ.get("DISPLAY") and os.name != "nt"
+    _headless = req.headless or _no_display
+    _no_sandbox = req.no_sandbox or (os.name != "nt")
+    _disable_dev_shm = req.disable_dev_shm or (os.name != "nt")
     env = {
         "GROK_MAINTAINER_CONFIG": str(config_path),
-        "MAINTAINER_HEADLESS": "true" if req.headless else "false",
+        "MAINTAINER_HEADLESS": "true" if _headless else "false",
         "MAINTAINER_USE_XVFB": "true" if req.use_xvfb else "false",
-        "MAINTAINER_NO_SANDBOX": "true" if req.no_sandbox else "false",
-        "MAINTAINER_DISABLE_DEV_SHM": "true" if req.disable_dev_shm else "false",
+        "MAINTAINER_NO_SANDBOX": "true" if _no_sandbox else "false",
+        "MAINTAINER_DISABLE_DEV_SHM": "true" if _disable_dev_shm else "false",
     }
     if req.window_size:
         env["MAINTAINER_WINDOW_SIZE"] = req.window_size
@@ -448,6 +476,14 @@ async def _run_background(
                 entry["last_elapsed_s"] = float(payload["elapsed_s"])
         if event in {"round_failed", "worker_failed"} and "error" in payload:
             entry["last_error"] = str(payload["error"])[:200]
+            entry["failed_rounds"] = int(entry.get("failed_rounds", 0)) + 1
+        if event == "finished":
+            if "token_count" in payload:
+                entry["finished_token_count"] = int(payload["token_count"])
+            if "failed_rounds" in payload:
+                entry["failed_rounds"] = int(payload["failed_rounds"])
+            if payload.get("last_error"):
+                entry["last_error"] = str(payload["last_error"])[:200]
         snap[worker_key] = entry
         _state["per_worker_progress"] = snap
 
@@ -466,12 +502,11 @@ async def _run_background(
             _record_progress,
         )
         stopped = controller.is_stopped()
-        if stopped:
-            status = "stopped"
-            message = f"注册任务已停止，已采集 {len(tokens)} 个 token"
-        else:
-            status = "completed"
-            message = f"注册任务完成，采集 {len(tokens)} 个 token"
+        status, message = build_completion_status(
+            tokens,
+            stopped=stopped,
+            progress=_state.get("per_worker_progress") or {},
+        )
         _state.update(
             {
                 "running": False,
@@ -635,6 +670,7 @@ async def maintainer_stop():
 
 __all__ = [
     "MaintainerRunRequest",
+    "build_completion_status",
     "build_saved_config_response",
     "build_runtime_config",
     "redact_state",

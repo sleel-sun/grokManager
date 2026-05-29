@@ -16,7 +16,6 @@ from app.control.account.enums import FeedbackKind
 from app.products.openai.images import (
     _image_feedback_kind,
     _image_max_retries,
-    _image_pool_candidates,
     _image_retry_codes,
     _image_stream_error_to_upstream_error,
     _rotate_pool_candidates,
@@ -57,8 +56,11 @@ async def _acquire_token(
     spec = get_model("grok-imagine-image")
     if spec is None:
         return None, None
+    # Masonry uses Grok Imagine WebSocket models, which require Super/Heavy
+    # image access. Falling back to basic accounts only burns retries and
+    # produces upstream "Image rate limit exceeded" for every attempt.
     acct = await _acct_dir.reserve(
-        pool_candidates=_rotate_pool_candidates(_image_pool_candidates(spec), attempt),
+        pool_candidates=_rotate_pool_candidates(spec.pool_candidates(), attempt),
         mode_id=int(spec.mode_id),
         exclude_tokens=exclude_tokens or None,
         now_s_override=now_s(),
@@ -66,6 +68,25 @@ async def _acquire_token(
     if acct is None:
         return None, None
     return acct.token, acct
+
+
+def _no_webui_image_accounts_message(excluded_count: int = 0) -> str:
+    if excluded_count > 0:
+        return (
+            "All available Super/Heavy image accounts are currently rate-limited. "
+            "Wait for image quota reset or import more Super/Heavy accounts."
+        )
+    return (
+        "Masonry image generation requires Super or Heavy accounts. "
+        "Import Super/Heavy accounts before using this page."
+    )
+
+
+def _webui_image_exhausted_message() -> str:
+    return (
+        "All available Super/Heavy image accounts are currently rate-limited. "
+        "Wait for image quota reset or import more Super/Heavy accounts."
+    )
 
 
 def _extract_token(value: str | None) -> str:
@@ -153,10 +174,13 @@ async def imagine_ws(websocket: WebSocket):
             for attempt in range(max_retries + 1):
                 token, acct = await _acquire_token(excluded or None, attempt=attempt)
                 if not token:
+                    exhausted = last_exc is not None or bool(excluded)
                     await _send({
                         "type": "error",
-                        "message": last_exc.message if last_exc else "No available accounts for this model tier",
-                        "code": "rate_limit_exceeded",
+                        "message": _webui_image_exhausted_message()
+                        if exhausted
+                        else _no_webui_image_accounts_message(len(excluded)),
+                        "code": "rate_limit_exceeded" if exhausted else "image_pool_unavailable",
                     })
                     return
 
@@ -240,8 +264,10 @@ async def imagine_ws(websocket: WebSocket):
 
             await _send({
                 "type": "error",
-                "message": last_exc.message if last_exc else "No available accounts for this model tier",
-                "code": "rate_limit_exceeded",
+                "message": _webui_image_exhausted_message()
+                if last_exc or excluded
+                else _no_webui_image_accounts_message(len(excluded)),
+                "code": "rate_limit_exceeded" if last_exc or excluded else "image_pool_unavailable",
             })
         except asyncio.CancelledError:
             pass

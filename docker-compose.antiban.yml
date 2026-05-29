@@ -18,6 +18,8 @@ services:
   maintainer:
     environment:
       MAINTAINER_PROXY: ${MAINTAINER_PROXY:-http://privoxy:8118}
+      MAINTAINER_FLARESOLVERR_URL: ${MAINTAINER_FLARESOLVERR_URL:-http://flaresolverr:8191}
+      MAINTAINER_FLARESOLVERR_TIMEOUT_SEC: ${MAINTAINER_FLARESOLVERR_TIMEOUT_SEC:-60}
 
   warp:
     container_name: grokmanager-warp
@@ -32,14 +34,15 @@ services:
 
   privoxy:
     container_name: grokmanager-privoxy
-    image: vimagick/privoxy:latest
+    build:
+      context: ./deploy/anti-ban/privoxy
+    image: ${PRIVOXY_IMAGE:-grokmanager-privoxy:local}
     restart: unless-stopped
     depends_on:
       warp:
         condition: service_started
     volumes:
       - ./deploy/anti-ban/privoxy/config:/etc/privoxy/config:ro
-    command: ["privoxy", "--no-daemon", "/etc/privoxy/config"]
     ports:
       - "${PRIVOXY_HOST:-127.0.0.1}:${PRIVOXY_PORT:-8118}:8118"
 

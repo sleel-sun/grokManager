@@ -113,7 +113,11 @@
       "errorText": "连接没有建立成功，请检查麦克风权限后重试。",
       "endedText": "语音会话已结束，可以重新开始。",
       "livekitLoadFailed": "LiveKit SDK 加载失败",
-      "invalidToken": "语音 token 返回无效"
+      "invalidToken": "语音 token 返回无效",
+      "microphoneUnsupported": "当前浏览器或非 HTTPS 页面不能打开麦克风，请使用 HTTPS 或 localhost。",
+      "microphoneRequired": "请允许浏览器使用麦克风后再连接语音。",
+      "microphoneUnavailable": "无法打开麦克风，请确认浏览器权限或设备占用情况。",
+      "webrtcConnectionFailed": "LiveKit 已拿到语音 token，但浏览器无法建立 WebRTC 连接。打开 livekit.grok.com 返回 OK 只代表 HTTPS 可达，还需要允许 wss://livekit.grok.com/rtc 以及 WebRTC ICE/TURN 流量。"
     },
     "masonry": {
       "pageTitle": "grokManager - Masonry",
@@ -142,6 +146,8 @@
       "errors": {
         "enterPrompt": "请输入提示词",
         "requestFailed": "请求失败",
+        "imagePoolUnavailable": "瀑布流生图需要 Super 或 Heavy 账号，请先导入 Super/Heavy 账号。",
+        "imageRateLimited": "可用 Super/Heavy 账号的生图额度已耗尽，请等待额度重置或导入更多 Super/Heavy 账号。",
         "initFailed": "瀑布流页面初始化失败"
       }
     }

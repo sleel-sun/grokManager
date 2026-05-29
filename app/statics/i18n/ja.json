@@ -92,7 +92,11 @@
       "errorText": "接続を確立できませんでした。マイク権限を確認して再試行してください。",
       "endedText": "音声セッションは終了しました。いつでも再開できます。",
       "livekitLoadFailed": "LiveKit SDK の読み込みに失敗しました",
-      "invalidToken": "音声トークンの応答が無効です"
+      "invalidToken": "音声トークンの応答が無効です",
+      "microphoneUnsupported": "このブラウザまたは HTTPS ではないページではマイクを開けません。HTTPS または localhost を使用してください。",
+      "microphoneRequired": "音声接続の前にブラウザのマイクアクセスを許可してください。",
+      "microphoneUnavailable": "マイクを開けませんでした。ブラウザ権限、または他のアプリが使用中か確認してください。",
+      "webrtcConnectionFailed": "LiveKit の音声トークンは取得できましたが、ブラウザが WebRTC 接続を確立できませんでした。livekit.grok.com の OK 応答は HTTPS 到達性のみを示します。wss://livekit.grok.com/rtc と WebRTC ICE/TURN トラフィックも許可してください。"
     },
     "masonry": {
       "pageTitle": "grokManager - Masonry",
@@ -121,6 +125,8 @@
       "errors": {
         "enterPrompt": "プロンプトを入力してください",
         "requestFailed": "リクエストに失敗しました",
+        "imagePoolUnavailable": "Masonry の画像生成には Super または Heavy アカウントが必要です。先に Super/Heavy アカウントをインポートしてください。",
+        "imageRateLimited": "利用可能な Super/Heavy 画像アカウントがレート制限されています。クォータのリセットを待つか、Super/Heavy アカウントを追加してください。",
         "initFailed": "Masonry ページの初期化に失敗しました"
       }
     }

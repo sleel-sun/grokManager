@@ -4,6 +4,7 @@ from unittest.mock import patch
 from app.products.web.admin.maintainer import (
     MaintainerRunRequest,
     _MaintainerController,
+    build_completion_status,
     build_saved_config_response,
     build_runtime_config,
     redact_state,
@@ -165,6 +166,23 @@ class MaintainerAdminTests(unittest.TestCase):
         )
 
         self.assertEqual(cfg["email"]["admin_password"], "saved-worker-secret")
+
+    def test_completion_status_treats_empty_tokens_as_failed(self) -> None:
+        status, message = build_completion_status(
+            [],
+            stopped=False,
+            progress={"0": {"last_error": "round#1: RuntimeError: button missing"}},
+        )
+
+        self.assertEqual(status, "failed")
+        self.assertIn("注册任务未采集到 token", message)
+        self.assertIn("button missing", message)
+
+    def test_completion_status_reports_success_only_with_tokens(self) -> None:
+        status, message = build_completion_status(["sso-value"], stopped=False)
+
+        self.assertEqual(status, "completed")
+        self.assertEqual(message, "注册任务完成，采集 1 个 token")
 
 
 class MaintainerControllerTests(unittest.TestCase):

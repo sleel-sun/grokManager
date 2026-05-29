@@ -8,25 +8,27 @@ services:
     ports:
       - "${HOST_PORT:-8000}:${SERVER_PORT:-8000}"
     environment:
-      TZ: ${TZ:-Asia/Shanghai}
-      LOG_LEVEL: ${LOG_LEVEL:-INFO}
-      LOG_FILE_ENABLED: ${LOG_FILE_ENABLED:-true}
-      ACCOUNT_SYNC_INTERVAL: ${ACCOUNT_SYNC_INTERVAL:-30}
-      SERVER_HOST: ${SERVER_HOST:-0.0.0.0}
-      SERVER_PORT: ${SERVER_PORT:-8000}
-      SERVER_WORKERS: ${SERVER_WORKERS:-1}
-      ACCOUNT_STORAGE: ${ACCOUNT_STORAGE:-local}
-      ACCOUNT_LOCAL_PATH: /app/data/accounts.db
-      ACCOUNT_REDIS_URL: ${ACCOUNT_REDIS_URL:-}
-      ACCOUNT_MYSQL_URL: ${ACCOUNT_MYSQL_URL:-}
-      ACCOUNT_POSTGRESQL_URL: ${ACCOUNT_POSTGRESQL_URL:-}
-      DATA_DIR: /app/data
-      LOG_DIR: /app/logs
-      GROK_APP_APP_KEY: ${GROK_APP_APP_KEY:-}
-      GROK_APP_API_KEY: ${GROK_APP_API_KEY:-}
-      GROK_APP_APP_URL: ${GROK_APP_APP_URL:-}
-      GROK_APP_WEBUI_ENABLED: ${GROK_APP_WEBUI_ENABLED:-}
-      GROK_APP_WEBUI_KEY: ${GROK_APP_WEBUI_KEY:-}
+      - TZ=${TZ:-Asia/Shanghai}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - LOG_FILE_ENABLED=${LOG_FILE_ENABLED:-true}
+      - ACCOUNT_SYNC_INTERVAL=${ACCOUNT_SYNC_INTERVAL:-30}
+      - SERVER_HOST=${SERVER_HOST:-0.0.0.0}
+      - SERVER_PORT=${SERVER_PORT:-8000}
+      - SERVER_WORKERS=${SERVER_WORKERS:-1}
+      - ACCOUNT_STORAGE=${ACCOUNT_STORAGE:-local}
+      - ACCOUNT_LOCAL_PATH=/app/data/accounts.db
+      - ACCOUNT_REDIS_URL=${ACCOUNT_REDIS_URL:-}
+      - ACCOUNT_MYSQL_URL=${ACCOUNT_MYSQL_URL:-}
+      - ACCOUNT_POSTGRESQL_URL=${ACCOUNT_POSTGRESQL_URL:-}
+      - DATA_DIR=/app/data
+      - LOG_DIR=/app/logs
+      # Optional GROK_APP_* values are passed only when set on the host.
+      # Passing empty strings would override data/config.toml and disable login.
+      - GROK_APP_APP_KEY
+      - GROK_APP_API_KEY
+      - GROK_APP_APP_URL
+      - GROK_APP_WEBUI_ENABLED
+      - GROK_APP_WEBUI_KEY
       # 防 403 / 防封版请叠加 docker-compose.antiban.yml:
       # docker compose -f docker-compose.yml -f docker-compose.antiban.yml up -d --build
 
@@ -50,28 +52,28 @@ services:
       grokmanager:
         condition: service_healthy
     environment:
-      TZ: ${TZ:-Asia/Shanghai}
-      DATA_DIR: /app/data
-      LOG_DIR: /app/logs
-      GROK_APP_APP_KEY: ${GROK_APP_APP_KEY:-}
-      GROK_MAINTAINER_CONFIG: /app/data/maintainer/compose/maintainer.config.json
-      MAINTAINER_API_BASE_URL: http://grokmanager:8000
-      MAINTAINER_API_ENDPOINT: http://grokmanager:8000/admin/api/tokens/add
-      MAINTAINER_API_TOKEN: ${MAINTAINER_API_TOKEN:-}
-      MAINTAINER_EMAIL_WORKER_DOMAIN: ${MAINTAINER_EMAIL_WORKER_DOMAIN:-}
-      MAINTAINER_EMAIL_DOMAINS: ${MAINTAINER_EMAIL_DOMAINS:-}
-      MAINTAINER_EMAIL_ADMIN_PASSWORD: ${MAINTAINER_EMAIL_ADMIN_PASSWORD:-}
-      MAINTAINER_VERIFY_SSL: ${MAINTAINER_VERIFY_SSL:-true}
-      MAINTAINER_POOL: ${MAINTAINER_POOL:-basic}
-      MAINTAINER_COUNT: ${MAINTAINER_COUNT:-1}
-      MAINTAINER_WORKERS: ${MAINTAINER_WORKERS:-1}
-      MAINTAINER_INTERVAL_SEC: ${MAINTAINER_INTERVAL_SEC:-3600}
-      MAINTAINER_HEADLESS: ${MAINTAINER_HEADLESS:-false}
-      MAINTAINER_USE_XVFB: ${MAINTAINER_USE_XVFB:-true}
-      MAINTAINER_NO_SANDBOX: ${MAINTAINER_NO_SANDBOX:-true}
-      MAINTAINER_DISABLE_DEV_SHM: ${MAINTAINER_DISABLE_DEV_SHM:-true}
-      MAINTAINER_WINDOW_SIZE: ${MAINTAINER_WINDOW_SIZE:-1440,900}
-      MAINTAINER_CHROME_ARGS: ${MAINTAINER_CHROME_ARGS:-}
+      - TZ=${TZ:-Asia/Shanghai}
+      - DATA_DIR=/app/data
+      - LOG_DIR=/app/logs
+      - GROK_APP_APP_KEY
+      - GROK_MAINTAINER_CONFIG=/app/data/maintainer/compose/maintainer.config.json
+      - MAINTAINER_API_BASE_URL=http://grokmanager:8000
+      - MAINTAINER_API_ENDPOINT=http://grokmanager:8000/admin/api/tokens/add
+      - MAINTAINER_API_TOKEN=${MAINTAINER_API_TOKEN:-}
+      - MAINTAINER_EMAIL_WORKER_DOMAIN=${MAINTAINER_EMAIL_WORKER_DOMAIN:-}
+      - MAINTAINER_EMAIL_DOMAINS=${MAINTAINER_EMAIL_DOMAINS:-}
+      - MAINTAINER_EMAIL_ADMIN_PASSWORD=${MAINTAINER_EMAIL_ADMIN_PASSWORD:-}
+      - MAINTAINER_VERIFY_SSL=${MAINTAINER_VERIFY_SSL:-true}
+      - MAINTAINER_POOL=${MAINTAINER_POOL:-basic}
+      - MAINTAINER_COUNT=${MAINTAINER_COUNT:-1}
+      - MAINTAINER_WORKERS=${MAINTAINER_WORKERS:-1}
+      - MAINTAINER_INTERVAL_SEC=${MAINTAINER_INTERVAL_SEC:-3600}
+      - MAINTAINER_HEADLESS=${MAINTAINER_HEADLESS:-false}
+      - MAINTAINER_USE_XVFB=${MAINTAINER_USE_XVFB:-true}
+      - MAINTAINER_NO_SANDBOX=${MAINTAINER_NO_SANDBOX:-true}
+      - MAINTAINER_DISABLE_DEV_SHM=${MAINTAINER_DISABLE_DEV_SHM:-true}
+      - MAINTAINER_WINDOW_SIZE=${MAINTAINER_WINDOW_SIZE:-1440,900}
+      - MAINTAINER_CHROME_ARGS=${MAINTAINER_CHROME_ARGS:-}
     volumes:
       - ./data:/app/data
       - ./logs:/app/logs

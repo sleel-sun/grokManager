@@ -70,6 +70,23 @@
     if (typeof showToast === 'function') showToast(message, type);
   }
 
+  function formatErrorMessage(payload) {
+    const code = String(payload?.code || payload?.error_code || '').trim();
+    if (code === 'image_pool_unavailable') {
+      return text(
+        'webui.masonry.errors.imagePoolUnavailable',
+        '瀑布流生图需要 Super 或 Heavy 账号，请先导入 Super/Heavy 账号。',
+      );
+    }
+    if (code === 'rate_limit_exceeded') {
+      return text(
+        'webui.masonry.errors.imageRateLimited',
+        '可用 Super/Heavy 账号的生图额度已耗尽，请等待额度重置或导入更多 Super/Heavy 账号。',
+      );
+    }
+    return payload.message || payload.error || code || text('webui.masonry.errors.requestFailed', '请求失败');
+  }
+
   function buildWebSocketUrl(path, params = {}) {
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const url = new URL(path, `${protocol}//${window.location.host}`);
@@ -529,7 +546,7 @@
         state.keepRunning = false;
         markBatchFailed(batch);
         setStatus(text('webui.masonry.statusFailed', '失败'), 'failed');
-        const errorMessage = payload.message || payload.error || payload.code || payload.error_code || text('webui.masonry.errors.requestFailed', '请求失败');
+        const errorMessage = formatErrorMessage(payload);
         toast(errorMessage, 'error');
         try {
           socket.close(1011, 'error');

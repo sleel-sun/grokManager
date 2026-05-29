@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import datetime
+import json
 import logging
 import multiprocessing as mp
 import os
@@ -14,9 +15,11 @@ import tempfile
 import time
 from pathlib import Path
 from typing import Any, Callable
+from urllib import request as urllib_request
+from urllib.error import HTTPError, URLError
 
 from DrissionPage import Chromium, ChromiumOptions
-from DrissionPage.errors import PageDisconnectedError
+from DrissionPage.errors import BrowserConnectError, PageDisconnectedError
 try:
     from pyvirtualdisplay import Display
 except Exception:
@@ -37,6 +40,8 @@ from .settings import (
 
 
 SIGNUP_URL = "https://accounts.x.ai/sign-up?redirect=grok-com"
+SIGNIN_URL = "https://accounts.x.ai/sign-in?redirect=grok-com"
+GROK_URL = "https://grok.com/"
 DEFAULT_MIN_BROWSER_FREE_BYTES = 256 * 1024 * 1024
 DEFAULT_HEADLESS_WINDOW_SIZE = "1440,900"
 DEFAULT_WORKER_IDLE_TIMEOUT = 600.0
@@ -79,6 +84,26 @@ PROFILE_FAMILY_NAMES = (
     "Guo",
 )
 
+AUTH_COOKIE_PRIORITY = (
+    "sso",
+    "sso-rw",
+    "xai-sso",
+    "xai_session",
+    "session",
+    "session_token",
+    "access_token",
+    "auth_token",
+)
+AUTH_COOKIE_HINTS = ("sso", "token", "auth", "session", "jwt", "access")
+IGNORED_AUTH_COOKIE_NAMES = {
+    "__cf_bm",
+    "cf_clearance",
+    "_cfuvid",
+    "cf_chl_rc_i",
+    "cf_chl_rc_ni",
+    "cf_chl_rc_m",
+}
+
 browser = None
 page = None
 _virtual_display = None
@@ -101,7 +126,13 @@ def setup_run_logger(label: str | None = None) -> logging.Logger:
     logger_name = f"grok_maintainer.{label}" if label else "grok_maintainer"
     logger = logging.getLogger(logger_name)
     logger.setLevel(logging.INFO)
-    logger.handlers.clear()
+    logger.propagate = False
+    for handler in logger.handlers[:]:
+        logger.removeHandler(handler)
+        try:
+            handler.close()
+        except Exception:
+            pass
 
     prefix = f"[w{label.removeprefix('w')}] " if label and label.startswith("w") and label[1:].isdigit() else ""
     fmt = logging.Formatter(f"%(asctime)s | {prefix}%(message)s", datefmt="%Y-%m-%d %H:%M:%S")
@@ -277,7 +308,9 @@ def _ensure_virtual_display() -> None:
     global _virtual_display
     if _virtual_display is not None:
         return
-    if os.getenv("DISPLAY") or as_bool(os.getenv("MAINTAINER_HEADLESS"), default=False):
+    # 无 DISPLAY 且非 Windows → 自动视为 headless，无需虚拟显示器
+    _no_display = not os.environ.get("DISPLAY") and sys.platform != "win32"
+    if os.environ.get("DISPLAY") or as_bool(os.getenv("MAINTAINER_HEADLESS"), default=_no_display):
         return
     if not as_bool(os.getenv("MAINTAINER_USE_XVFB"), default=_running_in_container()):
         return
@@ -315,19 +348,8 @@ def _extra_chromium_args_from_env() -> list[str]:
 
 def _configure_browser_options() -> ChromiumOptions:
     opts = ChromiumOptions()
-    opts.auto_port()
-    opts.set_tmp_path(str(_resolve_browser_tmp_path()))
-    opts.set_timeouts(base=1)
-    opts.add_extension(str(extension_dir()))
-
-    browser_path = _discover_browser_path()
-    if browser_path:
-        opts.set_browser_path(browser_path)
-
-    user_data_dir = os.getenv("MAINTAINER_CHROME_USER_DATA_DIR", "").strip()
-    if user_data_dir:
-        opts.set_user_data_path(str(Path(user_data_dir).expanduser().resolve()))
-
+    # 默认使用固定端口而非 auto_port，解决 Snap Chromium 端口绑定问题
+    # 并行 worker 会通过 MAINTAINER_CHROME_DEBUG_PORT 环境变量覆盖此端口
     debug_port = os.getenv("MAINTAINER_CHROME_DEBUG_PORT", "").strip()
     if debug_port:
         try:
@@ -340,23 +362,44 @@ def _configure_browser_options() -> ChromiumOptions:
             raise RuntimeError(
                 f"MAINTAINER_CHROME_DEBUG_PORT 超出有效端口范围: {debug_port}"
             )
-        opts.set_local_port(port_int)
+    else:
+        port_int = 42222
+    opts.set_local_port(port_int)
+    opts.set_tmp_path(str(_resolve_browser_tmp_path()))
+    opts.set_timeouts(base=15)
+    # 不通过扩展加载 turnstilePatch（Snap Chromium 兼容性问题）
+    # 改为在页面加载时直接注入 script.js 内容
+    # opts.add_extension(str(extension_dir()))
+
+    browser_path = _discover_browser_path()
+    if browser_path:
+        opts.set_browser_path(browser_path)
+
+    user_data_dir = os.getenv("MAINTAINER_CHROME_USER_DATA_DIR", "").strip()
+    if user_data_dir:
+        opts.set_user_data_path(str(Path(user_data_dir).expanduser().resolve()))
+
+    proxy_url = os.getenv("MAINTAINER_PROXY", "").strip()
+    if proxy_url:
+        opts.set_argument(f"--proxy-server={proxy_url}")
 
     opts.set_argument("--no-first-run")
     opts.set_argument("--no-default-browser-check")
 
-    is_headless = as_bool(os.getenv("MAINTAINER_HEADLESS"), default=False)
+    # 无 DISPLAY 且非 Windows → 自动启用 headless，避免裸启动报错
+    _no_display = not os.environ.get("DISPLAY") and sys.platform != "win32"
+    is_headless = as_bool(os.getenv("MAINTAINER_HEADLESS"), default=_no_display)
     if is_headless:
         opts.headless(True)
         for arg in HEADLESS_STABILITY_ARGS:
             opts.set_argument(arg)
 
-    if as_bool(os.getenv("MAINTAINER_NO_SANDBOX"), default=_running_in_container()):
+    # Linux（非 Windows）默认开启 no-sandbox / disable-dev-shm
+    # Chrome 以 root 运行时必须 --no-sandbox，否则直接拒绝启动
+    _default_sandbox = sys.platform != "win32"
+    if as_bool(os.getenv("MAINTAINER_NO_SANDBOX"), default=_default_sandbox):
         opts.set_argument("--no-sandbox")
-    if as_bool(
-        os.getenv("MAINTAINER_DISABLE_DEV_SHM"),
-        default=_running_in_container(),
-    ):
+    if as_bool(os.getenv("MAINTAINER_DISABLE_DEV_SHM"), default=_default_sandbox):
         opts.set_argument("--disable-dev-shm-usage")
 
     window_size = os.getenv("MAINTAINER_WINDOW_SIZE", "").strip()
@@ -390,7 +433,16 @@ def start_browser():
     global browser, page
     _ensure_virtual_display()
     _ensure_browser_storage_ready(co.tmp_path or _resolve_browser_tmp_path())
-    browser = Chromium(co)
+    try:
+        browser = Chromium(co)
+    except BrowserConnectError:
+        raise RuntimeError(
+            "BrowserConnectError: 浏览器连接失败。请检查：\n"
+            "1. 设置 MAINTAINER_CHROME_USER_DATA_DIR 为一个不与其他 Chrome 冲突的路径\n"
+            "2. 无界面系统请设置 MAINTAINER_HEADLESS=true\n"
+            "3. Linux 系统请设置 MAINTAINER_NO_SANDBOX=true 和 MAINTAINER_DISABLE_DEV_SHM=true\n"
+            "4. 如需固定调试端口，设置 MAINTAINER_CHROME_DEBUG_PORT（如 9222）"
+        ) from None
     tabs = browser.get_tabs()
     page = tabs[-1] if tabs else browser.new_tab()
     return browser, page
@@ -444,9 +496,692 @@ def refresh_active_page():
     return page
 
 
+def _safe_page_url() -> str:
+    try:
+        refresh_active_page()
+        return str(getattr(page, "url", "") or "")
+    except Exception:
+        return ""
+
+
+def _cookie_attr(item: Any, name: str) -> str:
+    if isinstance(item, dict):
+        return str(item.get(name, "") or "").strip()
+    return str(getattr(item, name, "") or "").strip()
+
+
+def _collect_cookie_items() -> list[Any]:
+    """Read browser cookies through every DrissionPage surface we can use."""
+    items: list[Any] = []
+
+    try:
+        items.extend(page.cookies(all_domains=True, all_info=True) or [])
+    except Exception:
+        pass
+
+    for owner in (page, browser):
+        run_cdp = getattr(owner, "run_cdp", None)
+        if not callable(run_cdp):
+            continue
+        try:
+            payload = run_cdp("Network.getAllCookies")
+        except Exception:
+            continue
+        cookies = payload.get("cookies") if isinstance(payload, dict) else None
+        if isinstance(cookies, list):
+            items.extend(cookies)
+
+    return items
+
+
+def _extract_auth_token_from_cookie_items(items: list[Any]) -> tuple[str, str] | None:
+    candidates: list[tuple[str, str, str]] = []
+    seen_pairs: set[tuple[str, str]] = set()
+
+    for item in items:
+        name = _cookie_attr(item, "name")
+        value = _cookie_attr(item, "value")
+        domain = _cookie_attr(item, "domain") or _cookie_attr(item, "host_key")
+        if not name or not value:
+            continue
+        key = (name, value)
+        if key in seen_pairs:
+            continue
+        seen_pairs.add(key)
+        candidates.append((name, value, domain))
+
+    for expected in AUTH_COOKIE_PRIORITY:
+        for name, value, domain in candidates:
+            if name.lower() == expected and value:
+                label = f"{name}@{domain}" if domain else name
+                return value, label
+
+    for name, value, domain in candidates:
+        lower_name = name.lower()
+        if lower_name in IGNORED_AUTH_COOKIE_NAMES:
+            continue
+        if len(value) <= 20:
+            continue
+        if any(hint in lower_name for hint in AUTH_COOKIE_HINTS) or value.startswith("eyJ"):
+            label = f"{name}@{domain}" if domain else name
+            return value, label
+
+    return None
+
+
+def _extract_auth_token_from_storage_candidates(items: list[dict[str, Any]]) -> tuple[str, str] | None:
+    for item in items:
+        key = str(item.get("key", "") or "").strip()
+        value = str(item.get("value", "") or "").strip()
+        source = str(item.get("source", "") or "").strip()
+        lower_key = key.lower()
+        if len(value) <= 20 or "sso" not in lower_key:
+            continue
+        return value, f"{source}:{key}" if source else key
+    return None
+
+
+def _collect_web_storage_candidates() -> list[dict[str, Any]]:
+    try:
+        result = page.run_js(
+            r"""
+const hints = ['sso', 'token', 'auth', 'session', 'jwt', 'access'];
+const out = [];
+function scan(storage, source) {
+    if (!storage) {
+        return;
+    }
+    for (let i = 0; i < storage.length; i += 1) {
+        const key = String(storage.key(i) || '');
+        const value = String(storage.getItem(key) || '');
+        const haystack = `${key}\n${value}`.toLowerCase();
+        if (value.length > 20 && hints.some((hint) => haystack.includes(hint))) {
+            out.push({ source, key, value });
+        }
+    }
+}
+try { scan(window.localStorage, 'localStorage'); } catch (e) {}
+try { scan(window.sessionStorage, 'sessionStorage'); } catch (e) {}
+return out.slice(0, 20);
+            """
+        )
+    except Exception:
+        return []
+    return result if isinstance(result, list) else []
+
+
+def _maintainer_flaresolverr_url() -> str:
+    for key in (
+        "MAINTAINER_FLARESOLVERR_URL",
+        "GROK_PROXY_CLEARANCE_FLARESOLVERR_URL",
+        "FLARESOLVERR_URL",
+    ):
+        value = os.getenv(key, "").strip()
+        if value:
+            return value
+    return ""
+
+
+def _maintainer_flaresolverr_timeout() -> int:
+    raw = (
+        os.getenv("MAINTAINER_FLARESOLVERR_TIMEOUT_SEC", "").strip()
+        or os.getenv("GROK_PROXY_CLEARANCE_TIMEOUT_SEC", "").strip()
+        or os.getenv("CF_TIMEOUT", "").strip()
+        or "60"
+    )
+    try:
+        return max(5, int(raw))
+    except ValueError:
+        return 60
+
+
+def _cookie_param_from_flaresolverr(cookie: dict[str, Any]) -> dict[str, Any] | None:
+    name = str(cookie.get("name", "") or "").strip()
+    value = str(cookie.get("value", "") or "")
+    if not name or not value:
+        return None
+
+    param: dict[str, Any] = {
+        "name": name,
+        "value": value,
+        "path": str(cookie.get("path", "") or "/"),
+    }
+    domain = str(cookie.get("domain", "") or "").strip()
+    if domain:
+        param["domain"] = domain
+    if "secure" in cookie:
+        param["secure"] = bool(cookie.get("secure"))
+    if "httpOnly" in cookie:
+        param["httpOnly"] = bool(cookie.get("httpOnly"))
+    if cookie.get("sameSite") in {"Strict", "Lax", "None"}:
+        param["sameSite"] = cookie["sameSite"]
+
+    expires = cookie.get("expires", cookie.get("expiry"))
+    if expires:
+        try:
+            param["expires"] = float(expires)
+        except (TypeError, ValueError):
+            pass
+
+    return param
+
+
+def _inject_flaresolverr_solution(solution: dict[str, Any]) -> int:
+    cookies = solution.get("cookies")
+    if not isinstance(cookies, list):
+        return 0
+
+    cookie_params = [
+        param
+        for param in (_cookie_param_from_flaresolverr(cookie) for cookie in cookies)
+        if param
+    ]
+    if not cookie_params:
+        return 0
+
+    user_agent = str(solution.get("userAgent", "") or "").strip()
+    try:
+        page.run_cdp("Network.enable")
+    except Exception:
+        pass
+    if user_agent:
+        try:
+            page.run_cdp("Network.setUserAgentOverride", userAgent=user_agent)
+        except Exception:
+            pass
+
+    page.run_cdp("Network.setCookies", cookies=cookie_params)
+    return len(cookie_params)
+
+
+def _prewarm_cloudflare_clearance(target_url: str = SIGNUP_URL) -> bool:
+    fs_url = _maintainer_flaresolverr_url()
+    if not fs_url:
+        return False
+
+    timeout_sec = _maintainer_flaresolverr_timeout()
+    payload: dict[str, Any] = {
+        "cmd": "request.get",
+        "url": target_url,
+        "maxTimeout": timeout_sec * 1000,
+    }
+    fs_proxy = os.getenv("MAINTAINER_FLARESOLVERR_PROXY", "").strip()
+    if fs_proxy:
+        payload["proxy"] = {"url": fs_proxy}
+
+    request = urllib_request.Request(
+        f"{fs_url.rstrip('/')}/v1",
+        data=json.dumps(payload).encode("utf-8"),
+        method="POST",
+        headers={"Content-Type": "application/json"},
+    )
+
+    try:
+        with urllib_request.urlopen(request, timeout=timeout_sec + 30) as response:
+            result = json.loads(response.read().decode("utf-8", "replace"))
+    except HTTPError as exc:
+        body_text = exc.read().decode("utf-8", "replace")[:300]
+        if run_logger:
+            run_logger.warning(
+                "FlareSolverr 预热失败: status=%s body=%s",
+                exc.code,
+                body_text,
+            )
+        return False
+    except (URLError, TimeoutError, json.JSONDecodeError, OSError) as exc:
+        if run_logger:
+            run_logger.warning("FlareSolverr 预热失败: %s", exc)
+        return False
+
+    if result.get("status") != "ok":
+        if run_logger:
+            run_logger.warning(
+                "FlareSolverr 返回非 ok: status=%s message=%s",
+                result.get("status"),
+                result.get("message", ""),
+            )
+        return False
+
+    solution = result.get("solution")
+    if not isinstance(solution, dict):
+        return False
+
+    try:
+        injected = _inject_flaresolverr_solution(solution)
+    except Exception as exc:
+        if run_logger:
+            run_logger.warning("FlareSolverr cookies 注入失败: %s", exc)
+        return False
+
+    if injected:
+        print(f"[*] 已注入 FlareSolverr clearance cookies: {injected}")
+        if run_logger:
+            run_logger.info("已注入 FlareSolverr clearance cookies: %s", injected)
+        return True
+    return False
+
+
+def _click_cloudflare_challenge() -> str:
+    """Try a real mouse click on an interactive Cloudflare challenge."""
+    refresh_active_page()
+
+    try:
+        frames = page.get_frames() or []
+    except Exception:
+        frames = []
+
+    for frame in frames:
+        for locator in (
+            'css:input[type="checkbox"]',
+            "tag:input",
+            "tag:label",
+            "tag:button",
+        ):
+            try:
+                target = frame.ele(locator, timeout=0.2)
+            except Exception:
+                target = None
+            if not target:
+                continue
+            try:
+                page.actions.click(target)
+                return f"frame-element:{locator}"
+            except Exception:
+                try:
+                    target.click.left(by_js=False)
+                    return f"frame-element:{locator}"
+                except Exception:
+                    continue
+
+    try:
+        clicked = page.run_js(
+            r"""
+function normalize(value) {
+    return String(value || '')
+        .replace(/[\s\u200b-\u200d\ufeff]+/g, '')
+        .toLowerCase();
+}
+
+function collectElements(root) {
+    const out = [];
+    const seenRoots = new Set();
+
+    function walk(currentRoot) {
+        if (!currentRoot || seenRoots.has(currentRoot)) {
+            return;
+        }
+        seenRoots.add(currentRoot);
+
+        let nodes = [];
+        try {
+            nodes = Array.from(currentRoot.querySelectorAll('*'));
+        } catch (e) {
+            return;
+        }
+
+        for (const node of nodes) {
+            out.push(node);
+            if (node.shadowRoot) {
+                walk(node.shadowRoot);
+            }
+        }
+    }
+
+    walk(root);
+    return out;
+}
+
+function isVisible(node) {
+    if (!node) {
+        return false;
+    }
+    const style = window.getComputedStyle(node);
+    if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') {
+        return false;
+    }
+    const rect = node.getBoundingClientRect();
+    return rect.width > 0 && rect.height > 0;
+}
+
+function nodeText(node) {
+    const attrs = ['aria-label', 'title', 'data-testid', 'id', 'name'];
+    const parts = [node.innerText, node.textContent];
+    for (const attr of attrs) {
+        parts.push(node.getAttribute?.(attr));
+    }
+    return normalize(parts.filter(Boolean).join(' '));
+}
+
+function hasChallengeIntent(text) {
+    const terms = [
+        'verifyyouarehuman',
+        'verifyhuman',
+        'confirmyouarehuman',
+        'checkingifyouarehuman',
+        'iamhuman',
+        'notarobot',
+        'turnstile',
+        'captcha',
+        '验证您是真人',
+        '确认您是真人',
+        '真人验证',
+        '正在检查',
+        '人机验证',
+    ];
+    return terms.some((term) => text.includes(term));
+}
+
+const elements = collectElements(document);
+const target = elements.find((node) => {
+    if (!isVisible(node)) {
+        return false;
+    }
+    const tag = String(node.tagName || '').toLowerCase();
+    const role = String(node.getAttribute?.('role') || '').toLowerCase();
+    if (!['input', 'button', 'label', 'a', 'div', 'span'].includes(tag) && role !== 'button') {
+        return false;
+    }
+    if (node.disabled || node.getAttribute?.('aria-disabled') === 'true') {
+        return false;
+    }
+    const type = String(node.getAttribute?.('type') || '').toLowerCase();
+    return type === 'checkbox' || hasChallengeIntent(nodeText(node));
+}) || null;
+
+if (!target) {
+    return false;
+}
+
+target.scrollIntoView?.({ block: 'center', inline: 'center' });
+target.focus?.();
+const rect = target.getBoundingClientRect();
+const x = Math.max(1, Math.floor(rect.left + Math.min(rect.width / 2, 32)));
+const y = Math.max(1, Math.floor(rect.top + rect.height / 2));
+target.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, cancelable: true, view: window, clientX: x, clientY: y }));
+target.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, view: window, clientX: x, clientY: y }));
+target.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true, view: window, clientX: x, clientY: y }));
+target.click();
+return true;
+            """
+        )
+        if clicked:
+            return "dom-element"
+    except Exception:
+        pass
+
+    try:
+        iframes = page.eles("tag:iframe", timeout=0.2) or []
+    except Exception:
+        iframes = []
+
+    for iframe in iframes:
+        try:
+            src = str(iframe.attr("src") or "")
+            title = str(iframe.attr("title") or "")
+            name = str(iframe.attr("name") or "")
+            marker = f"{src}\n{title}\n{name}".lower()
+        except Exception:
+            marker = ""
+
+        is_cloudflare = any(
+            item in marker
+            for item in ("cloudflare", "turnstile", "challenge", "cf-chl", "captcha")
+        )
+        if not is_cloudflare and marker:
+            continue
+
+        try:
+            width, height = iframe.rect.size
+        except Exception:
+            width, height = 300, 80
+
+        click_x = max(8, min(36, int(width) - 4))
+        click_y = max(8, min(max(24, int(height) // 2), int(height) - 4))
+        try:
+            page.actions.move_to(
+                iframe,
+                offset_x=click_x,
+                offset_y=click_y,
+                duration=0.35,
+            ).click()
+            return "iframe-coordinate"
+        except Exception:
+            try:
+                page.actions.click(iframe)
+                return "iframe-center"
+            except Exception:
+                continue
+
+    return "not-found"
+
+
+def _click_post_signup_continue_button() -> bool:
+    try:
+        return bool(
+            page.run_js(
+                r"""
+function isVisible(node) {
+    if (!node) {
+        return false;
+    }
+    const style = window.getComputedStyle(node);
+    if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') {
+        return false;
+    }
+    const rect = node.getBoundingClientRect();
+    return rect.width > 0 && rect.height > 0;
+}
+
+const candidates = Array.from(document.querySelectorAll('button, a, [role="button"]')).filter((node) => {
+    return isVisible(node) && !node.disabled && node.getAttribute('aria-disabled') !== 'true';
+});
+const target = candidates.find((node) => {
+    const text = String(node.innerText || node.textContent || '').replace(/\s+/g, '').toLowerCase();
+    return text.includes('continuetogrok')
+        || text.includes('gotogrok')
+        || text.includes('startusinggrok')
+        || text.includes('continue')
+        || text.includes('getstarted')
+        || text.includes('accept')
+        || text.includes('agree')
+        || text.includes('继续')
+        || text.includes('进入grok')
+        || text.includes('开始使用')
+        || text.includes('接受')
+        || text.includes('同意');
+});
+if (!target) {
+    return false;
+}
+target.focus();
+target.click();
+return true;
+                """
+            )
+        )
+    except Exception:
+        return False
+
+
+def _fill_visible_input(selectors: str, value: str) -> str:
+    return str(
+        page.run_js(
+            r"""
+const selectors = arguments[0];
+const value = String(arguments[1] || '');
+
+function isVisible(node) {
+    if (!node) {
+        return false;
+    }
+    const style = window.getComputedStyle(node);
+    if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') {
+        return false;
+    }
+    const rect = node.getBoundingClientRect();
+    return rect.width > 0 && rect.height > 0;
+}
+
+function setNativeValue(input, nextValue) {
+    const nativeSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')?.set;
+    const tracker = input._valueTracker;
+    if (tracker) {
+        tracker.setValue('');
+    }
+    if (nativeSetter) {
+        nativeSetter.call(input, '');
+        nativeSetter.call(input, nextValue);
+    } else {
+        input.value = '';
+        input.value = nextValue;
+    }
+    input.dispatchEvent(new InputEvent('beforeinput', {
+        bubbles: true,
+        cancelable: true,
+        data: nextValue,
+        inputType: 'insertText',
+    }));
+    input.dispatchEvent(new InputEvent('input', {
+        bubbles: true,
+        cancelable: true,
+        data: nextValue,
+        inputType: 'insertText',
+    }));
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+}
+
+const input = Array.from(document.querySelectorAll(selectors)).find((node) => {
+    return isVisible(node) && !node.disabled && !node.readOnly;
+}) || null;
+if (!input) {
+    return 'not-ready';
+}
+input.focus();
+input.click();
+setNativeValue(input, value);
+input.blur();
+return String(input.value || '') === value ? 'filled' : 'mismatch';
+            """,
+            selectors,
+            value,
+        )
+    )
+
+
+def _click_auth_submit_button(kind: str) -> str:
+    return str(
+        page.run_js(
+            r"""
+const kind = String(arguments[0] || '').toLowerCase();
+
+function isVisible(node) {
+    if (!node) {
+        return false;
+    }
+    const style = window.getComputedStyle(node);
+    if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') {
+        return false;
+    }
+    const rect = node.getBoundingClientRect();
+    return rect.width > 0 && rect.height > 0;
+}
+
+const buttons = Array.from(document.querySelectorAll('button[type="submit"], button, a, [role="button"]')).filter((node) => {
+    return isVisible(node) && !node.disabled && node.getAttribute('aria-disabled') !== 'true';
+});
+const target = buttons.find((node) => {
+    const text = String(node.innerText || node.textContent || '').replace(/\s+/g, '').toLowerCase();
+    if (!text && node.tagName.toLowerCase() !== 'button') {
+        return false;
+    }
+    if (kind === 'email') {
+        return text.includes('continue')
+            || text.includes('next')
+            || text.includes('signin')
+            || text.includes('login')
+            || text.includes('email')
+            || text.includes('继续')
+            || text.includes('下一步')
+            || text.includes('登录')
+            || text.includes('邮箱');
+    }
+    return text.includes('signin')
+        || text.includes('login')
+        || text.includes('continue')
+        || text.includes('next')
+        || text.includes('登录')
+        || text.includes('继续')
+        || text.includes('下一步');
+});
+if (!target) {
+    return 'no-button';
+}
+target.focus();
+target.click();
+return 'clicked';
+            """,
+            kind,
+        )
+    )
+
+
+def sign_in_existing_account(email: str, password: str, timeout: int = 90) -> None:
+    print("[*] 未检测到注册后的 sso cookie，尝试使用刚注册的邮箱密码登录兜底。")
+    if run_logger:
+        run_logger.info("未检测到注册后的 sso cookie，开始登录兜底: email=%s", email)
+
+    refresh_active_page()
+    try:
+        page.get(SIGNIN_URL)
+    except Exception:
+        refresh_active_page()
+        page.get(SIGNIN_URL)
+
+    deadline = time.time() + timeout
+    email_done = False
+    password_done = False
+
+    while time.time() < deadline:
+        refresh_active_page()
+        _click_post_signup_continue_button()
+
+        if not email_done:
+            filled = _fill_visible_input(
+                'input[data-testid="email"], input[name="email"], input[type="email"], input[autocomplete="email"]',
+                email,
+            )
+            if filled == "filled":
+                clicked = _click_auth_submit_button("email")
+                if clicked == "clicked":
+                    email_done = True
+                    print(f"[*] 登录兜底已提交邮箱: {email}")
+                    time.sleep(1.5)
+                    continue
+
+        filled_password = _fill_visible_input(
+            'input[data-testid="password"], input[name="password"], input[type="password"], input[autocomplete="current-password"]',
+            password,
+        )
+        if filled_password == "filled":
+            clicked = _click_auth_submit_button("password")
+            if clicked == "clicked":
+                password_done = True
+                print("[*] 登录兜底已提交密码。")
+                time.sleep(3)
+                return
+
+        time.sleep(0.8)
+
+    state = "email_submitted" if email_done else "email_not_submitted"
+    if password_done:
+        state = "password_submitted"
+    raise RuntimeError(f"登录兜底未完成: {state}, url={_safe_page_url()}")
+
+
 def open_signup_page() -> None:
     global page
     refresh_active_page()
+    _prewarm_cloudflare_clearance(SIGNUP_URL)
     try:
         page.get(SIGNUP_URL)
     except Exception:
@@ -472,32 +1207,321 @@ return !!(givenInput && familyInput && passwordInput);
         return False
 
 
-def click_email_signup_button(timeout: int = 10) -> bool:
+def click_email_signup_button(timeout: int = 90) -> bool:
     deadline = time.time() + timeout
+    last_result: Any = None
+    last_cloudflare_click = 0.0
+    clearance_prewarmed = False
     while time.time() < deadline:
-        clicked = page.run_js(
-            r"""
-const candidates = Array.from(document.querySelectorAll('button, a, [role="button"]'));
-const target = candidates.find((node) => {
-    const text = (node.innerText || node.textContent || '').replace(/\s+/g, '');
-    return text.includes('使用邮箱注册');
-});
-
-if (!target) {
-    return false;
+        refresh_active_page()
+        try:
+            result = page.run_js(
+                r"""
+function normalize(value) {
+    return String(value || '')
+        .replace(/[\s\u200b-\u200d\ufeff]+/g, '')
+        .toLowerCase();
 }
 
-target.click();
-return true;
-            """
-        )
+function collectElements(root) {
+    const out = [];
+    const seenRoots = new Set();
 
-        if clicked:
+    function walk(currentRoot) {
+        if (!currentRoot || seenRoots.has(currentRoot)) {
+            return;
+        }
+        seenRoots.add(currentRoot);
+
+        let nodes = [];
+        try {
+            nodes = Array.from(currentRoot.querySelectorAll('*'));
+        } catch (e) {
+            return;
+        }
+
+        for (const node of nodes) {
+            out.push(node);
+            if (node.shadowRoot) {
+                walk(node.shadowRoot);
+            }
+        }
+    }
+
+    walk(root);
+    return out;
+}
+
+function isVisible(node) {
+    if (!node) {
+        return false;
+    }
+    const style = window.getComputedStyle(node);
+    if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') {
+        return false;
+    }
+    const rect = node.getBoundingClientRect();
+    return rect.width > 0 && rect.height > 0;
+}
+
+function isDisabled(node) {
+    return !!(
+        node.disabled
+        || node.getAttribute('aria-disabled') === 'true'
+        || node.getAttribute('disabled') !== null
+    );
+}
+
+function nodeText(node) {
+    const attrs = [
+        'aria-label',
+        'title',
+        'data-testid',
+        'data-test',
+        'id',
+        'name',
+        'href',
+    ];
+    const parts = [
+        node.innerText,
+        node.textContent,
+    ];
+    for (const attr of attrs) {
+        parts.push(node.getAttribute?.(attr));
+    }
+    try {
+        for (const img of Array.from(node.querySelectorAll('img[alt]'))) {
+            parts.push(img.getAttribute('alt'));
+        }
+    } catch (e) {}
+    return normalize(parts.filter(Boolean).join(' '));
+}
+
+function rawNodeText(node) {
+    const parts = [
+        node.innerText,
+        node.textContent,
+        node.getAttribute?.('aria-label'),
+        node.getAttribute?.('title'),
+        node.getAttribute?.('data-testid'),
+    ];
+    return String(parts.filter(Boolean).join(' ')).replace(/\s+/g, ' ').trim();
+}
+
+function hasEmailSignupIntent(text) {
+    const terms = [
+        '使用邮箱注册',
+        '使用电子邮件注册',
+        '用邮箱注册',
+        '通过邮箱注册',
+        '邮箱注册',
+        '电子邮件注册',
+        '使用邮箱继续',
+        '使用电子邮件继续',
+        '邮箱继续',
+        '电子邮件继续',
+        'signupwithemail',
+        'signupemail',
+        'emailsignup',
+        'registerwithemail',
+        'registeremail',
+        'emailregistration',
+        'continuewithemail',
+        'useemail',
+        'email',
+    ];
+    return terms.some((term) => text.includes(term));
+}
+
+function isClickable(node) {
+    if (!node || !node.tagName) {
+        return false;
+    }
+    const tag = node.tagName.toLowerCase();
+    const role = String(node.getAttribute('role') || '').toLowerCase();
+    const tabIndex = node.getAttribute('tabindex');
+    const style = window.getComputedStyle(node);
+    return tag === 'button'
+        || tag === 'a'
+        || tag === 'label'
+        || role === 'button'
+        || role === 'link'
+        || tabIndex !== null
+        || typeof node.onclick === 'function'
+        || style.cursor === 'pointer';
+}
+
+function clickableTarget(node) {
+    if (!node) {
+        return null;
+    }
+    if (isClickable(node)) {
+        return node;
+    }
+    try {
+        return node.closest('button, a, label, [role="button"], [role="link"], [tabindex]');
+    } catch (e) {
+        return null;
+    }
+}
+
+const elements = collectElements(document);
+const emailInput = elements.find((node) => {
+    return node.matches?.('input[data-testid="email"], input[name="email"], input[type="email"], input[autocomplete="email"]')
+        && isVisible(node)
+        && !isDisabled(node)
+        && !node.readOnly;
+});
+if (emailInput) {
+    return { status: 'email-form-ready' };
+}
+
+const pageTitle = String(document.title || '');
+const pageText = String(document.body?.innerText || '');
+const frameHints = Array.from(document.querySelectorAll('iframe')).map((node) => {
+    return [
+        node.getAttribute('src') || '',
+        node.getAttribute('title') || '',
+        node.getAttribute('name') || '',
+    ].join(' ');
+});
+const hasCloudflareFrame = frameHints.some((value) => {
+    return /cloudflare|turnstile|challenge|cf-chl|captcha/i.test(value);
+});
+const combinedText = `${pageTitle}\n${pageText}`;
+const cloudflareHardBlocked = /Attention Required/i.test(pageTitle)
+    || /Sorry,\s*you have been blocked/i.test(pageText)
+    || /You are unable to access\s+x\.ai/i.test(pageText);
+const cloudflareChallenge = hasCloudflareFrame
+    || /Just a moment|Checking if|Verify you are human|checking.*secure|cf-challenge|cf-browser|turnstile|captcha|正在检查|验证您是真人|确认您是真人|人机验证/i.test(combinedText);
+if (cloudflareHardBlocked || cloudflareChallenge) {
+    return {
+        status: cloudflareHardBlocked && !cloudflareChallenge ? 'cloudflare-hard-blocked' : 'cloudflare-challenge',
+        url: String(window.location.href || ''),
+        readyState: String(document.readyState || ''),
+        title: pageTitle,
+        text: pageText.slice(0, 500),
+        frames: frameHints.slice(0, 10),
+    };
+}
+
+const clickable = elements.filter((node) => isVisible(node) && !isDisabled(node) && isClickable(node));
+let target = clickable.find((node) => hasEmailSignupIntent(nodeText(node))) || null;
+if (!target) {
+    const intentNode = elements.find((node) => isVisible(node) && hasEmailSignupIntent(nodeText(node))) || null;
+    target = clickableTarget(intentNode);
+}
+
+if (!target || !isVisible(target) || isDisabled(target)) {
+    const candidates = clickable
+        .map(rawNodeText)
+        .filter(Boolean)
+        .slice(0, 20);
+    return {
+        status: 'not-found',
+        url: String(window.location.href || ''),
+        readyState: String(document.readyState || ''),
+        candidates,
+    };
+}
+
+target.scrollIntoView?.({ block: 'center', inline: 'center' });
+target.focus?.();
+target.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, view: window }));
+target.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true, view: window }));
+target.click();
+return { status: 'clicked', text: rawNodeText(target).slice(0, 120) };
+                """
+            )
+        except PageDisconnectedError:
+            refresh_active_page()
+            time.sleep(0.5)
+            continue
+        except Exception as exc:
+            last_result = f"js-error: {exc}"
+            time.sleep(0.5)
+            continue
+
+        last_result = result
+        if result is True:
             return True
+        if isinstance(result, dict) and result.get("status") in {
+            "clicked",
+            "email-form-ready",
+        }:
+            return True
+
+        if isinstance(result, dict) and result.get("status") in {
+            "cloudflare-blocked",
+            "cloudflare-hard-blocked",
+            "cloudflare-challenge",
+        }:
+            if not clearance_prewarmed and _prewarm_cloudflare_clearance(SIGNUP_URL):
+                clearance_prewarmed = True
+                try:
+                    page.get(SIGNUP_URL)
+                except Exception:
+                    pass
+                time.sleep(2)
+                continue
+            clearance_prewarmed = True
+
+            now = time.monotonic()
+            if now - last_cloudflare_click >= 2.0:
+                last_cloudflare_click = now
+                click_result = _click_cloudflare_challenge()
+                result["click_result"] = click_result
+                last_result = result
+                if click_result != "not-found":
+                    print(f"[*] 已尝试点击 Cloudflare 检测: {click_result}")
+                    time.sleep(3)
+                    continue
 
         time.sleep(0.5)
 
-    raise RuntimeError('未找到“使用邮箱注册”按钮')
+    detail = ""
+    if isinstance(last_result, dict):
+        url = str(last_result.get("url", "") or "").strip()
+        ready_state = str(last_result.get("readyState", "") or "").strip()
+        candidates = last_result.get("candidates")
+        parts = []
+        if url:
+            parts.append(f"url={url}")
+        if ready_state:
+            parts.append(f"readyState={ready_state}")
+        if isinstance(candidates, list) and candidates:
+            rendered = " | ".join(str(item)[:80] for item in candidates[:8])
+            parts.append(f"候选按钮={rendered}")
+        if parts:
+            detail = "；" + "；".join(parts)
+        if last_result.get("status") == "cloudflare-blocked":
+            title = str(last_result.get("title", "") or "").strip()
+            if title:
+                detail = f"{detail}；title={title}"
+            click_result = str(last_result.get("click_result", "") or "").strip()
+            if click_result:
+                detail = f"{detail}；click={click_result}"
+            raise RuntimeError(f"x.ai 注册页被 Cloudflare 硬拦截，无法进入邮箱注册表单{detail}")
+        if last_result.get("status") == "cloudflare-hard-blocked":
+            title = str(last_result.get("title", "") or "").strip()
+            if title:
+                detail = f"{detail}；title={title}"
+            click_result = str(last_result.get("click_result", "") or "").strip()
+            if click_result:
+                detail = f"{detail}；click={click_result}"
+            raise RuntimeError(f"x.ai 注册页被 Cloudflare 硬拦截，无法进入邮箱注册表单{detail}")
+        if last_result.get("status") == "cloudflare-challenge":
+            title = str(last_result.get("title", "") or "").strip()
+            if title:
+                detail = f"{detail}；title={title}"
+            click_result = str(last_result.get("click_result", "") or "").strip()
+            if click_result:
+                detail = f"{detail}；click={click_result}"
+            raise RuntimeError(f"Cloudflare 检测未通过，无法进入邮箱注册表单{detail}")
+    elif last_result:
+        detail = f"；last={last_result}"
+
+    raise RuntimeError(f'未找到“使用邮箱注册”按钮或邮箱输入框{detail}')
 
 
 def fill_email_and_submit(timeout: int = 15) -> tuple[str, str]:
@@ -603,8 +1627,12 @@ const buttons = Array.from(document.querySelectorAll('button[type="submit"], but
     return isVisible(node) && !node.disabled && node.getAttribute('aria-disabled') !== 'true';
 });
 const submitButton = buttons.find((node) => {
-    const text = (node.innerText || node.textContent || '').replace(/\s+/g, '');
-    return text === '注册' || text.includes('注册');
+    const text = String(node.innerText || node.textContent || '').replace(/\s+/g, '').toLowerCase();
+    return text === '注册'
+        || text.includes('注册')
+        || text.includes('signup')
+        || text.includes('continue')
+        || text.includes('createaccount');
 });
 
 if (!submitButton || submitButton.disabled) {
@@ -816,8 +1844,15 @@ const buttons = Array.from(document.querySelectorAll('button[type="submit"], but
     return isVisible(node) && !node.disabled && node.getAttribute('aria-disabled') !== 'true';
 });
 const confirmButton = buttons.find((node) => {
-    const text = (node.innerText || node.textContent || '').replace(/\s+/g, '');
-    return text === '确认邮箱' || text.includes('确认邮箱') || text === '继续' || text.includes('继续') || text === '下一步' || text.includes('下一步');
+    const text = String(node.innerText || node.textContent || '').replace(/\s+/g, '').toLowerCase();
+    return text === '确认邮箱'
+        || text.includes('确认邮箱')
+        || text === '继续'
+        || text.includes('继续')
+        || text === '下一步'
+        || text.includes('下一步')
+        || text === 'confirmemail'
+        || text.includes('confirmemail');
 });
 
 if (!confirmButton) {
@@ -1128,7 +2163,13 @@ return String(challengeInput.value || '').trim() === String(token || '').trim();
         time.sleep(1.2)
 
         try:
-            submit_button = page.ele("tag:button@@text()=完成注册")
+            submit_button = (
+                page.ele("tag:button@@text()=完成注册")
+                or page.ele("tag:button@@text()=Create account")
+                or page.ele("tag:button@@text()=Create Account")
+                or page.ele("tag:button@@text()=Sign up")
+                or page.ele("tag:button@@text()=Register")
+            )
         except Exception:
             submit_button = None
 
@@ -1141,11 +2182,18 @@ if (challengeInput && !String(challengeInput.value || '').trim()) {
 }
 const buttons = Array.from(document.querySelectorAll('button[type="submit"], button'));
 const submitButton = buttons.find((node) => {
-    const text = (node.innerText || node.textContent || '').replace(/\s+/g, '');
-    return text === '完成注册' || text.includes('完成注册');
+    const text = String(node.innerText || node.textContent || '').replace(/\s+/g, '').toLowerCase();
+    return text === '完成注册' || text.includes('完成注册')
+        || text === 'createaccount' || text.includes('createaccount')
+        || text === 'signup' || text.includes('signup')
+        || text === 'register' || text.includes('register')
+        || text === 'continue' || text.includes('continue')
+        || text.includes('注册') || (node.type === 'submit' && buttons.length === 1);
 });
 if (!submitButton || submitButton.disabled || submitButton.getAttribute('aria-disabled') === 'true') {
-    return false;
+    // Debug: log all available button texts
+    const debugTexts = buttons.map(b => (b.innerText||b.textContent||'').trim()).filter(t=>t).join(' | ');
+    return 'NO_BUTTON: ' + debugTexts.slice(0, 200);
 }
 submitButton.focus();
 submitButton.click();
@@ -1159,19 +2207,21 @@ const challengeInput = document.querySelector('input[name="cf-turnstile-response
 return challengeInput ? String(challengeInput.value || '').trim() : 'not-found';
                 """
             )
-            if challenge_value not in ("not-found", ""):
+            if challenge_value != "":
                 submit_button.click()
                 clicked = True
             else:
                 clicked = False
 
-        if clicked:
+        if clicked is True:
             print(f"[*] 已填写注册资料并点击完成注册: {given_name} {family_name}")
             return {
                 "given_name": given_name,
                 "family_name": family_name,
                 "password": password,
             }
+        if isinstance(clicked, str) and clicked.startswith("NO_BUTTON:"):
+            print(f"[Debug] 最终注册页未找到可点击提交按钮: {clicked}")
 
         time.sleep(0.5)
 
@@ -1243,9 +2293,12 @@ return matches.slice(0, 30);
     raise RuntimeError("登录后未提取到可见数字文本")
 
 
-def wait_for_sso_cookie(timeout: int = 120) -> str:
+def wait_for_sso_cookie(timeout: int = 120, *, trigger_grok_redirect: bool = True) -> str:
     deadline = time.time() + timeout
     last_seen_names = set()
+    started_at = time.monotonic()
+    last_continue_click = 0.0
+    grok_redirected = False
 
     while time.time() < deadline:
         try:
@@ -1254,21 +2307,41 @@ def wait_for_sso_cookie(timeout: int = 120) -> str:
                 time.sleep(1)
                 continue
 
-            cookies = page.cookies(all_domains=True, all_info=True) or []
+            cookies = _collect_cookie_items()
             for item in cookies:
-                if isinstance(item, dict):
-                    name = str(item.get("name", "")).strip()
-                    value = str(item.get("value", "")).strip()
-                else:
-                    name = str(getattr(item, "name", "")).strip()
-                    value = str(getattr(item, "value", "")).strip()
-
+                name = _cookie_attr(item, "name")
                 if name:
                     last_seen_names.add(name)
 
-                if name == "sso" and value:
+            found = _extract_auth_token_from_cookie_items(cookies)
+            if found:
+                value, label = found
+                if label.split("@", 1)[0] == "sso":
                     print("[*] 注册完成后已获取到 sso cookie。")
-                    return value
+                else:
+                    print(f"[*] 注册完成后获取到潜在认证 cookie: {label}")
+                return value
+
+            storage_found = _extract_auth_token_from_storage_candidates(
+                _collect_web_storage_candidates()
+            )
+            if storage_found:
+                value, label = storage_found
+                print(f"[*] 注册完成后从 Web Storage 获取到潜在 sso token: {label}")
+                return value
+
+            now = time.monotonic()
+            if now - last_continue_click >= 2.0:
+                if _click_post_signup_continue_button():
+                    print("[*] 已点击注册后继续/进入按钮，等待 sso cookie。")
+                last_continue_click = now
+
+            if trigger_grok_redirect and not grok_redirected and now - started_at >= 25:
+                current_url = _safe_page_url()
+                if "grok.com" not in current_url:
+                    print("[*] 注册后仍未出现 sso cookie，跳转 grok.com 触发登录态写入。")
+                    page.get(GROK_URL)
+                    grok_redirected = True
 
         except PageDisconnectedError:
             refresh_active_page()
@@ -1485,7 +2558,25 @@ def run_single_registration(output_path: Path, extract_numbers: bool = False) ->
     email, dev_token = fill_email_and_submit()
     fill_code_and_submit(email, dev_token)
     profile = fill_profile_and_submit()
-    sso_value = wait_for_sso_cookie()
+
+    try:
+        sso_value = wait_for_sso_cookie(timeout=90)
+    except RuntimeError as first_error:
+        if run_logger:
+            run_logger.warning(
+                "注册提交后未采集到 sso，尝试登录兜底: email=%s error=%s",
+                email,
+                first_error,
+            )
+        try:
+            sign_in_existing_account(email, profile["password"])
+            sso_value = wait_for_sso_cookie(timeout=90, trigger_grok_redirect=True)
+        except Exception as fallback_error:
+            raise RuntimeError(
+                "注册已提交但未采集到 sso token；"
+                f"注册后采集失败: {first_error}; 登录兜底失败: {fallback_error}"
+            ) from fallback_error
+
     append_sso_to_txt(sso_value, output_path)
 
     if extract_numbers:
@@ -1612,6 +2703,7 @@ def run_batch(
     run_logger.info("输出文件: %s", output_path)
 
     collected_sso: list[str] = []
+    failed_rounds: list[str] = []
     current_round = 0
     _emit("started", {"count": count})
 
@@ -1671,6 +2763,14 @@ def run_batch(
                 break
             except Exception as error:
                 print(f"[Error] 第 {current_round} 轮失败: {error}")
+                failed_rounds.append(f"round#{current_round}: {type(error).__name__}: {error}")
+                if run_logger:
+                    run_logger.warning(
+                        "第 %s 轮失败: %s: %s",
+                        current_round,
+                        type(error).__name__,
+                        error,
+                    )
                 _emit(
                     "round_failed",
                     {
@@ -1694,7 +2794,14 @@ def run_batch(
             push_sso_to_api(collected_sso)
 
         stop_browser()
-        _emit("finished", {"token_count": len(collected_sso)})
+        _emit(
+            "finished",
+            {
+                "token_count": len(collected_sso),
+                "failed_rounds": len(failed_rounds),
+                "last_error": failed_rounds[-1] if failed_rounds else "",
+            },
+        )
 
     return collected_sso
 
@@ -1888,6 +2995,12 @@ def run_batch_parallel(
             stop_check = lambda: stop_event.is_set()  # noqa: E731
         if spawned_workers_callback is not None:
             spawned_workers_callback(1)
+
+        def _forward_progress(event: str, payload: dict[str, Any]) -> None:
+            if progress_callback is None:
+                return
+            progress_callback(0, event, payload)
+
         return run_batch(
             config_path=config_path,
             count=count,
@@ -1895,6 +3008,7 @@ def run_batch_parallel(
             extract_numbers=extract_numbers,
             pause_check=pause_check,
             stop_check=stop_check,
+            progress_callback=_forward_progress if progress_callback is not None else None,
         )
 
     if pause_event is None or stop_event is None:

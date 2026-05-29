@@ -92,7 +92,11 @@
       "errorText": "No se pudo completar la conexión. Compruebe el acceso al micrófono e inténtelo de nuevo.",
       "endedText": "La sesión de voz ha finalizado. Puede iniciar otra en cualquier momento.",
       "livekitLoadFailed": "No se pudo cargar el SDK de LiveKit",
-      "invalidToken": "Respuesta de token de voz no válida"
+      "invalidToken": "Respuesta de token de voz no válida",
+      "microphoneUnsupported": "Este navegador o página sin HTTPS no puede abrir el micrófono. Use HTTPS o localhost.",
+      "microphoneRequired": "Permita el acceso al micrófono del navegador antes de conectar la voz.",
+      "microphoneUnavailable": "No se pudo abrir el micrófono. Compruebe el permiso del navegador o si otra aplicación lo está usando.",
+      "webrtcConnectionFailed": "LiveKit devolvió un token de voz, pero el navegador no pudo establecer una conexión WebRTC. Una respuesta OK de livekit.grok.com solo confirma acceso HTTPS; también debe permitirse wss://livekit.grok.com/rtc y el tráfico WebRTC ICE/TURN."
     },
     "masonry": {
       "pageTitle": "grokManager - Masonry",
@@ -121,6 +125,8 @@
       "errors": {
         "enterPrompt": "Introduzca un prompt",
         "requestFailed": "La solicitud falló",
+        "imagePoolUnavailable": "La generación de imágenes Masonry requiere cuentas Super o Heavy. Importe primero cuentas Super/Heavy.",
+        "imageRateLimited": "Las cuentas de imagen Super/Heavy disponibles tienen límite de frecuencia. Espere el restablecimiento de cuota o importe más cuentas Super/Heavy.",
         "initFailed": "La inicialización de la página Masonry falló"
       }
     }

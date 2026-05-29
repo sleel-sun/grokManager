@@ -22,8 +22,8 @@ class LinuxMaintainerDeployTests(unittest.TestCase):
 
         self.assertIn("  maintainer:", compose)
         self.assertIn("/app/scripts/run_maintainer.sh", compose)
-        self.assertIn("MAINTAINER_HEADLESS: ${MAINTAINER_HEADLESS:-false}", compose)
-        self.assertIn("MAINTAINER_USE_XVFB: ${MAINTAINER_USE_XVFB:-true}", compose)
+        self.assertIn("- MAINTAINER_HEADLESS=${MAINTAINER_HEADLESS:-false}", compose)
+        self.assertIn("- MAINTAINER_USE_XVFB=${MAINTAINER_USE_XVFB:-true}", compose)
         self.assertIn("http://grokmanager:8000/admin/api/tokens/add", compose)
 
     def test_docker_image_installs_browser_and_maintainer_extra(self) -> None:
