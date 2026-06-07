@@ -218,6 +218,15 @@ async def _probe_image_model(
                             message="image probe succeeded",
                             status_code=200,
                         )
+            extract_images = getattr(adapter, "extract_generated_images_from_text", None)
+            if callable(extract_images):
+                extract_images("".join(adapter.text_buf))
+            if adapter.image_urls:
+                return ProbeOutcome(
+                    status="supported",
+                    message="image probe succeeded",
+                    status_code=200,
+                )
             return ProbeOutcome(
                 status="upstream_error",
                 message="Image probe returned no image.",

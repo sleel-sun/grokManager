@@ -403,6 +403,34 @@ def _validate_image_edit_n(n: int, *, param: str) -> None:
         raise ValidationError("n must be between 1 and 2 for image edit", param=param)
 
 
+def _content_text(content: object) -> str:
+    if isinstance(content, str):
+        return content.strip()
+    if not isinstance(content, list):
+        return ""
+
+    parts: list[str] = []
+    for block in content:
+        if not isinstance(block, dict):
+            continue
+        if block.get("type") not in {"text", "input_text"}:
+            continue
+        text = block.get("text")
+        if isinstance(text, str) and text.strip():
+            parts.append(text.strip())
+    return "\n".join(parts).strip()
+
+
+def _last_user_text_prompt(messages: list) -> str:
+    for msg in reversed(messages):
+        if getattr(msg, "role", None) != "user":
+            continue
+        prompt = _content_text(getattr(msg, "content", None))
+        if prompt:
+            return prompt
+    return ""
+
+
 def _coalesce_uploads(*groups: list[UploadFile] | None) -> list[UploadFile]:
     uploads: list[UploadFile] = []
     for group in groups:
@@ -477,20 +505,15 @@ async def chat_completions_endpoint(req: ChatCompletionRequest):
             fmt = cfg.response_format or "url"
             n = cfg.n or 1
             _validate_image_n(req.model, n, param="image_config.n")
-            # Extract prompt from last user message.
-            prompt = next(
-                (
-                    m.content
-                    for m in reversed(req.messages)
-                    if m.role == "user"
-                    and isinstance(m.content, str)
-                    and m.content.strip()
-                ),
-                "",
-            )
+            prompt = _last_user_text_prompt(req.messages)
+            if not prompt:
+                raise ValidationError(
+                    "Image generation requires a non-empty text prompt",
+                    param="messages",
+                )
             result = await img_gen(
                 model=req.model,
-                prompt=prompt or "",
+                prompt=prompt,
                 n=n,
                 size=size,
                 response_format=fmt,

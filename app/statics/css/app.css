@@ -741,6 +741,14 @@ button{cursor:pointer}
 }
 .webui-masonry-head{display:flex;align-items:flex-start;justify-content:flex-start;gap:12px}
 .webui-masonry-title{font-size:30px;line-height:1;font-weight:700;letter-spacing:-.05em;color:#191713}
+.webui-masonry-status{
+  min-height:24px;margin-top:2px;padding:4px 10px;border-radius:999px;display:inline-flex;align-items:center;
+  background:#f1eee7;color:#625c52;font-size:11px;font-weight:700;letter-spacing:-.01em
+}
+.webui-masonry-status:empty{display:none}
+.webui-masonry-status[data-state="running"],.webui-masonry-status[data-state="connecting"]{background:#efe9de;color:#6a6257}
+.webui-masonry-status[data-state="completed"]{background:#e4efe7;color:#355847}
+.webui-masonry-status[data-state="failed"]{background:#f1dfd9;color:#914738}
 .webui-masonry-feed{min-height:0;overflow:auto;padding-right:4px;display:grid;align-content:start;gap:24px}
 .webui-masonry-empty{
   min-height:calc(100vh - 300px);display:grid;place-items:center;padding:28px 12px;color:#6f6a62
@@ -805,6 +813,7 @@ button{cursor:pointer}
 }
 .webui-masonry-tile.is-ready .webui-masonry-tile-body{min-height:0;background:transparent}
 .webui-masonry-tile.is-filtered .webui-masonry-tile-body{background:#ede8df}
+.webui-masonry-tile.is-error .webui-masonry-tile-body{background:#f1dfd9}
 .webui-masonry-tile-link{display:block}
 .webui-masonry-tile img{display:block;width:100%;height:auto;aspect-ratio:var(--tile-aspect, auto);object-fit:cover}
 .webui-masonry-tile-badge{
@@ -813,8 +822,9 @@ button{cursor:pointer}
 }
 .webui-masonry-tile-label{
   display:inline-flex;align-items:center;justify-content:center;
-  color:#6b6459;font-size:12px;font-weight:600
+  color:#6b6459;font-size:12px;font-weight:600;text-align:center;line-height:1.45;padding:12px;word-break:break-word
 }
+.webui-masonry-tile.is-error .webui-masonry-tile-label{color:#914738}
 .webui-masonry-tile-progress{
   width:min(72%,124px);display:grid;gap:7px;padding:0;border-radius:0;
   background:transparent;backdrop-filter:none

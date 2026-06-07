@@ -4,7 +4,7 @@ import unittest
 from unittest.mock import AsyncMock, patch
 
 from app.control.account.enums import FeedbackKind
-from app.platform.errors import UpstreamError
+from app.platform.errors import UpstreamError, ValidationError
 from app.products.openai.images import _prepare_edit_reference, _prepare_edit_references
 
 
@@ -161,9 +161,15 @@ class ImageGenerationOutputTests(unittest.TestCase):
             saved_ids.append(file_id)
             return file_id
 
+        async def fake_to_thread(func, *args, **kwargs):
+            return func(*args, **kwargs)
+
         with patch("app.products.openai.images.get_config", return_value=cfg), patch(
             "app.products.openai.images._download_image_bytes",
             new=AsyncMock(return_value=(b"image-bytes", "image/jpeg")),
+        ), patch(
+            "app.products.openai.images.asyncio.to_thread",
+            side_effect=fake_to_thread,
         ), patch("app.products.openai.images._save_image", side_effect=fake_save):
             output = asyncio.run(
                 images._resolve_image_output(
@@ -265,6 +271,61 @@ class ImageGenerationRetryTests(unittest.TestCase):
         self.assertEqual(directory.released, ["bad-token", "good-token"])
         self.assertEqual(directory.feedback_calls[0][1], FeedbackKind.RATE_LIMITED)
         self.assertEqual(directory.feedback_calls[1][1], FeedbackKind.SUCCESS)
+
+    def test_lite_generation_uses_adapter_collected_image_urls(self) -> None:
+        from app.dataplane import account as account_module
+        from app.control.model.registry import get as get_model
+        from app.products.openai import images
+
+        directory = _FakeImageDirectory()
+        spec = get_model("grok-imagine-image-lite")
+        self.assertIsNotNone(spec)
+        collected_url = "https://imgen.x.ai/generated/image-content?token=abc"
+
+        async def fake_stream_lite(*_args, **_kwargs):
+            yield 'data: {"ok":true}'
+            yield "data: [DONE]"
+
+        class FakeStreamAdapter:
+            def __init__(self) -> None:
+                self.text_buf = []
+                self.image_urls = []
+
+            def feed(self, _data: str):
+                self.text_buf.append(f"Here is the image: ![image]({collected_url})")
+                self.image_urls.append((collected_url, "ig_123"))
+                return []
+
+            def extract_generated_images_from_text(self, text: str) -> str:
+                return text
+
+        async def fake_resolve(**kwargs):
+            self.assertEqual(kwargs["url"], collected_url)
+            return images._ImageOutput(collected_url, f"![image]({collected_url})")
+
+        async def run():
+            with (
+                patch.object(account_module, "_directory", directory),
+                patch.object(images, "selection_max_retries", return_value=0),
+                patch.object(images, "get_config", return_value=_FakeConfig({"retry.on_codes": ""})),
+                patch.object(images, "_stream_lite_generate", side_effect=fake_stream_lite),
+                patch.object(images, "StreamAdapter", FakeStreamAdapter),
+                patch.object(images, "_resolve_image_output", new=AsyncMock(side_effect=fake_resolve)),
+                patch.object(images, "_quota_sync", new=AsyncMock(return_value=None)),
+                patch.object(images, "_image_fail_sync", new=AsyncMock(return_value=None)),
+            ):
+                return await images._run_lite_request(
+                    spec=spec,
+                    prompt="draw a cat",
+                    timeout_s=1,
+                    response_format="url",
+                )
+
+        output = asyncio.run(run())
+
+        self.assertEqual(output.api_value, collected_url)
+        self.assertEqual(directory.released, ["bad-token"])
+        self.assertEqual(directory.feedback_calls[0][1], FeedbackKind.SUCCESS)
 
     def test_ws_generation_retries_next_account_after_rate_limit_event(self) -> None:
         from app.dataplane import account as account_module
@@ -390,6 +451,101 @@ class ImageGenerationRetryTests(unittest.TestCase):
         fail_sync.assert_called_once()
         self.assertEqual(fail_sync.call_args.args[2].status, 502)
 
+    def test_ws_generation_empty_final_result_is_not_success(self) -> None:
+        from app.dataplane import account as account_module
+        from app.control.model.registry import get as get_model
+        from app.products.openai import images
+
+        directory = _FakeImageDirectory()
+        spec = get_model("grok-imagine-image")
+        self.assertIsNotNone(spec)
+        cfg = _FakeConfig(
+            {
+                "features.enable_nsfw": True,
+                "features.image_format": "grok_url",
+                "image.max_retries": 0,
+                "image.account_retry_min_retries": 0,
+                "retry.on_codes": "",
+            }
+        )
+
+        async def fake_stream_images(*_args, **_kwargs):
+            if False:
+                yield {}
+
+        fail_sync = AsyncMock(return_value=None)
+
+        async def run():
+            with (
+                patch.object(account_module, "_directory", directory),
+                patch.object(images, "get_config", return_value=cfg),
+                patch.object(images, "resolve_model", return_value=spec),
+                patch.object(images, "stream_images", side_effect=fake_stream_images),
+                patch.object(images, "_quota_sync", new=AsyncMock(return_value=None)),
+                patch.object(images, "_image_fail_sync", new=fail_sync),
+            ):
+                return await images.generate(
+                    model="grok-imagine-image",
+                    prompt="draw a cat",
+                    n=1,
+                    stream=False,
+                )
+
+        with self.assertRaises(UpstreamError) as ctx:
+            asyncio.run(run())
+
+        self.assertEqual(ctx.exception.message, "Image generation returned no images")
+        self.assertEqual(directory.feedback_calls[0][1], FeedbackKind.SERVER_ERROR)
+        fail_sync.assert_called_once()
+
+    def test_ws_stream_empty_final_result_emits_sse_error(self) -> None:
+        from app.dataplane import account as account_module
+        from app.control.model.registry import get as get_model
+        from app.products.openai import images
+        from app.products.openai.router import _safe_sse
+
+        directory = _FakeImageDirectory()
+        spec = get_model("grok-imagine-image")
+        self.assertIsNotNone(spec)
+        cfg = _FakeConfig(
+            {
+                "features.enable_nsfw": True,
+                "features.image_format": "grok_url",
+                "image.max_retries": 0,
+                "image.account_retry_min_retries": 0,
+                "retry.on_codes": "",
+            }
+        )
+
+        async def fake_stream_images(*_args, **_kwargs):
+            if False:
+                yield {}
+
+        async def run():
+            with (
+                patch.object(account_module, "_directory", directory),
+                patch.object(images, "get_config", return_value=cfg),
+                patch.object(images, "resolve_model", return_value=spec),
+                patch.object(images, "stream_images", side_effect=fake_stream_images),
+                patch.object(images, "_quota_sync", new=AsyncMock(return_value=None)),
+                patch.object(images, "_image_fail_sync", new=AsyncMock(return_value=None)),
+            ):
+                stream = await images.generate(
+                    model="grok-imagine-image",
+                    prompt="draw a cat",
+                    n=1,
+                    stream=True,
+                    chat_format=True,
+                )
+                return [chunk async for chunk in _safe_sse(stream)]
+
+        chunks = asyncio.run(run())
+
+        self.assertTrue(chunks[0].startswith("event: error\n"))
+        self.assertIn("Image generation returned no images", chunks[0])
+        self.assertEqual(chunks[-1], "data: [DONE]\n\n")
+        self.assertEqual(directory.feedback_calls[0][1], FeedbackKind.SERVER_ERROR)
+
     def test_image_failure_sync_does_not_refresh_chat_quotas(self) -> None:
         from app.products.openai import images
 
@@ -510,6 +666,47 @@ class ImageGenerationRetryTests(unittest.TestCase):
         self.assertEqual(directory.feedback_calls[1][1], FeedbackKind.SUCCESS)
         fail_sync.assert_called_once()
         self.assertEqual(fail_sync.call_args.args[0], "bad-token")
+
+
+class ImageChatPromptExtractionTests(unittest.TestCase):
+    def test_extracts_prompt_from_openai_text_content_blocks(self) -> None:
+        from app.products.openai.router import _last_user_text_prompt
+        from app.products.openai.schemas import ChatCompletionRequest
+
+        req = ChatCompletionRequest.model_validate(
+            {
+                "model": "grok-imagine-image",
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": "draw a red fox"},
+                            {"type": "image_url", "image_url": {"url": "ignored"}},
+                        ],
+                    }
+                ],
+            }
+        )
+
+        self.assertEqual(_last_user_text_prompt(req.messages), "draw a red fox")
+
+    def test_empty_image_prompt_validation_error_is_explicit(self) -> None:
+        from app.products.openai.router import chat_completions_endpoint
+        from app.products.openai.schemas import ChatCompletionRequest
+
+        req = ChatCompletionRequest.model_validate(
+            {
+                "model": "grok-imagine-image",
+                "stream": False,
+                "messages": [{"role": "user", "content": [{"type": "image_url", "image_url": {"url": "ignored"}}]}],
+            }
+        )
+
+        with self.assertRaises(ValidationError) as ctx:
+            asyncio.run(chat_completions_endpoint(req))
+
+        self.assertEqual(ctx.exception.message, "Image generation requires a non-empty text prompt")
+        self.assertEqual(ctx.exception.param, "messages")
 
 
 if __name__ == "__main__":

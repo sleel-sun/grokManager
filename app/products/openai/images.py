@@ -404,6 +404,10 @@ def _image_stream_error_to_upstream_error(ev: dict[str, Any], *, prefix: str) ->
     return UpstreamError(f"{prefix}: {message}", status=status, body=message)
 
 
+def _empty_image_generation_error() -> UpstreamError:
+    return UpstreamError("Image generation returned no images")
+
+
 def _image_exhausted_error(
     operation: str,
     attempted_accounts: int,
@@ -546,6 +550,8 @@ async def generate(
                         chunk = make_stream_chunk(response_id, model, content)
                         yield f"data: {orjson.dumps(chunk).decode()}\n\n"
 
+                    if not completed_ids:
+                        raise _empty_image_generation_error()
                     final = make_stream_chunk(response_id, model, "", is_final=True)
                     yield f"data: {orjson.dumps(final).decode()}\n\n"
                     yield "data: [DONE]\n\n"
@@ -678,6 +684,8 @@ async def generate(
                         blob_b64=ev.get("blob") or None,
                     )
                     finals.append(image)
+            if not finals:
+                raise _empty_image_generation_error()
             success = True
             completed = True
         except UpstreamError as exc:
@@ -812,6 +820,8 @@ async def _generate_lite(
                     yield f"data: {orjson.dumps(chunk).decode()}\n\n"
 
             images = await task
+            if not images:
+                raise _empty_image_generation_error()
             for image in images:
                 chunk = make_stream_chunk(
                     response_id,
@@ -843,6 +853,8 @@ async def _generate_lite(
             enabled=chat_format,
         ),
     )
+    if not images:
+        raise _empty_image_generation_error()
     if chat_format:
         content = "\n\n".join(image.markdown_value for image in images)
         reasoning = "\n".join(reasoning_updates) if reasoning_updates else None
@@ -1312,6 +1324,20 @@ async def _run_lite_request(
                         )
                         success = True
                         return image
+            extract_images = getattr(adapter, "extract_generated_images_from_text", None)
+            if callable(extract_images):
+                extract_images("".join(adapter.text_buf))
+            if adapter.image_urls:
+                if progress_cb is not None:
+                    await progress_cb(100)
+                url, _img_id = adapter.image_urls[0]
+                image = await _resolve_image_output(
+                    token=token,
+                    url=url,
+                    response_format=response_format,
+                )
+                success = True
+                return image
             raise UpstreamError("Image generation returned no images")
         except UpstreamError as exc:
             fail_exc = exc

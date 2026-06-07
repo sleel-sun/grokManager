@@ -2,6 +2,7 @@ import pytest
 
 from app.control.account.enums import AccountStatus
 from app.control.account.models import AccountRecord, RuntimeSnapshot
+from app.control.model.registry import get as get_model
 from app.platform.errors import UpstreamError
 from app.products.web.admin import model_permissions
 
@@ -94,6 +95,43 @@ async def test_model_permission_probes_explicit_image_models() -> None:
     assert item["capability"] == "image"
     assert item["status"] == "supported"
     assert item["accounts_checked"] == 1
+
+
+@pytest.mark.anyio
+async def test_lite_image_probe_accepts_adapter_collected_image_urls(monkeypatch) -> None:
+    spec = get_model("grok-imagine-image-lite")
+    assert spec is not None
+
+    async def fake_stream_lite(*args, **kwargs):
+        yield 'data: {"ok":true}'
+        yield "data: [DONE]"
+
+    class FakeStreamAdapter:
+        def __init__(self) -> None:
+            self.text_buf = []
+            self.image_urls = []
+
+        def feed(self, data: str):
+            self.text_buf.append("![image](https://imgen.x.ai/generated/image-content?token=abc)")
+            self.image_urls.append(("https://imgen.x.ai/generated/image-content?token=abc", "ig_123"))
+            return []
+
+        def extract_generated_images_from_text(self, text: str) -> str:
+            return text
+
+    monkeypatch.setattr(
+        "app.products.openai.images._stream_lite_generate",
+        fake_stream_lite,
+    )
+    monkeypatch.setattr(
+        "app.dataplane.reverse.protocol.xai_chat.StreamAdapter",
+        FakeStreamAdapter,
+    )
+
+    outcome = await model_permissions._probe_image_model("tok", spec, 1)
+
+    assert outcome.status == "supported"
+    assert outcome.status_code == 200
 
 
 @pytest.mark.anyio

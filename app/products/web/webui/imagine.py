@@ -10,6 +10,7 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 from app.platform.auth.middleware import get_webui_key, is_webui_enabled
 from app.platform.config.snapshot import get_config
+from app.platform.errors import UpstreamError
 from app.platform.logging.logger import logger
 from app.platform.runtime.clock import now_s
 from app.control.account.enums import FeedbackKind
@@ -42,6 +43,30 @@ def _image_event_error_payload(event: dict, run_id: str) -> dict:
         "code": code or "upstream_error",
         "run_id": run_id,
     }
+
+
+def _empty_webui_image_error() -> UpstreamError:
+    return UpstreamError("Image generation returned no images")
+
+
+def _image_event_has_displayable_output(event: dict) -> bool:
+    if not isinstance(event, dict) or event.get("type") != "image":
+        return False
+    image_url = event.get("image_url")
+    if isinstance(image_url, dict):
+        image_url = image_url.get("url")
+    for value in (
+        event.get("url"),
+        image_url,
+        event.get("imageUrl"),
+        event.get("src"),
+        event.get("blob"),
+        event.get("b64_json"),
+        event.get("base64"),
+    ):
+        if str(value or "").strip():
+            return True
+    return False
 
 
 async def _acquire_token(
@@ -187,6 +212,7 @@ async def imagine_ws(websocket: WebSocket):
                 success = False
                 should_retry = False
                 fail_exc = None
+                delivered_images = 0
                 try:
                     async for event in stream_images(
                         token,
@@ -223,12 +249,40 @@ async def imagine_ws(websocket: WebSocket):
                             await _send(_image_event_error_payload(event, run_id))
                             return
 
+                        if _image_event_has_displayable_output(event):
+                            delivered_images += 1
                         event.setdefault("run_id", run_id)
                         await _send(event)
 
                     if should_retry:
                         excluded.append(token)
                         continue
+
+                    if delivered_images <= 0:
+                        exc = _empty_webui_image_error()
+                        fail_exc = exc
+                        last_exc = exc
+                        should_retry = (
+                            attempt < max_retries
+                            and _should_retry_image_upstream(exc, retry_codes)
+                        )
+                        if should_retry:
+                            logger.warning(
+                                "webui imagine empty result retry scheduled: attempt={}/{} status={} token={}...",
+                                attempt + 1,
+                                max_retries,
+                                exc.status,
+                                token[:8],
+                            )
+                            excluded.append(token)
+                            continue
+                        await _send({
+                            "type": "error",
+                            "message": exc.message,
+                            "code": exc.code,
+                            "run_id": run_id,
+                        })
+                        return
 
                     success = True
                     if not stop_event.is_set():
