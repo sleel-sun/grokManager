@@ -42,6 +42,21 @@ domains = [
     for part in os.getenv("MAINTAINER_EMAIL_DOMAINS", "").split(",")
     if part.strip()
 ]
+manual_wait_raw = os.getenv("MAINTAINER_TURNSTILE_MANUAL_WAIT_SEC", "0").strip() or "0"
+try:
+    manual_wait_value = int(manual_wait_raw)
+except ValueError:
+    manual_wait_value = manual_wait_raw
+solver_provider = os.getenv("MAINTAINER_TURNSTILE_SOLVER_PROVIDER", "").strip().lower()
+solver_api_key = (
+    os.getenv("MAINTAINER_TURNSTILE_SOLVER_API_KEY", "").strip()
+    or os.getenv("CAPSOLVER_API_KEY", "").strip()
+    or os.getenv("TWOCAPTCHA_API_KEY", "").strip()
+    or os.getenv("TWO_CAPTCHA_API_KEY", "").strip()
+    or os.getenv("2CAPTCHA_API_KEY", "").strip()
+)
+solver_timeout = int(os.getenv("MAINTAINER_TURNSTILE_SOLVER_TIMEOUT_SEC", "150") or "150")
+solver_poll = int(os.getenv("MAINTAINER_TURNSTILE_SOLVER_POLL_SEC", "5") or "5")
 payload = {
     "run": {
         "count": int(os.getenv("MAINTAINER_COUNT", "1") or "1"),
@@ -60,6 +75,13 @@ payload = {
         "pool": os.getenv("MAINTAINER_POOL", "basic").strip().lower() or "basic",
         "verify_ssl": os.getenv("MAINTAINER_VERIFY_SSL", "true").lower() in {"1", "true", "yes", "on"},
     },
+    "web": {
+        "turnstile_manual_wait_sec": manual_wait_value,
+        "turnstile_solver_provider": solver_provider,
+        "turnstile_solver_api_key": solver_api_key,
+        "turnstile_solver_timeout_sec": solver_timeout,
+        "turnstile_solver_poll_sec": solver_poll,
+    },
 }
 with open(path, "w", encoding="utf-8") as handle:
     json.dump(payload, handle, ensure_ascii=False, indent=2)
@@ -75,6 +97,11 @@ export MAINTAINER_NO_SANDBOX="${MAINTAINER_NO_SANDBOX:-true}"
 export MAINTAINER_DISABLE_DEV_SHM="${MAINTAINER_DISABLE_DEV_SHM:-true}"
 export MAINTAINER_BROWSER_PATH="${MAINTAINER_BROWSER_PATH:-/usr/bin/chromium-browser}"
 export MAINTAINER_WINDOW_SIZE="${MAINTAINER_WINDOW_SIZE:-1440,900}"
+export MAINTAINER_TURNSTILE_MANUAL_WAIT_SEC="${MAINTAINER_TURNSTILE_MANUAL_WAIT_SEC:-0}"
+export MAINTAINER_TURNSTILE_SOLVER_PROVIDER="${MAINTAINER_TURNSTILE_SOLVER_PROVIDER:-}"
+export MAINTAINER_TURNSTILE_SOLVER_API_KEY="${MAINTAINER_TURNSTILE_SOLVER_API_KEY:-}"
+export MAINTAINER_TURNSTILE_SOLVER_TIMEOUT_SEC="${MAINTAINER_TURNSTILE_SOLVER_TIMEOUT_SEC:-150}"
+export MAINTAINER_TURNSTILE_SOLVER_POLL_SEC="${MAINTAINER_TURNSTILE_SOLVER_POLL_SEC:-5}"
 
 while ! has_required_config; do
   echo "[maintainer] missing MAINTAINER_EMAIL_WORKER_DOMAIN, MAINTAINER_EMAIL_DOMAINS, or MAINTAINER_EMAIL_ADMIN_PASSWORD; retrying"

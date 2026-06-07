@@ -100,7 +100,11 @@ def _normalize_pools(pools: list[str] | None) -> list[str]:
 
 def _normalize_models(models: list[str] | None) -> list[ModelSpec]:
     if not models:
-        return [spec for spec in model_registry.list_enabled() if spec.is_chat()]
+        return [
+            spec
+            for spec in model_registry.list_enabled()
+            if spec.is_chat() or spec.is_image()
+        ]
     result: list[ModelSpec] = []
     for model in models:
         spec = model_registry.get(model)

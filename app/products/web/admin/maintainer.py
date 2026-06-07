@@ -32,8 +32,19 @@ _ENV_KEYS = (
     "MAINTAINER_DISABLE_DEV_SHM",
     "MAINTAINER_WINDOW_SIZE",
     "MAINTAINER_CHROME_ARGS",
+    "MAINTAINER_TURNSTILE_MANUAL_WAIT_SEC",
+    "MAINTAINER_TURNSTILE_SOLVER_PROVIDER",
+    "MAINTAINER_TURNSTILE_SOLVER_API_KEY",
+    "MAINTAINER_TURNSTILE_SOLVER_TIMEOUT_SEC",
+    "MAINTAINER_TURNSTILE_SOLVER_POLL_SEC",
 )
-_SECRET_KEYS = {"email_admin_password", "api_token", "admin_password", "token"}
+_SECRET_KEYS = {
+    "email_admin_password",
+    "api_token",
+    "admin_password",
+    "token",
+    "turnstile_solver_api_key",
+}
 
 
 class MaintainerRunRequest(BaseModel):
@@ -55,6 +66,11 @@ class MaintainerRunRequest(BaseModel):
     no_sandbox: bool = False
     disable_dev_shm: bool = False
     window_size: str = Field(default="1440,900", max_length=32)
+    turnstile_manual_wait_sec: int = Field(default=0, ge=0)
+    turnstile_solver_provider: Literal["", "capsolver", "2captcha"] = ""
+    turnstile_solver_api_key: str = Field(default="", max_length=4096)
+    turnstile_solver_timeout_sec: int = Field(default=150, ge=1, le=600)
+    turnstile_solver_poll_sec: int = Field(default=5, ge=1, le=60)
     verify_ssl: bool = True
     extract_numbers: bool = False
 
@@ -92,6 +108,11 @@ class MaintainerRunRequest(BaseModel):
     @field_validator("email_admin_password", mode="before")
     @classmethod
     def _coerce_admin_password(cls, value: Any) -> str:
+        return "" if value is None else str(value)
+
+    @field_validator("turnstile_solver_api_key", mode="before")
+    @classmethod
+    def _coerce_turnstile_solver_api_key(cls, value: Any) -> str:
         return "" if value is None else str(value)
 
 
@@ -185,6 +206,16 @@ def build_runtime_config(
             param="email_admin_password",
         )
 
+    web_conf = (
+        existing_config.get("web", {})
+        if isinstance(existing_config, dict) and isinstance(existing_config.get("web"), dict)
+        else {}
+    )
+    saved_turnstile_solver_api_key = str(web_conf.get("turnstile_solver_api_key") or "")
+    turnstile_solver_api_key = (
+        req.turnstile_solver_api_key or saved_turnstile_solver_api_key
+    )
+
     return {
         "email": {
             "worker_domain": req.email_worker_domain,
@@ -206,6 +237,11 @@ def build_runtime_config(
             "no_sandbox": req.no_sandbox,
             "disable_dev_shm": req.disable_dev_shm,
             "window_size": req.window_size,
+            "turnstile_manual_wait_sec": req.turnstile_manual_wait_sec,
+            "turnstile_solver_provider": req.turnstile_solver_provider,
+            "turnstile_solver_api_key": turnstile_solver_api_key,
+            "turnstile_solver_timeout_sec": req.turnstile_solver_timeout_sec,
+            "turnstile_solver_poll_sec": req.turnstile_solver_poll_sec,
             "extract_numbers": req.extract_numbers,
         },
     }
@@ -257,6 +293,30 @@ def build_saved_config_response(payload: dict[str, Any]) -> dict[str, Any]:
         pool = "basic"
 
     browser_defaults = _default_web_browser_options()
+    try:
+        turnstile_manual_wait_sec = int(web_conf.get("turnstile_manual_wait_sec", 0) or 0)
+    except (TypeError, ValueError):
+        turnstile_manual_wait_sec = 0
+    turnstile_manual_wait_sec = max(turnstile_manual_wait_sec, 0)
+    turnstile_solver_provider = str(
+        web_conf.get("turnstile_solver_provider", "") or ""
+    ).strip().lower()
+    if turnstile_solver_provider not in {"", "capsolver", "2captcha"}:
+        turnstile_solver_provider = ""
+    try:
+        turnstile_solver_timeout_sec = int(
+            web_conf.get("turnstile_solver_timeout_sec", 150) or 150
+        )
+    except (TypeError, ValueError):
+        turnstile_solver_timeout_sec = 150
+    turnstile_solver_timeout_sec = min(max(turnstile_solver_timeout_sec, 1), 600)
+    try:
+        turnstile_solver_poll_sec = int(
+            web_conf.get("turnstile_solver_poll_sec", 5) or 5
+        )
+    except (TypeError, ValueError):
+        turnstile_solver_poll_sec = 5
+    turnstile_solver_poll_sec = min(max(turnstile_solver_poll_sec, 1), 60)
 
     return {
         "email_worker_domain": str(email_conf.get("worker_domain") or ""),
@@ -271,6 +331,11 @@ def build_saved_config_response(payload: dict[str, Any]) -> dict[str, Any]:
         "no_sandbox": bool(web_conf.get("no_sandbox", browser_defaults["no_sandbox"])),
         "disable_dev_shm": bool(web_conf.get("disable_dev_shm", browser_defaults["disable_dev_shm"])),
         "window_size": str(web_conf.get("window_size") or "1440,900"),
+        "turnstile_manual_wait_sec": turnstile_manual_wait_sec,
+        "turnstile_solver_provider": turnstile_solver_provider,
+        "has_turnstile_solver_api_key": bool(web_conf.get("turnstile_solver_api_key")),
+        "turnstile_solver_timeout_sec": turnstile_solver_timeout_sec,
+        "turnstile_solver_poll_sec": turnstile_solver_poll_sec,
         "extract_numbers": bool(web_conf.get("extract_numbers", False)),
     }
 
@@ -382,9 +447,9 @@ def _log_tail(line_count: int = 80) -> list[str]:
 
 
 def _env_for_request(req: MaintainerRunRequest, config_path: Path) -> dict[str, str]:
-    # 无 DISPLAY 且非 Windows → 自动启用 headless，避免 BrowserConnectError
+    # 无 DISPLAY 且未启用 Xvfb 时自动 headless；启用 Xvfb 时允许有界面浏览器跑在虚拟显示器里。
     _no_display = not os.environ.get("DISPLAY") and os.name != "nt"
-    _headless = req.headless or _no_display
+    _headless = req.headless or (_no_display and not req.use_xvfb)
     _no_sandbox = req.no_sandbox or (os.name != "nt")
     _disable_dev_shm = req.disable_dev_shm or (os.name != "nt")
     env = {
@@ -396,6 +461,21 @@ def _env_for_request(req: MaintainerRunRequest, config_path: Path) -> dict[str, 
     }
     if req.window_size:
         env["MAINTAINER_WINDOW_SIZE"] = req.window_size
+    env["MAINTAINER_TURNSTILE_MANUAL_WAIT_SEC"] = str(req.turnstile_manual_wait_sec)
+    if req.turnstile_solver_provider:
+        env["MAINTAINER_TURNSTILE_SOLVER_PROVIDER"] = req.turnstile_solver_provider
+    if req.turnstile_solver_api_key:
+        env["MAINTAINER_TURNSTILE_SOLVER_API_KEY"] = req.turnstile_solver_api_key
+    else:
+        saved_web = _read_runtime_config().get("web", {})
+        if isinstance(saved_web, dict) and saved_web.get("turnstile_solver_api_key"):
+            env["MAINTAINER_TURNSTILE_SOLVER_API_KEY"] = str(
+                saved_web["turnstile_solver_api_key"]
+            )
+    env["MAINTAINER_TURNSTILE_SOLVER_TIMEOUT_SEC"] = str(
+        req.turnstile_solver_timeout_sec
+    )
+    env["MAINTAINER_TURNSTILE_SOLVER_POLL_SEC"] = str(req.turnstile_solver_poll_sec)
     return env
 
 

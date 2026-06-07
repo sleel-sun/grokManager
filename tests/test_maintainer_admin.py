@@ -1,9 +1,11 @@
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 from app.products.web.admin.maintainer import (
     MaintainerRunRequest,
     _MaintainerController,
+    _env_for_request,
     build_completion_status,
     build_saved_config_response,
     build_runtime_config,
@@ -20,6 +22,11 @@ class MaintainerAdminTests(unittest.TestCase):
             email_domains=["example.com", "mail.example.com"],
             email_admin_password="worker-secret",
             pool="basic",
+            turnstile_manual_wait_sec=120,
+            turnstile_solver_provider="capsolver",
+            turnstile_solver_api_key="solver-secret",
+            turnstile_solver_timeout_sec=180,
+            turnstile_solver_poll_sec=4,
         )
 
         cfg = build_runtime_config(
@@ -37,6 +44,11 @@ class MaintainerAdminTests(unittest.TestCase):
         self.assertEqual(cfg["api"]["token"], "admin-secret")
         self.assertEqual(cfg["api"]["pool"], "basic")
         self.assertTrue(cfg["api"]["append"])
+        self.assertEqual(cfg["web"]["turnstile_manual_wait_sec"], 120)
+        self.assertEqual(cfg["web"]["turnstile_solver_provider"], "capsolver")
+        self.assertEqual(cfg["web"]["turnstile_solver_api_key"], "solver-secret")
+        self.assertEqual(cfg["web"]["turnstile_solver_timeout_sec"], 180)
+        self.assertEqual(cfg["web"]["turnstile_solver_poll_sec"], 4)
 
     def test_redact_state_hides_secret_values(self) -> None:
         redacted = redact_state(
@@ -44,12 +56,14 @@ class MaintainerAdminTests(unittest.TestCase):
                 "running": False,
                 "email_admin_password": "worker-secret",
                 "api_token": "admin-secret",
+                "turnstile_solver_api_key": "solver-secret",
                 "message": "done",
             }
         )
 
         self.assertEqual(redacted["email_admin_password"], "***")
         self.assertEqual(redacted["api_token"], "***")
+        self.assertEqual(redacted["turnstile_solver_api_key"], "***")
         self.assertEqual(redacted["message"], "done")
 
     def test_saved_config_response_does_not_expose_password(self) -> None:
@@ -69,6 +83,11 @@ class MaintainerAdminTests(unittest.TestCase):
                     "no_sandbox": True,
                     "disable_dev_shm": False,
                     "window_size": "1280,800",
+                    "turnstile_manual_wait_sec": 90,
+                    "turnstile_solver_provider": "2captcha",
+                    "turnstile_solver_api_key": "solver-secret",
+                    "turnstile_solver_timeout_sec": 180,
+                    "turnstile_solver_poll_sec": 6,
                     "extract_numbers": True,
                 },
             }
@@ -83,6 +102,58 @@ class MaintainerAdminTests(unittest.TestCase):
         self.assertEqual(response["workers"], 4)
         self.assertTrue(response["headless"])
         self.assertEqual(response["window_size"], "1280,800")
+        self.assertEqual(response["turnstile_manual_wait_sec"], 90)
+        self.assertEqual(response["turnstile_solver_provider"], "2captcha")
+        self.assertTrue(response["has_turnstile_solver_api_key"])
+        self.assertEqual(response["turnstile_solver_timeout_sec"], 180)
+        self.assertEqual(response["turnstile_solver_poll_sec"], 6)
+        self.assertNotIn("solver-secret", str(response))
+
+    def test_env_for_request_passes_manual_turnstile_wait(self) -> None:
+        req = MaintainerRunRequest(
+            count=1,
+            workers=1,
+            email_worker_domain="mail.example.com",
+            email_domains=["example.com"],
+            email_admin_password="pw",
+            use_xvfb=True,
+            turnstile_manual_wait_sec=180,
+            turnstile_solver_provider="capsolver",
+            turnstile_solver_api_key="solver-secret",
+            turnstile_solver_timeout_sec=120,
+            turnstile_solver_poll_sec=3,
+        )
+
+        with patch.dict("os.environ", {}, clear=True):
+            env = _env_for_request(req, Path("/tmp/cfg.json"))
+
+        self.assertEqual(env["MAINTAINER_TURNSTILE_MANUAL_WAIT_SEC"], "180")
+        self.assertEqual(env["MAINTAINER_TURNSTILE_SOLVER_PROVIDER"], "capsolver")
+        self.assertEqual(env["MAINTAINER_TURNSTILE_SOLVER_API_KEY"], "solver-secret")
+        self.assertEqual(env["MAINTAINER_TURNSTILE_SOLVER_TIMEOUT_SEC"], "120")
+        self.assertEqual(env["MAINTAINER_TURNSTILE_SOLVER_POLL_SEC"], "3")
+        self.assertEqual(env["MAINTAINER_HEADLESS"], "false")
+
+    def test_runtime_config_reuses_saved_turnstile_solver_key_when_request_omits_it(self) -> None:
+        req = MaintainerRunRequest(
+            count=1,
+            email_worker_domain="mail.example.com",
+            email_domains=["example.com"],
+            email_admin_password="pw",
+            turnstile_solver_provider="capsolver",
+            turnstile_solver_api_key="",
+        )
+
+        cfg = build_runtime_config(
+            req,
+            base_url="http://127.0.0.1:8000/",
+            admin_token="admin-secret",
+            existing_config={
+                "web": {"turnstile_solver_api_key": "saved-solver-secret"}
+            },
+        )
+
+        self.assertEqual(cfg["web"]["turnstile_solver_api_key"], "saved-solver-secret")
 
     def test_saved_config_response_preserves_high_workers_unclamped(self) -> None:
         # Removing the historical upper cap (8) was the only way to fix the

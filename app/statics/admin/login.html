@@ -46,7 +46,7 @@
     (async () => {
       const key = await adminKey.get();
       if (key) try { if (await verifyKey(ADMIN_API+'/verify', key)) location.href='/admin/account'; } catch {}
-      await renderSiteFooter?.();
+      if (typeof renderSiteFooter === 'function') await renderSiteFooter();
     })();
   </script>
 </body>

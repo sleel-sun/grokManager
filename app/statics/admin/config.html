@@ -741,9 +741,9 @@ let _showIfDeps = new Map();
 let _disabledSelectDeps = new Map();
 
 function tr(key, params, fallback) {
-  if (!key) return fallback ?? '';
+  if (!key) return fallback == null ? '' : fallback;
   const value = t(key, params);
-  return value === key ? (fallback ?? key) : value;
+  return value === key ? (fallback == null ? key : fallback) : value;
 }
 
 function waitI18n() {
@@ -809,17 +809,17 @@ function _localizeOption(opt) {
   if (typeof opt !== 'object') return opt;
   return {
     ...opt,
-    label: tr(opt.labelKey, null, opt.label ?? opt.value),
-    ...(opt.disabledTipKey ? { disabledTip: tr(opt.disabledTipKey, null, opt.disabledTip ?? '') } : {}),
+    label: tr(opt.labelKey, null, opt.label == null ? opt.value : opt.label),
+    ...(opt.disabledTipKey ? { disabledTip: tr(opt.disabledTipKey, null, opt.disabledTip == null ? '' : opt.disabledTip) } : {}),
   };
 }
 
 function _localizeField(field) {
   return {
     ...field,
-    label: field.labelKey ? tr(field.labelKey, null, field.label ?? field.key) : (field.label ?? field.key),
-    desc: field.descKey ? tr(field.descKey, null, field.desc ?? '') : (field.desc ?? ''),
-    help: field.helpKey ? tr(field.helpKey, null, field.help ?? '') : (field.help ?? ''),
+    label: field.labelKey ? tr(field.labelKey, null, field.label == null ? field.key : field.label) : (field.label == null ? field.key : field.label),
+    desc: field.descKey ? tr(field.descKey, null, field.desc == null ? '' : field.desc) : (field.desc == null ? '' : field.desc),
+    help: field.helpKey ? tr(field.helpKey, null, field.help == null ? '' : field.help) : (field.help == null ? '' : field.help),
     options: field.options ? field.options.map(_localizeOption) : field.options,
   };
 }
@@ -827,10 +827,10 @@ function _localizeField(field) {
 function buildSchema() {
   return SCHEMA_DEF.map((tab) => ({
     ...tab,
-    label: tr(tab.labelKey, null, tab.label ?? tab.id),
+    label: tr(tab.labelKey, null, tab.label == null ? tab.id : tab.label),
     groups: tab.groups.map((group) => ({
       ...group,
-      title: group.titleKey ? tr(group.titleKey, null, group.title ?? '') : (group.title ?? ''),
+      title: group.titleKey ? tr(group.titleKey, null, group.title == null ? '' : group.title) : (group.title == null ? '' : group.title),
       fields: group.fields.map(_localizeField),
     })),
   }));
@@ -989,7 +989,8 @@ document.addEventListener('keydown', (event) => {
   if (event.key === 'Escape') _hideHelpTip();
 });
 document.addEventListener('click', (event) => {
-  if (!event.target.closest?.('.cfg-help')) _hideHelpTip();
+  const target = event.target;
+  if (!target || typeof target.closest !== 'function' || !target.closest('.cfg-help')) _hideHelpTip();
 });
 
 function renderInput(field, section, value) {
@@ -1046,14 +1047,14 @@ function renderInput(field, section, value) {
   if (field.type === 'textarea') {
     const ta = _el('textarea', { class: 'cfg-textarea', id: `field-${section}-${field.key}`,
       rows: '3', placeholder: '' });
-    ta.value = value ?? '';
+    ta.value = value == null ? '' : value;
     ta.addEventListener('input', () => onChange(ta.value));
     return ta;
   }
 
   if (field.type === 'number') {
     const inp = _el('input', { class: 'cfg-number', type: 'number',
-      id: `field-${section}-${field.key}`, value: value ?? '' });
+      id: `field-${section}-${field.key}`, value: value == null ? '' : value });
     inp.addEventListener('input', () => {
       const n = inp.value === '' ? '' : Number(inp.value);
       onChange(n);
@@ -1066,7 +1067,7 @@ function renderInput(field, section, value) {
     class: `cfg-text${field.wide ? ' wide' : ''}`,
     type: field.type === 'password' ? 'password' : 'text',
     id: `field-${section}-${field.key}`,
-    value: value ?? '',
+    value: value == null ? '' : value,
     autocomplete: 'off',
   });
   inp.addEventListener('input', () => onChange(inp.value));
@@ -1319,8 +1320,8 @@ function doReset() {
       console.error('i18n init failed', e);
     });
 
-    await renderAdminHeader?.();
-    await renderSiteFooter?.();
+    if (typeof renderAdminHeader === 'function') await renderAdminHeader();
+    if (typeof renderSiteFooter === 'function') await renderSiteFooter();
     const key = await adminKey.get();
     if (!key || !await verifyKey(ADMIN_API + '/verify', key).catch(() => false))
       return location.href = '/admin/login';

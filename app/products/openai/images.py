@@ -132,6 +132,17 @@ def _completed_items(progress_map: dict[object, int]) -> int:
     return sum(1 for value in progress_map.values() if _clamp_progress(value) >= 100)
 
 
+async def _cancel_and_drain_task(task: asyncio.Task) -> None:
+    if not task.done():
+        task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
+    except Exception:
+        pass
+
+
 async def _lite_progress_updates(
     *,
     idx: int,
@@ -804,35 +815,41 @@ async def _generate_lite(
                     progress_cb=_progress,
                 )
             )
+            task_consumed = False
 
-            while not task.done() or not queue.empty():
-                try:
-                    aggregate, completed = await asyncio.wait_for(queue.get(), timeout=0.1)
-                except asyncio.TimeoutError:
-                    continue
-                if chat_format and aggregate > last_progress:
-                    last_progress = aggregate
-                    chunk = make_thinking_chunk(
+            try:
+                while not task.done() or not queue.empty():
+                    try:
+                        aggregate, completed = await asyncio.wait_for(queue.get(), timeout=0.1)
+                    except asyncio.TimeoutError:
+                        continue
+                    if chat_format and aggregate > last_progress:
+                        last_progress = aggregate
+                        chunk = make_thinking_chunk(
+                            response_id,
+                            spec.model_name,
+                            _progress_reason("图片", aggregate, completed=completed, total=n),
+                        )
+                        yield f"data: {orjson.dumps(chunk).decode()}\n\n"
+
+                images = await task
+                task_consumed = True
+                if not images:
+                    raise _empty_image_generation_error()
+                for image in images:
+                    chunk = make_stream_chunk(
                         response_id,
                         spec.model_name,
-                        _progress_reason("图片", aggregate, completed=completed, total=n),
+                        _output_content(image, chat_format=chat_format),
                     )
                     yield f"data: {orjson.dumps(chunk).decode()}\n\n"
 
-            images = await task
-            if not images:
-                raise _empty_image_generation_error()
-            for image in images:
-                chunk = make_stream_chunk(
-                    response_id,
-                    spec.model_name,
-                    _output_content(image, chat_format=chat_format),
-                )
-                yield f"data: {orjson.dumps(chunk).decode()}\n\n"
-
-            final = make_stream_chunk(response_id, spec.model_name, "", is_final=True)
-            yield f"data: {orjson.dumps(final).decode()}\n\n"
-            yield "data: [DONE]\n\n"
+                final = make_stream_chunk(response_id, spec.model_name, "", is_final=True)
+                yield f"data: {orjson.dumps(final).decode()}\n\n"
+                yield "data: [DONE]\n\n"
+            finally:
+                if not task_consumed:
+                    await _cancel_and_drain_task(task)
 
         return _sse_stream()
 
@@ -1538,24 +1555,30 @@ async def edit(
                             progress_cb=_progress,
                         )
                     )
-                    while not task.done() or not queue.empty():
-                        try:
-                            aggregate, completed = await asyncio.wait_for(queue.get(), timeout=0.1)
-                        except asyncio.TimeoutError:
-                            continue
-                        if chat_format and aggregate > last_progress:
-                            last_progress = aggregate
-                            chunk = make_thinking_chunk(
-                                response_id,
-                                model,
-                                _progress_reason("图片", aggregate, completed=completed, total=n),
-                            )
+                    task_consumed = False
+                    try:
+                        while not task.done() or not queue.empty():
+                            try:
+                                aggregate, completed = await asyncio.wait_for(queue.get(), timeout=0.1)
+                            except asyncio.TimeoutError:
+                                continue
+                            if chat_format and aggregate > last_progress:
+                                last_progress = aggregate
+                                chunk = make_thinking_chunk(
+                                    response_id,
+                                    model,
+                                    _progress_reason("图片", aggregate, completed=completed, total=n),
+                                )
+                                yield f"data: {orjson.dumps(chunk).decode()}\n\n"
+                        images = await task
+                        task_consumed = True
+                        for image in images:
+                            content = _output_content(image, chat_format=chat_format)
+                            chunk = make_stream_chunk(response_id, model, content)
                             yield f"data: {orjson.dumps(chunk).decode()}\n\n"
-                    images = await task
-                    for image in images:
-                        content = _output_content(image, chat_format=chat_format)
-                        chunk = make_stream_chunk(response_id, model, content)
-                        yield f"data: {orjson.dumps(chunk).decode()}\n\n"
+                    finally:
+                        if not task_consumed:
+                            await _cancel_and_drain_task(task)
 
                     final = make_stream_chunk(response_id, model, "", is_final=True)
                     yield f"data: {orjson.dumps(final).decode()}\n\n"

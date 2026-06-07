@@ -212,6 +212,40 @@
               <input class="input" id="window-size" value="1440,900" placeholder="1440,900">
             </div>
 
+            <div class="field">
+              <label for="turnstile-manual-wait-sec">Turnstile 人工等待秒数</label>
+              <input class="input" id="turnstile-manual-wait-sec" type="number" min="0" value="0">
+              <small>自动未拿到 Turnstile 响应时，等待人工完成验证/提交的最长秒数；0 表示自动：真实图形桌面等 180 秒，Headless/Xvfb/无 DISPLAY 不等待。</small>
+            </div>
+
+            <div class="inline">
+              <div class="field">
+                <label for="turnstile-solver-provider">Turnstile 外部 solver</label>
+                <select class="select" id="turnstile-solver-provider">
+                  <option value="">关闭</option>
+                  <option value="capsolver">CapSolver</option>
+                  <option value="2captcha">2Captcha</option>
+                </select>
+                <small>无图形服务器建议配置外部 solver；关闭时只使用自动点击/Xvfb 路径。</small>
+              </div>
+              <div class="field">
+                <label for="turnstile-solver-timeout-sec">Solver 超时秒数</label>
+                <input class="input" id="turnstile-solver-timeout-sec" type="number" min="1" max="600" value="150">
+              </div>
+            </div>
+
+            <div class="inline">
+              <div class="field">
+                <label for="turnstile-solver-api-key">Solver API Key</label>
+                <input class="input" id="turnstile-solver-api-key" type="password" autocomplete="off" placeholder="关闭时无需填写">
+                <small id="turnstile-solver-key-hint">保存到本机运行时配置；状态接口和日志不会回显。</small>
+              </div>
+              <div class="field">
+                <label for="turnstile-solver-poll-sec">Solver 轮询间隔秒数</label>
+                <input class="input" id="turnstile-solver-poll-sec" type="number" min="1" max="60" value="5">
+              </div>
+            </div>
+
             <div class="actions">
               <button class="btn-main" id="run-btn" type="submit">启动注册</button>
               <button class="btn-soft" id="pause-btn" type="button" disabled>暂停</button>
@@ -276,6 +310,7 @@ const saveBtn = document.getElementById('save-btn');
 const refreshBtn = document.getElementById('refresh-btn');
 const availableHint = document.getElementById('available-hint');
 const passwordHint = document.getElementById('password-hint');
+const solverKeyHint = document.getElementById('turnstile-solver-key-hint');
 const statePill = document.getElementById('state-pill');
 const tokenCount = document.getElementById('token-count');
 const spawnedWorkersEl = document.getElementById('spawned-workers');
@@ -299,7 +334,7 @@ async function api(method, path, body) {
   });
   if (!res.ok) {
     const data = await res.json().catch(() => ({}));
-    const message = data?.error?.message || data?.detail || `HTTP ${res.status}`;
+    const message = (data.error && data.error.message) || data.detail || `HTTP ${res.status}`;
     throw new Error(message);
   }
   return res.json();
@@ -449,6 +484,26 @@ function renderSavedConfig(data) {
   document.getElementById('no-sandbox').checked = !!data.no_sandbox;
   document.getElementById('disable-dev-shm').checked = !!data.disable_dev_shm;
   document.getElementById('window-size').value = data.window_size || '1440,900';
+  const manualWait = Number(data.turnstile_manual_wait_sec);
+  if (Number.isFinite(manualWait) && manualWait >= 0) {
+    document.getElementById('turnstile-manual-wait-sec').value = Math.floor(manualWait);
+  }
+  document.getElementById('turnstile-solver-provider').value = data.turnstile_solver_provider || '';
+  document.getElementById('turnstile-solver-api-key').value = '';
+  document.getElementById('turnstile-solver-api-key').placeholder = data.has_turnstile_solver_api_key
+    ? '已保存，留空沿用'
+    : '关闭时无需填写';
+  solverKeyHint.textContent = data.has_turnstile_solver_api_key
+    ? '已保存 Solver API Key；留空会沿用已保存值，输入新 key 会覆盖。'
+    : '保存到本机运行时配置；状态接口和日志不会回显。';
+  const solverTimeout = Number(data.turnstile_solver_timeout_sec);
+  if (Number.isFinite(solverTimeout) && solverTimeout >= 1) {
+    document.getElementById('turnstile-solver-timeout-sec').value = Math.floor(solverTimeout);
+  }
+  const solverPoll = Number(data.turnstile_solver_poll_sec);
+  if (Number.isFinite(solverPoll) && solverPoll >= 1) {
+    document.getElementById('turnstile-solver-poll-sec').value = Math.floor(solverPoll);
+  }
 }
 
 async function refreshStatus() {
@@ -481,10 +536,19 @@ function clampPositiveInt(value, fallback) {
 function readPayload() {
   const countEl = document.getElementById('count');
   const workersEl = document.getElementById('workers');
+  const manualWaitEl = document.getElementById('turnstile-manual-wait-sec');
+  const solverTimeoutEl = document.getElementById('turnstile-solver-timeout-sec');
+  const solverPollEl = document.getElementById('turnstile-solver-poll-sec');
   const count = clampPositiveInt(countEl.value, 1);
   const workers = clampPositiveInt(workersEl.value, 1);
+  const manualWait = Math.max(0, Math.floor(Number(manualWaitEl.value) || 0));
+  const solverTimeout = Math.min(600, Math.max(1, Math.floor(Number(solverTimeoutEl.value) || 150)));
+  const solverPoll = Math.min(60, Math.max(1, Math.floor(Number(solverPollEl.value) || 5)));
   countEl.value = count;
   workersEl.value = workers;
+  manualWaitEl.value = manualWait;
+  solverTimeoutEl.value = solverTimeout;
+  solverPollEl.value = solverPoll;
   return {
     count,
     workers,
@@ -497,6 +561,11 @@ function readPayload() {
     no_sandbox: document.getElementById('no-sandbox').checked,
     disable_dev_shm: document.getElementById('disable-dev-shm').checked,
     window_size: document.getElementById('window-size').value.trim() || '1440,900',
+    turnstile_manual_wait_sec: manualWait,
+    turnstile_solver_provider: document.getElementById('turnstile-solver-provider').value,
+    turnstile_solver_api_key: document.getElementById('turnstile-solver-api-key').value,
+    turnstile_solver_timeout_sec: solverTimeout,
+    turnstile_solver_poll_sec: solverPoll,
   };
 }
 
@@ -511,6 +580,21 @@ function preserveIntent(savedConfig, sentPayload) {
   }
   if (sentPayload && typeof sentPayload.workers === 'number') {
     savedConfig.workers = sentPayload.workers;
+  }
+  if (sentPayload && typeof sentPayload.turnstile_manual_wait_sec === 'number') {
+    savedConfig.turnstile_manual_wait_sec = sentPayload.turnstile_manual_wait_sec;
+  }
+  if (sentPayload && typeof sentPayload.turnstile_solver_provider === 'string') {
+    savedConfig.turnstile_solver_provider = sentPayload.turnstile_solver_provider;
+  }
+  if (sentPayload && typeof sentPayload.turnstile_solver_timeout_sec === 'number') {
+    savedConfig.turnstile_solver_timeout_sec = sentPayload.turnstile_solver_timeout_sec;
+  }
+  if (sentPayload && typeof sentPayload.turnstile_solver_poll_sec === 'number') {
+    savedConfig.turnstile_solver_poll_sec = sentPayload.turnstile_solver_poll_sec;
+  }
+  if (sentPayload && sentPayload.turnstile_solver_api_key) {
+    savedConfig.has_turnstile_solver_api_key = true;
   }
   return savedConfig;
 }
@@ -581,8 +665,8 @@ document.getElementById('workers').addEventListener('input', () => {
 
 (async () => {
   await waitI18n();
-  await renderAdminHeader?.();
-  await renderSiteFooter?.();
+  if (typeof renderAdminHeader === 'function') await renderAdminHeader();
+  if (typeof renderSiteFooter === 'function') await renderSiteFooter();
   const key = await adminKey.get();
   if (!key || !await verifyKey(MAINTAINER_ADMIN_API + '/verify', key).catch(() => false)) {
     location.href = '/admin/login';

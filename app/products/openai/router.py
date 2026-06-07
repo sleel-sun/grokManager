@@ -334,17 +334,45 @@ async def _sse_with_heartbeat(
     """
     yield ": heartbeat stream connected\n" + " " * 2048 + "\n\n"
 
-    aiter = stream.__aiter__()
-    while True:
+    queue: asyncio.Queue[tuple[str, str | Exception | None]] = asyncio.Queue()
+
+    async def _producer() -> None:
         try:
-            chunk = await asyncio.wait_for(aiter.__anext__(), timeout=interval)
-            yield chunk
-        except asyncio.TimeoutError:
-            yield ": ping\n\n"
-        except StopAsyncIteration:
+            async for chunk in stream:
+                await queue.put(("chunk", chunk))
+        except Exception as exc:
+            await queue.put(("error", exc))
+        else:
+            await queue.put(("done", None))
+
+    producer = asyncio.create_task(_producer(), name="sse-heartbeat-producer")
+    try:
+        while True:
+            try:
+                kind, payload = await asyncio.wait_for(queue.get(), timeout=interval)
+            except asyncio.TimeoutError:
+                if producer.done() and queue.empty():
+                    try:
+                        await producer
+                    except asyncio.CancelledError:
+                        pass
+                    break
+                yield ": ping\n\n"
+                continue
+
+            if kind == "chunk":
+                yield str(payload)
+                continue
+            if kind == "error":
+                raise payload
             break
+    finally:
+        if not producer.done():
+            producer.cancel()
+        try:
+            await producer
         except asyncio.CancelledError:
-            break
+            pass
 
 
 # ---------------------------------------------------------------------------

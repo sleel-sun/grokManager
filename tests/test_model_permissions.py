@@ -23,6 +23,17 @@ async def _ok_probe(*args, **kwargs) -> model_permissions.ProbeOutcome:
     return model_permissions.ProbeOutcome(status="supported", message="ok")
 
 
+def test_default_model_permission_scope_includes_image_generation_models() -> None:
+    specs = model_permissions._normalize_models([])
+    names = {spec.model_name for spec in specs}
+
+    assert "grok-imagine-image-lite" in names
+    assert "grok-imagine-image" in names
+    assert "grok-imagine-image-pro" in names
+    assert "grok-imagine-image-edit" not in names
+    assert "grok-imagine-video" not in names
+
+
 @pytest.mark.anyio
 async def test_model_permission_reports_no_accounts_without_probe() -> None:
     calls = 0

@@ -10,12 +10,21 @@ from app.maintainer.runner import (
     build_profile,
     click_email_signup_button,
     fill_profile_and_submit,
+    _install_turnstile_patch,
+    _profile_snapshot_indicates_submitted,
+    _snapshot_has_pending_turnstile,
     _prewarm_cloudflare_clearance,
+    _capsolver_create_turnstile_task,
     _build_worker_output,
     _compute_worker_chrome_user_data_dir,
     _configure_browser_options,
     _ensure_browser_storage_ready,
+    _poll_turnstile_solver_result,
     _resolve_browser_tmp_path,
+    _solve_turnstile_with_external_solver,
+    _turnstile_solver_settings,
+    _turnstile_manual_wait_seconds,
+    _twocaptcha_create_turnstile_task,
     _worker_entry,
     _split_count,
     _wait_while_paused,
@@ -182,6 +191,7 @@ class MaintainerRunnerTests(unittest.TestCase):
         mock_page.ele.return_value = None
 
         with (
+            patch.dict(os.environ, {"MAINTAINER_TURNSTILE_MANUAL_WAIT_SEC": "off"}),
             patch("app.maintainer.runner.page", mock_page),
             patch(
                 "app.maintainer.runner.build_profile",
@@ -217,6 +227,405 @@ class MaintainerRunnerTests(unittest.TestCase):
 
         self.assertEqual(profile["given_name"], "Ava")
         mock_button.click.assert_called_once()
+
+    def test_fill_profile_retries_after_turnstile_solver_failure(self) -> None:
+        mock_page = MagicMock()
+        mock_page.run_js.side_effect = [
+            "filled",
+            True,
+            "pending",
+            "filled",
+            True,
+            "pending",
+            True,
+            True,
+        ]
+        mock_page.ele.return_value = None
+
+        with (
+            patch.dict(os.environ, {"MAINTAINER_TURNSTILE_MANUAL_WAIT_SEC": "off"}),
+            patch("app.maintainer.runner.page", mock_page),
+            patch(
+                "app.maintainer.runner.build_profile",
+                return_value=("Ava", "Chen", "Nabc!a7#def"),
+            ),
+            patch(
+                "app.maintainer.runner.get_turnstile_token",
+                side_effect=[RuntimeError("failed to solve turnstile;debug"), "turn-token"],
+            ) as token_mock,
+            patch("app.maintainer.runner.time.time", side_effect=[0.0, 0.0, 0.1]),
+            patch("app.maintainer.runner.time.sleep"),
+        ):
+            profile = fill_profile_and_submit(timeout=1)
+
+        self.assertEqual(profile["given_name"], "Ava")
+        self.assertEqual(token_mock.call_count, 2)
+        self.assertTrue(token_mock.call_args_list[0].kwargs["reset"])
+        self.assertFalse(token_mock.call_args_list[1].kwargs["reset"])
+
+    def test_fill_profile_allows_manual_turnstile_completion(self) -> None:
+        mock_page = MagicMock()
+        mock_page.run_js.side_effect = [
+            "filled",
+            True,
+            "pending",
+        ]
+        mock_page.ele.return_value = None
+
+        with (
+            patch.dict(os.environ, {"MAINTAINER_TURNSTILE_MANUAL_WAIT_SEC": "30"}),
+            patch("app.maintainer.runner.page", mock_page),
+            patch(
+                "app.maintainer.runner.build_profile",
+                return_value=("Ava", "Chen", "Nabc!a7#def"),
+            ),
+            patch(
+                "app.maintainer.runner.get_turnstile_token",
+                side_effect=RuntimeError("failed to solve turnstile;debug"),
+            ),
+            patch(
+                "app.maintainer.runner._wait_for_manual_turnstile_completion",
+                return_value="submitted",
+            ) as manual_wait,
+            patch("app.maintainer.runner.time.time", side_effect=[0.0, 0.0]),
+            patch("app.maintainer.runner.time.sleep"),
+        ):
+            profile = fill_profile_and_submit(timeout=120)
+
+        self.assertEqual(profile["given_name"], "Ava")
+        manual_wait.assert_called_once()
+        self.assertEqual(manual_wait.call_args.kwargs["max_wait_seconds"], 30.0)
+
+    def test_fill_profile_uses_external_turnstile_solver_after_click_failure(self) -> None:
+        mock_page = MagicMock()
+        mock_page.run_js.side_effect = [
+            "filled",
+            True,
+            "pending",
+            True,
+        ]
+        mock_page.ele.return_value = None
+
+        with (
+            patch.dict(
+                os.environ,
+                {
+                    "MAINTAINER_TURNSTILE_MANUAL_WAIT_SEC": "off",
+                    "MAINTAINER_TURNSTILE_SOLVER_PROVIDER": "capsolver",
+                    "MAINTAINER_TURNSTILE_SOLVER_API_KEY": "solver-secret",
+                },
+            ),
+            patch("app.maintainer.runner.page", mock_page),
+            patch(
+                "app.maintainer.runner.build_profile",
+                return_value=("Ava", "Chen", "Nabc!a7#def"),
+            ),
+            patch(
+                "app.maintainer.runner.get_turnstile_token",
+                side_effect=RuntimeError("failed to solve turnstile;debug"),
+            ),
+            patch(
+                "app.maintainer.runner._solve_turnstile_with_external_solver",
+                return_value="external-token",
+            ) as solver_mock,
+            patch("app.maintainer.runner._sync_turnstile_token", return_value=True),
+            patch("app.maintainer.runner.time.time", return_value=0.0),
+            patch("app.maintainer.runner.time.sleep"),
+        ):
+            profile = fill_profile_and_submit(timeout=120)
+
+        self.assertEqual(profile["given_name"], "Ava")
+        solver_mock.assert_called_once()
+
+    def test_fill_profile_reports_pending_turnstile_as_solver_failure(self) -> None:
+        mock_page = MagicMock()
+        mock_page.run_js.side_effect = [
+            "filled",
+            True,
+            "pending",
+        ]
+        mock_page.ele.return_value = None
+
+        with (
+            patch.dict(os.environ, {"MAINTAINER_TURNSTILE_MANUAL_WAIT_SEC": "off"}),
+            patch("app.maintainer.runner.page", mock_page),
+            patch(
+                "app.maintainer.runner.build_profile",
+                return_value=("Ava", "Chen", "Nabc!a7#def"),
+            ),
+            patch(
+                "app.maintainer.runner.get_turnstile_token",
+                side_effect=RuntimeError("failed to solve turnstile;debug"),
+            ),
+            patch(
+                "app.maintainer.runner._profile_page_snapshot",
+                return_value={
+                    "url": "https://accounts.x.ai/sign-up?redirect=grok-com",
+                    "title": "Create Your Grok Account | Grok",
+                    "profilePresent": True,
+                    "challengeInputFound": True,
+                    "challengeInputValueLength": 0,
+                },
+            ),
+            patch("app.maintainer.runner.time.time", side_effect=[0.0, 0.0, 2.0]),
+            patch("app.maintainer.runner.time.sleep"),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "Turnstile 自动验证未通过"):
+                fill_profile_and_submit(timeout=1)
+
+    def test_turnstile_manual_wait_zero_is_auto_by_browser_mode(self) -> None:
+        with patch.dict(
+            os.environ,
+            {
+                "MAINTAINER_HEADLESS": "true",
+                "MAINTAINER_TURNSTILE_MANUAL_WAIT_SEC": "0",
+            },
+        ):
+            self.assertEqual(_turnstile_manual_wait_seconds(), 0.0)
+
+        with patch.dict(
+            os.environ,
+            {
+                "DISPLAY": ":0",
+                "MAINTAINER_HEADLESS": "false",
+                "MAINTAINER_USE_XVFB": "false",
+                "MAINTAINER_TURNSTILE_MANUAL_WAIT_SEC": "0",
+            },
+        ):
+            self.assertEqual(_turnstile_manual_wait_seconds(), 180.0)
+
+        with patch.dict(
+            os.environ,
+            {
+                "MAINTAINER_HEADLESS": "false",
+                "MAINTAINER_USE_XVFB": "true",
+                "MAINTAINER_TURNSTILE_MANUAL_WAIT_SEC": "0",
+            },
+        ):
+            self.assertEqual(_turnstile_manual_wait_seconds(), 0.0)
+
+        with patch.dict(
+            os.environ,
+            {
+                "MAINTAINER_HEADLESS": "false",
+                "MAINTAINER_TURNSTILE_MANUAL_WAIT_SEC": "off",
+            },
+        ):
+            self.assertEqual(_turnstile_manual_wait_seconds(), 0.0)
+
+    def test_turnstile_patch_is_registered_for_new_documents(self) -> None:
+        mock_page = MagicMock()
+        fake_browser = object()
+        source = "window.__turnstilePatchTest = true;"
+
+        with (
+            patch("app.maintainer.runner.page", mock_page),
+            patch("app.maintainer.runner.browser", fake_browser),
+            patch("app.maintainer.runner._turnstile_patch_source_cache", source),
+            patch("app.maintainer.runner._turnstile_patch_browser_id", None),
+        ):
+            _install_turnstile_patch()
+            _install_turnstile_patch()
+
+        mock_page.run_cdp.assert_called_once_with(
+            "Page.addScriptToEvaluateOnNewDocument",
+            source=source,
+        )
+        self.assertEqual(mock_page.run_js.call_count, 2)
+
+    def test_profile_snapshot_detects_post_signup_page(self) -> None:
+        self.assertTrue(
+            _profile_snapshot_indicates_submitted(
+                {
+                    "url": "https://grok.com/",
+                    "title": "Grok",
+                    "profilePresent": False,
+                    "text": "",
+                }
+            )
+        )
+        self.assertTrue(
+            _profile_snapshot_indicates_submitted(
+                {
+                    "url": "https://accounts.x.ai/post-signup",
+                    "title": "Welcome | Grok",
+                    "profilePresent": False,
+                    "postSignup": True,
+                    "text": "Continue to Grok",
+                }
+            )
+        )
+        self.assertFalse(
+            _profile_snapshot_indicates_submitted(
+                {
+                    "url": "https://accounts.x.ai/sign-up?redirect=grok-com",
+                    "title": "Create Your Grok Account | Grok",
+                    "profilePresent": True,
+                    "postSignup": True,
+                    "text": "Complete sign up",
+                }
+            )
+        )
+
+    def test_pending_turnstile_snapshot_requires_empty_response(self) -> None:
+        self.assertTrue(
+            _snapshot_has_pending_turnstile(
+                {"challengeInputFound": True, "challengeInputValueLength": 0}
+            )
+        )
+        self.assertFalse(
+            _snapshot_has_pending_turnstile(
+                {"challengeInputFound": True, "challengeInputValueLength": 12}
+            )
+        )
+
+    def test_turnstile_solver_settings_reads_env(self) -> None:
+        with (
+            patch.dict(
+                os.environ,
+                {
+                    "MAINTAINER_TURNSTILE_SOLVER_PROVIDER": "capsolver",
+                    "MAINTAINER_TURNSTILE_SOLVER_API_KEY": "solver-secret",
+                    "MAINTAINER_TURNSTILE_SOLVER_TIMEOUT_SEC": "42",
+                    "MAINTAINER_TURNSTILE_SOLVER_POLL_SEC": "3",
+                },
+                clear=True,
+            ),
+            patch("app.maintainer.runner._web_config_value", return_value=""),
+        ):
+            settings = _turnstile_solver_settings()
+
+        self.assertTrue(settings["enabled"])
+        self.assertEqual(settings["provider"], "capsolver")
+        self.assertEqual(settings["api_key"], "solver-secret")
+        self.assertEqual(settings["timeout"], 42.0)
+        self.assertEqual(settings["poll_interval"], 3.0)
+
+    def test_turnstile_solver_settings_accepts_twocaptcha_alias(self) -> None:
+        with (
+            patch.dict(
+                os.environ,
+                {
+                    "MAINTAINER_TURNSTILE_SOLVER_PROVIDER": "two_captcha",
+                    "MAINTAINER_TURNSTILE_SOLVER_API_KEY": "solver-secret",
+                },
+                clear=True,
+            ),
+            patch("app.maintainer.runner._web_config_value", return_value=""),
+        ):
+            settings = _turnstile_solver_settings()
+
+        self.assertTrue(settings["enabled"])
+        self.assertEqual(settings["provider"], "2captcha")
+
+    def test_capsolver_create_task_payload_includes_turnstile_metadata(self) -> None:
+        with patch(
+            "app.maintainer.runner._requests_post_json",
+            return_value={"errorId": 0, "taskId": "task-1"},
+        ) as post_json:
+            task_id = _capsolver_create_turnstile_task(
+                "solver-secret",
+                {
+                    "url": "https://accounts.x.ai/sign-up?redirect=grok-com",
+                    "sitekey": "site-key",
+                    "action": "signup",
+                    "cData": "cdata-value",
+                    "chlPageData": "pagedata-value",
+                },
+            )
+
+        self.assertEqual(task_id, "task-1")
+        payload = post_json.call_args.args[1]
+        self.assertEqual(payload["clientKey"], "solver-secret")
+        self.assertEqual(payload["task"]["type"], "AntiTurnstileTaskProxyLess")
+        self.assertEqual(payload["task"]["websiteKey"], "site-key")
+        self.assertEqual(payload["task"]["metadata"]["action"], "signup")
+        self.assertEqual(payload["task"]["metadata"]["cdata"], "cdata-value")
+        self.assertEqual(payload["task"]["metadata"]["chlPageData"], "pagedata-value")
+
+    def test_twocaptcha_create_task_payload_includes_turnstile_metadata(self) -> None:
+        with patch(
+            "app.maintainer.runner._requests_post_json",
+            return_value={"errorId": 0, "taskId": "task-2"},
+        ) as post_json:
+            task_id = _twocaptcha_create_turnstile_task(
+                "solver-secret",
+                {
+                    "url": "https://accounts.x.ai/sign-up?redirect=grok-com",
+                    "sitekey": "site-key",
+                    "action": "signup",
+                    "cData": "cdata-value",
+                    "chlPageData": "pagedata-value",
+                },
+            )
+
+        self.assertEqual(task_id, "task-2")
+        payload = post_json.call_args.args[1]
+        self.assertEqual(payload["clientKey"], "solver-secret")
+        self.assertEqual(payload["task"]["type"], "TurnstileTaskProxyless")
+        self.assertEqual(payload["task"]["websiteKey"], "site-key")
+        self.assertEqual(payload["task"]["action"], "signup")
+        self.assertEqual(payload["task"]["data"], "cdata-value")
+        self.assertEqual(payload["task"]["pagedata"], "pagedata-value")
+
+    def test_poll_turnstile_solver_result_returns_ready_token(self) -> None:
+        with (
+            patch(
+                "app.maintainer.runner._requests_post_json",
+                side_effect=[
+                    {"errorId": 0, "status": "processing"},
+                    {"errorId": 0, "status": "ready", "solution": {"token": "turn-token"}},
+                ],
+            ),
+            patch("app.maintainer.runner.time.sleep"),
+        ):
+            token = _poll_turnstile_solver_result(
+                provider="capsolver",
+                api_key="solver-secret",
+                task_id="task-1",
+                timeout=5,
+                poll_interval=1,
+            )
+
+        self.assertEqual(token, "turn-token")
+
+    def test_external_turnstile_solver_uses_render_params(self) -> None:
+        with (
+            patch(
+                "app.maintainer.runner._turnstile_solver_settings",
+                return_value={
+                    "enabled": True,
+                    "provider": "capsolver",
+                    "api_key": "solver-secret",
+                    "timeout": 20,
+                    "poll_interval": 2,
+                },
+            ),
+            patch(
+                "app.maintainer.runner._turnstile_render_params",
+                return_value={
+                    "url": "https://accounts.x.ai/sign-up?redirect=grok-com",
+                    "sitekey": "site-key",
+                    "action": "",
+                    "cData": "",
+                    "chlPageData": "",
+                },
+            ),
+            patch(
+                "app.maintainer.runner._capsolver_create_turnstile_task",
+                return_value="task-1",
+            ) as create_task,
+            patch(
+                "app.maintainer.runner._poll_turnstile_solver_result",
+                return_value="turn-token",
+            ) as poll_result,
+        ):
+            token = _solve_turnstile_with_external_solver(max_wait_seconds=10)
+
+        self.assertEqual(token, "turn-token")
+        create_task.assert_called_once()
+        poll_result.assert_called_once()
+        self.assertEqual(poll_result.call_args.kwargs["timeout"], 10)
 
 
 class MaintainerBatchHelpersTests(unittest.TestCase):
@@ -626,7 +1035,7 @@ class RunBatchParallelSpawnTests(unittest.TestCase):
                 )
 
         self.assertEqual(tokens, ["sso-ok", "sso-lost"])
-        push_mock.assert_called_once_with(["sso-lost"])
+        push_mock.assert_called_once_with(["sso-ok", "sso-lost"])
 
     def test_idle_worker_is_terminated_and_marked_failed(self) -> None:
         captured: list[MagicMock] = []
@@ -867,6 +1276,7 @@ class MaintainerChromeUserDataDirTests(unittest.TestCase):
 
         result_queue = _Queue()
         progress_queue = _Queue()
+        run_batch_kwargs: list[dict[str, Any]] = []
 
         with tempfile.TemporaryDirectory() as tmpdir:
             env = {
@@ -881,7 +1291,7 @@ class MaintainerChromeUserDataDirTests(unittest.TestCase):
                     "app.maintainer.runner._select_worker_chrome_debug_port",
                     return_value=34567,
                 ),
-                patch("app.maintainer.runner.run_batch", side_effect=fake_run_batch),
+                patch("app.maintainer.runner.run_batch", side_effect=fake_run_batch) as run_batch_mock,
             ):
                 _worker_entry(
                     2,
@@ -895,9 +1305,11 @@ class MaintainerChromeUserDataDirTests(unittest.TestCase):
                     result_queue,
                     progress_queue,
                 )
+                run_batch_kwargs.append(dict(run_batch_mock.call_args.kwargs))
 
         self.assertEqual(seen_debug_ports, ["34567"])
         self.assertEqual(result_queue.items, [(2, ["sso-token"], None)])
+        self.assertEqual(run_batch_kwargs[0]["push_to_api"], False)
         alive_events = [item for item in progress_queue.items if item[1] == "alive"]
         self.assertEqual(len(alive_events), 1)
         self.assertEqual(alive_events[0][2]["debug_port"], 34567)

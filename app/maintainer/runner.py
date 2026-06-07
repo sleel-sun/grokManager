@@ -18,6 +18,7 @@ from typing import Any, Callable
 from urllib import request as urllib_request
 from urllib.error import HTTPError, URLError
 
+import requests
 from DrissionPage import Chromium, ChromiumOptions
 from DrissionPage.errors import BrowserConnectError, PageDisconnectedError
 try:
@@ -28,6 +29,7 @@ except Exception:
 from .mailbox import get_email_and_token, get_oai_code
 from .settings import (
     as_bool,
+    extension_dir,
     get_config_path,
     load_config,
     maintainer_browser_tmp_dir,
@@ -35,7 +37,6 @@ from .settings import (
     maintainer_sso_dir,
     project_root,
     set_config_path,
-    extension_dir,
 )
 
 
@@ -45,6 +46,9 @@ GROK_URL = "https://grok.com/"
 DEFAULT_MIN_BROWSER_FREE_BYTES = 256 * 1024 * 1024
 DEFAULT_HEADLESS_WINDOW_SIZE = "1440,900"
 DEFAULT_WORKER_IDLE_TIMEOUT = 600.0
+DEFAULT_TURNSTILE_MANUAL_WAIT_SECONDS = 180.0
+DEFAULT_TURNSTILE_SOLVER_TIMEOUT_SECONDS = 150.0
+DEFAULT_TURNSTILE_SOLVER_POLL_INTERVAL_SECONDS = 5.0
 WORKER_TERMINATE_GRACE_SECONDS = 5.0
 WORKER_DEBUG_PORT_MIN = 20_000
 WORKER_DEBUG_PORT_SPAN = 40_000
@@ -108,6 +112,8 @@ browser = None
 page = None
 _virtual_display = None
 run_logger: logging.Logger | None = None
+_turnstile_patch_source_cache: str | None = None
+_turnstile_patch_browser_id: int | None = None
 
 
 def setup_run_logger(label: str | None = None) -> logging.Logger:
@@ -118,10 +124,10 @@ def setup_run_logger(label: str | None = None) -> logging.Logger:
     for each worker and ``label="parallel"`` for the parent orchestrator log.
     """
     log_dir = maintainer_log_dir()
-    log_dir.mkdir(parents=True, exist_ok=True)
     ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
     suffix = f"_{label}" if label else ""
-    log_path = log_dir / f"run{suffix}_{ts}_pid{os.getpid()}.log"
+    filename = f"run{suffix}_{ts}_pid{os.getpid()}.log"
+    log_path = log_dir / filename
 
     logger_name = f"grok_maintainer.{label}" if label else "grok_maintainer"
     logger = logging.getLogger(logger_name)
@@ -136,7 +142,16 @@ def setup_run_logger(label: str | None = None) -> logging.Logger:
 
     prefix = f"[w{label.removeprefix('w')}] " if label and label.startswith("w") and label[1:].isdigit() else ""
     fmt = logging.Formatter(f"%(asctime)s | {prefix}%(message)s", datefmt="%Y-%m-%d %H:%M:%S")
-    fh = logging.FileHandler(log_path, encoding="utf-8")
+    fallback_reason = ""
+    try:
+        log_dir.mkdir(parents=True, exist_ok=True)
+        fh = logging.FileHandler(log_path, encoding="utf-8")
+    except OSError as exc:
+        fallback_reason = f"{type(exc).__name__}: {exc}"
+        log_dir = Path(tempfile.gettempdir()) / "grokmanager-maintainer-logs"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        log_path = log_dir / filename
+        fh = logging.FileHandler(log_path, encoding="utf-8")
     fh.setFormatter(fmt)
     logger.addHandler(fh)
     sh = logging.StreamHandler(sys.stdout)
@@ -144,6 +159,8 @@ def setup_run_logger(label: str | None = None) -> logging.Logger:
     logger.addHandler(sh)
 
     logger.info("日志文件: %s", log_path)
+    if fallback_reason:
+        logger.warning("原日志目录不可写，已降级到临时目录: %s", fallback_reason)
     return logger
 
 
@@ -283,6 +300,179 @@ def _worker_idle_timeout_seconds() -> float:
         return max(0.0, float(raw))
     except ValueError:
         return DEFAULT_WORKER_IDLE_TIMEOUT
+
+
+def _browser_effective_headless() -> bool:
+    _no_display = not os.environ.get("DISPLAY") and sys.platform != "win32"
+    return as_bool(os.getenv("MAINTAINER_HEADLESS"), default=_no_display)
+
+
+def _turnstile_auto_manual_wait_seconds() -> float:
+    if _browser_effective_headless():
+        return 0.0
+    if _virtual_display is not None:
+        return 0.0
+    if as_bool(os.getenv("MAINTAINER_USE_XVFB"), default=False):
+        return 0.0
+    if sys.platform != "win32" and not os.environ.get("DISPLAY"):
+        return 0.0
+    return DEFAULT_TURNSTILE_MANUAL_WAIT_SECONDS
+
+
+def _turnstile_manual_wait_seconds() -> float:
+    raw = os.getenv("MAINTAINER_TURNSTILE_MANUAL_WAIT_SEC", "").strip()
+    if not raw:
+        try:
+            web_conf = load_config().get("web", {})
+            if isinstance(web_conf, dict):
+                raw = str(
+                    web_conf.get(
+                        "turnstile_manual_wait_sec",
+                        web_conf.get("turnstile_manual_wait_seconds", ""),
+                    )
+                    or ""
+                ).strip()
+        except Exception:
+            raw = ""
+    if not raw:
+        return _turnstile_auto_manual_wait_seconds()
+    if raw.lower() in {"off", "false", "disabled", "disable", "none", "no"}:
+        return 0.0
+    try:
+        seconds = max(0.0, float(raw))
+    except ValueError:
+        return _turnstile_auto_manual_wait_seconds()
+    if seconds == 0:
+        return _turnstile_auto_manual_wait_seconds()
+    return seconds
+
+
+def _web_config_value(key: str, default: Any = None) -> Any:
+    try:
+        web_conf = load_config().get("web", {})
+    except Exception:
+        return default
+    if not isinstance(web_conf, dict):
+        return default
+    return web_conf.get(key, default)
+
+
+def _turnstile_solver_settings() -> dict[str, Any]:
+    env_provider = os.getenv("MAINTAINER_TURNSTILE_SOLVER_PROVIDER", "").strip()
+    provider = env_provider or str(_web_config_value("turnstile_solver_provider", "") or "").strip()
+    provider = provider.lower().replace("-", "").replace("_", "")
+
+    api_key = (
+        os.getenv("MAINTAINER_TURNSTILE_SOLVER_API_KEY", "").strip()
+        or str(_web_config_value("turnstile_solver_api_key", "") or "").strip()
+    )
+    if not api_key and provider == "capsolver":
+        api_key = os.getenv("CAPSOLVER_API_KEY", "").strip()
+    if not api_key and provider in {"twocaptcha", "2captcha", "two captcha"}:
+        api_key = (
+            os.getenv("TWOCAPTCHA_API_KEY", "").strip()
+            or os.getenv("TWO_CAPTCHA_API_KEY", "").strip()
+            or os.getenv("2CAPTCHA_API_KEY", "").strip()
+        )
+    if not provider and os.getenv("CAPSOLVER_API_KEY", "").strip():
+        provider = "capsolver"
+        api_key = os.getenv("CAPSOLVER_API_KEY", "").strip()
+    if not provider and (
+        os.getenv("TWOCAPTCHA_API_KEY", "").strip()
+        or os.getenv("TWO_CAPTCHA_API_KEY", "").strip()
+        or os.getenv("2CAPTCHA_API_KEY", "").strip()
+    ):
+        provider = "2captcha"
+        api_key = (
+            os.getenv("TWOCAPTCHA_API_KEY", "").strip()
+            or os.getenv("TWO_CAPTCHA_API_KEY", "").strip()
+            or os.getenv("2CAPTCHA_API_KEY", "").strip()
+        )
+
+    if provider in {"", "off", "false", "disabled", "disable", "none", "no"}:
+        return {"enabled": False, "provider": "", "api_key": ""}
+    if provider in {"twocaptcha", "2captcha", "two captcha"}:
+        provider = "2captcha"
+    if provider not in {"capsolver", "2captcha"}:
+        return {
+            "enabled": False,
+            "provider": provider,
+            "api_key": api_key,
+            "error": f"unsupported provider {provider}",
+        }
+    if not api_key:
+        return {
+            "enabled": False,
+            "provider": provider,
+            "api_key": "",
+            "error": "missing api key",
+        }
+
+    def read_float(env_key: str, config_key: str, default: float) -> float:
+        raw = os.getenv(env_key, "").strip()
+        if not raw:
+            raw = str(_web_config_value(config_key, "") or "").strip()
+        if not raw:
+            return default
+        try:
+            return max(1.0, float(raw))
+        except ValueError:
+            return default
+
+    return {
+        "enabled": True,
+        "provider": provider,
+        "api_key": api_key,
+        "timeout": read_float(
+            "MAINTAINER_TURNSTILE_SOLVER_TIMEOUT_SEC",
+            "turnstile_solver_timeout_sec",
+            DEFAULT_TURNSTILE_SOLVER_TIMEOUT_SECONDS,
+        ),
+        "poll_interval": read_float(
+            "MAINTAINER_TURNSTILE_SOLVER_POLL_SEC",
+            "turnstile_solver_poll_sec",
+            DEFAULT_TURNSTILE_SOLVER_POLL_INTERVAL_SECONDS,
+        ),
+    }
+
+
+def _turnstile_patch_source() -> str:
+    global _turnstile_patch_source_cache
+    if _turnstile_patch_source_cache is not None:
+        return _turnstile_patch_source_cache
+
+    script_path = extension_dir() / "script.js"
+    try:
+        source = script_path.read_text(encoding="utf-8")
+    except OSError:
+        source = ""
+    _turnstile_patch_source_cache = source
+    return source
+
+
+def _install_turnstile_patch() -> None:
+    """Install the lightweight Turnstile mouse-event patch without loading a Chrome extension."""
+    global _turnstile_patch_browser_id
+    if page is None or browser is None:
+        return
+    source = _turnstile_patch_source().strip()
+    if not source:
+        return
+
+    browser_id = id(browser)
+    if _turnstile_patch_browser_id != browser_id:
+        try:
+            page.run_cdp("Page.addScriptToEvaluateOnNewDocument", source=source)
+            _turnstile_patch_browser_id = browser_id
+        except Exception as exc:
+            print(f"[Debug] Turnstile patch CDP 注入失败: {str(exc)[:200]}")
+            if run_logger:
+                run_logger.warning("Turnstile patch CDP 注入失败: %s", exc)
+
+    try:
+        page.run_js(source)
+    except Exception:
+        pass
 
 
 def _ensure_browser_storage_ready(path_like: str | os.PathLike[str]) -> Path:
@@ -445,11 +635,12 @@ def start_browser():
         ) from None
     tabs = browser.get_tabs()
     page = tabs[-1] if tabs else browser.new_tab()
+    _install_turnstile_patch()
     return browser, page
 
 
 def stop_browser() -> None:
-    global browser, page
+    global browser, page, _turnstile_patch_browser_id
     if browser is not None:
         try:
             browser.quit()
@@ -457,6 +648,7 @@ def stop_browser() -> None:
             pass
     browser = None
     page = None
+    _turnstile_patch_browser_id = None
     _stop_virtual_display()
 
 
@@ -493,6 +685,7 @@ def refresh_active_page():
             page = browser.new_tab()
     except Exception:
         restart_browser()
+    _install_turnstile_patch()
     return page
 
 
@@ -1927,21 +2120,568 @@ return { url: location.href, inputs, buttons };
     raise RuntimeError("未找到验证码输入框或确认邮箱按钮")
 
 
-def get_turnstile_token() -> str:
-    page.run_js("try { turnstile.reset() } catch(e) { }")
+def _turnstile_response_value() -> str:
+    try:
+        value = page.run_js(
+            r"""
+try {
+    const apiResponse = window.turnstile?.getResponse?.();
+    if (apiResponse) {
+        return String(apiResponse || '').trim();
+    }
+} catch (e) {}
+try {
+    const challengeInput = document.querySelector('input[name="cf-turnstile-response"]');
+    return challengeInput ? String(challengeInput.value || '').trim() : '';
+} catch (e) {
+    return '';
+}
+            """
+        )
+    except Exception:
+        return ""
+    return str(value or "").strip()
 
-    for _ in range(15):
+
+def _turnstile_debug_snapshot() -> dict[str, Any]:
+    try:
+        snapshot = page.run_js(
+            r"""
+function collectElements(root) {
+    const out = [];
+    const seenRoots = new Set();
+
+    function walk(currentRoot) {
+        if (!currentRoot || seenRoots.has(currentRoot)) {
+            return;
+        }
+        seenRoots.add(currentRoot);
+
+        let nodes = [];
+        try {
+            nodes = Array.from(currentRoot.querySelectorAll('*'));
+        } catch (e) {
+            return;
+        }
+
+        for (const node of nodes) {
+            out.push(node);
+            if (node.shadowRoot) {
+                walk(node.shadowRoot);
+            }
+        }
+    }
+
+    walk(root);
+    return out;
+}
+
+function isVisible(node) {
+    if (!node) {
+        return false;
+    }
+    const style = window.getComputedStyle(node);
+    if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') {
+        return false;
+    }
+    const rect = node.getBoundingClientRect();
+    return rect.width > 0 && rect.height > 0;
+}
+
+const elements = collectElements(document);
+const challengeInput = document.querySelector('input[name="cf-turnstile-response"]');
+const inputs = elements.filter((node) => String(node.tagName || '').toLowerCase() === 'input').map((node) => ({
+    type: node.type || '',
+    name: node.name || '',
+    testid: node.getAttribute('data-testid') || '',
+    valueLength: String(node.value || '').length,
+    visible: isVisible(node),
+})).slice(0, 20);
+const frames = elements.filter((node) => String(node.tagName || '').toLowerCase() === 'iframe').map((node) => ({
+    src: String(node.src || '').slice(0, 180),
+    title: String(node.title || '').slice(0, 100),
+    name: String(node.name || '').slice(0, 100),
+    visible: isVisible(node),
+})).slice(0, 12);
+const buttons = elements.filter((node) => String(node.tagName || '').toLowerCase() === 'button').filter(isVisible).map((node) => ({
+    text: String(node.innerText || node.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 80),
+    disabled: !!node.disabled,
+    ariaDisabled: node.getAttribute('aria-disabled') || '',
+})).slice(0, 12);
+
+return {
+    url: String(location.href || ''),
+    title: String(document.title || ''),
+    readyState: String(document.readyState || ''),
+    turnstileApi: !!window.turnstile,
+    challengeInputFound: !!challengeInput,
+    challengeInputValueLength: challengeInput ? String(challengeInput.value || '').length : 0,
+    inputs,
+    frames,
+    buttons,
+};
+            """
+        )
+    except Exception as exc:
+        return {"snapshot_error": str(exc)}
+    return snapshot if isinstance(snapshot, dict) else {"snapshot": str(snapshot)}
+
+
+def _format_turnstile_debug(snapshot: dict[str, Any]) -> str:
+    parts: list[str] = []
+    for key in ("url", "readyState", "title", "turnstileApi", "challengeInputFound", "challengeInputValueLength"):
+        if key in snapshot:
+            parts.append(f"{key}={str(snapshot[key])[:160]}")
+    frames = snapshot.get("frames")
+    if isinstance(frames, list) and frames:
+        rendered = []
+        for frame in frames[:4]:
+            if not isinstance(frame, dict):
+                continue
+            marker = " ".join(
+                str(frame.get(item, "") or "").strip()
+                for item in ("title", "name", "src")
+            ).strip()
+            if marker:
+                rendered.append(marker[:160])
+        if rendered:
+            parts.append("frames=" + " | ".join(rendered))
+    buttons = snapshot.get("buttons")
+    if isinstance(buttons, list) and buttons:
+        rendered = [
+            str(item.get("text", "") or "").strip()
+            for item in buttons
+            if isinstance(item, dict) and str(item.get("text", "") or "").strip()
+        ]
+        if rendered:
+            parts.append("buttons=" + " | ".join(rendered[:6]))
+    if not parts:
         try:
-            response = page.run_js(
-                "try { return turnstile.getResponse() } catch(e) { return null }"
-            )
-            if response:
-                return response
+            parts.append(json.dumps(snapshot, ensure_ascii=False)[:500])
+        except Exception:
+            parts.append(str(snapshot)[:500])
+    return "；" + "；".join(parts)
 
-            challenge_solution = page.ele("@name=cf-turnstile-response")
+
+def _turnstile_render_params() -> dict[str, Any]:
+    try:
+        params = page.run_js(
+            r"""
+function compact(value) {
+    return String(value || '').trim();
+}
+
+const state = window.__grokManagerTurnstile || {};
+const renders = Array.isArray(state.renders) ? state.renders : [];
+const lastRecord = state.last || renders.slice().reverse().find((item) => item && item.sitekey) || {};
+let sitekey = compact(lastRecord.sitekey);
+if (!sitekey) {
+    const keyed = document.querySelector('[data-sitekey], [data-siteKey]');
+    sitekey = compact(keyed?.getAttribute?.('data-sitekey') || keyed?.getAttribute?.('data-siteKey'));
+}
+
+return {
+    action: compact(lastRecord.action),
+    cData: compact(lastRecord.cData || lastRecord.cdata || lastRecord.data),
+    callbackId: compact(lastRecord.callbackId || state.lastCallbackId),
+    chlPageData: compact(lastRecord.chlPageData || lastRecord.pagedata || lastRecord.pageData),
+    sitekey,
+    url: compact(lastRecord.url || location.href),
+    userAgent: compact(navigator.userAgent),
+    widgetId: compact(lastRecord.widgetId),
+};
+            """
+        )
+    except Exception as exc:
+        return {"error": str(exc)}
+    return params if isinstance(params, dict) else {"error": str(params)}
+
+
+def _requests_post_json(url: str, payload: dict[str, Any], timeout: float = 30.0) -> dict[str, Any]:
+    try:
+        response = requests.post(url, json=payload, timeout=max(1.0, timeout))
+    except requests.RequestException as exc:
+        raise RuntimeError(f"solver http error: {exc}") from exc
+    try:
+        data = response.json()
+    except ValueError as exc:
+        raise RuntimeError(
+            f"solver returned non-json status={response.status_code}: {response.text[:200]}"
+        ) from exc
+    if response.status_code >= 400:
+        raise RuntimeError(f"solver http {response.status_code}: {str(data)[:300]}")
+    return data if isinstance(data, dict) else {"response": data}
+
+
+def _solver_error_message(data: dict[str, Any]) -> str:
+    parts = []
+    for key in ("errorCode", "errorDescription", "errorId", "status"):
+        value = data.get(key)
+        if value not in (None, ""):
+            parts.append(f"{key}={value}")
+    return " ".join(parts) or str(data)[:300]
+
+
+def _capsolver_create_turnstile_task(api_key: str, params: dict[str, Any]) -> str:
+    task: dict[str, Any] = {
+        "type": "AntiTurnstileTaskProxyLess",
+        "websiteURL": params["url"],
+        "websiteKey": params["sitekey"],
+    }
+    metadata: dict[str, str] = {}
+    if params.get("action"):
+        metadata["action"] = str(params["action"])
+    if params.get("cData"):
+        metadata["cdata"] = str(params["cData"])
+    if params.get("chlPageData"):
+        metadata["chlPageData"] = str(params["chlPageData"])
+    if metadata:
+        task["metadata"] = metadata
+
+    data = _requests_post_json(
+        "https://api.capsolver.com/createTask",
+        {"clientKey": api_key, "task": task},
+    )
+    if int(data.get("errorId") or 0) != 0:
+        raise RuntimeError(f"capsolver createTask failed: {_solver_error_message(data)}")
+    task_id = str(data.get("taskId") or "").strip()
+    if not task_id:
+        raise RuntimeError(f"capsolver createTask missing taskId: {str(data)[:300]}")
+    return task_id
+
+
+def _twocaptcha_create_turnstile_task(api_key: str, params: dict[str, Any]) -> str:
+    task: dict[str, Any] = {
+        "type": "TurnstileTaskProxyless",
+        "websiteURL": params["url"],
+        "websiteKey": params["sitekey"],
+    }
+    if params.get("action"):
+        task["action"] = str(params["action"])
+    if params.get("cData"):
+        task["data"] = str(params["cData"])
+    if params.get("chlPageData"):
+        task["pagedata"] = str(params["chlPageData"])
+
+    data = _requests_post_json(
+        "https://api.2captcha.com/createTask",
+        {"clientKey": api_key, "task": task},
+    )
+    if int(data.get("errorId") or 0) != 0:
+        raise RuntimeError(f"2captcha createTask failed: {_solver_error_message(data)}")
+    task_id = str(data.get("taskId") or "").strip()
+    if not task_id:
+        raise RuntimeError(f"2captcha createTask missing taskId: {str(data)[:300]}")
+    return task_id
+
+
+def _poll_turnstile_solver_result(
+    *,
+    provider: str,
+    api_key: str,
+    task_id: str,
+    timeout: float,
+    poll_interval: float,
+) -> str:
+    endpoint = (
+        "https://api.capsolver.com/getTaskResult"
+        if provider == "capsolver"
+        else "https://api.2captcha.com/getTaskResult"
+    )
+    deadline = time.monotonic() + max(1.0, float(timeout))
+    while time.monotonic() < deadline:
+        data = _requests_post_json(
+            endpoint,
+            {"clientKey": api_key, "taskId": task_id},
+            timeout=min(30.0, max(1.0, deadline - time.monotonic())),
+        )
+        if int(data.get("errorId") or 0) != 0:
+            raise RuntimeError(f"{provider} getTaskResult failed: {_solver_error_message(data)}")
+
+        status = str(data.get("status") or "").lower()
+        if status == "ready":
+            solution = data.get("solution")
+            if not isinstance(solution, dict):
+                raise RuntimeError(f"{provider} result missing solution: {str(data)[:300]}")
+            token = str(
+                solution.get("token")
+                or solution.get("gRecaptchaResponse")
+                or solution.get("code")
+                or ""
+            ).strip()
+            if not token:
+                raise RuntimeError(f"{provider} result missing token: {str(data)[:300]}")
+            return token
+
+        time.sleep(max(1.0, float(poll_interval)))
+
+    raise RuntimeError(f"{provider} solve timed out after {timeout:.0f}s")
+
+
+def _solve_turnstile_with_external_solver(max_wait_seconds: float | None = None) -> str:
+    settings = _turnstile_solver_settings()
+    if not settings.get("enabled"):
+        error = str(settings.get("error") or "").strip()
+        if error:
+            raise RuntimeError(f"external solver disabled: {error}")
+        raise RuntimeError("external solver disabled")
+
+    params = _turnstile_render_params()
+    if not str(params.get("sitekey") or "").strip():
+        raise RuntimeError(f"external solver missing turnstile sitekey: {str(params)[:300]}")
+    params["sitekey"] = str(params["sitekey"]).strip()
+    params["url"] = str(params.get("url") or _safe_page_url()).strip() or SIGNUP_URL
+
+    provider = str(settings["provider"])
+    api_key = str(settings["api_key"])
+    timeout = float(settings.get("timeout") or DEFAULT_TURNSTILE_SOLVER_TIMEOUT_SECONDS)
+    if max_wait_seconds is not None:
+        timeout = min(timeout, max(1.0, float(max_wait_seconds)))
+    poll_interval = float(
+        settings.get("poll_interval")
+        or DEFAULT_TURNSTILE_SOLVER_POLL_INTERVAL_SECONDS
+    )
+
+    print(
+        f"[*] 使用外部 Turnstile solver: provider={provider}, "
+        f"sitekey={params['sitekey'][:16]}..., timeout={timeout:.0f}s"
+    )
+    if run_logger:
+        run_logger.info(
+            "使用外部 Turnstile solver: provider=%s sitekey=%s timeout=%.0fs",
+            provider,
+            params["sitekey"][:16],
+            timeout,
+        )
+
+    if provider == "capsolver":
+        task_id = _capsolver_create_turnstile_task(api_key, params)
+    elif provider == "2captcha":
+        task_id = _twocaptcha_create_turnstile_task(api_key, params)
+    else:
+        raise RuntimeError(f"unsupported external solver provider: {provider}")
+    return _poll_turnstile_solver_result(
+        provider=provider,
+        api_key=api_key,
+        task_id=task_id,
+        timeout=timeout,
+        poll_interval=poll_interval,
+    )
+
+
+def _profile_page_snapshot() -> dict[str, Any]:
+    try:
+        snapshot = page.run_js(
+            r"""
+function isVisible(node) {
+    if (!node) {
+        return false;
+    }
+    const style = window.getComputedStyle(node);
+    if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') {
+        return false;
+    }
+    const rect = node.getBoundingClientRect();
+    return rect.width > 0 && rect.height > 0;
+}
+
+const givenInput = document.querySelector('input[data-testid="givenName"], input[name="givenName"], input[autocomplete="given-name"]');
+const familyInput = document.querySelector('input[data-testid="familyName"], input[name="familyName"], input[autocomplete="family-name"]');
+const passwordInput = document.querySelector('input[data-testid="password"], input[name="password"], input[type="password"]');
+const challengeInput = document.querySelector('input[name="cf-turnstile-response"]');
+const buttons = Array.from(document.querySelectorAll('button, a, [role="button"]')).filter(isVisible).map((node) => ({
+    text: String(node.innerText || node.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 120),
+    disabled: !!node.disabled,
+    ariaDisabled: node.getAttribute('aria-disabled') || '',
+})).slice(0, 16);
+const bodyText = String(document.body?.innerText || '').replace(/\s+/g, ' ').trim();
+const normalized = bodyText.toLowerCase().replace(/\s+/g, '');
+const postSignup = normalized.includes('continuetogrok')
+    || normalized.includes('gotogrok')
+    || normalized.includes('startusinggrok')
+    || normalized.includes('getstarted')
+    || normalized.includes('continue')
+    || normalized.includes('进入grok')
+    || normalized.includes('开始使用')
+    || normalized.includes('继续');
+
+return {
+    url: String(location.href || ''),
+    title: String(document.title || ''),
+    readyState: String(document.readyState || ''),
+    profilePresent: !!(givenInput && familyInput && passwordInput),
+    challengeInputFound: !!challengeInput,
+    challengeInputValueLength: challengeInput ? String(challengeInput.value || '').length : 0,
+    postSignup,
+    buttons,
+    text: bodyText.slice(0, 500),
+};
+            """
+        )
+    except Exception as exc:
+        return {"snapshot_error": str(exc)}
+    return snapshot if isinstance(snapshot, dict) else {"snapshot": str(snapshot)}
+
+
+def _profile_snapshot_indicates_submitted(snapshot: dict[str, Any]) -> bool:
+    if bool(snapshot.get("profilePresent")):
+        return False
+
+    url = str(snapshot.get("url", "") or "").lower()
+    title = str(snapshot.get("title", "") or "").lower()
+    text = str(snapshot.get("text", "") or "").lower()
+    if "grok.com" in url:
+        return True
+    if bool(snapshot.get("postSignup")) and (
+        "sign-up" not in url or "create your grok account" not in title
+    ):
+        return True
+
+    success_terms = (
+        "continue to grok",
+        "go to grok",
+        "start using grok",
+        "get started",
+        "account created",
+        "welcome",
+        "进入 grok",
+        "进入grok",
+        "开始使用",
+    )
+    return any(term in text for term in success_terms)
+
+
+def _auth_token_candidate_available() -> bool:
+    try:
+        if _extract_auth_token_from_cookie_items(_collect_cookie_items()):
+            return True
+    except Exception:
+        pass
+    try:
+        return bool(
+            _extract_auth_token_from_storage_candidates(
+                _collect_web_storage_candidates()
+            )
+        )
+    except Exception:
+        return False
+
+
+def _format_profile_debug(snapshot: dict[str, Any]) -> str:
+    parts: list[str] = []
+    for key in (
+        "url",
+        "readyState",
+        "title",
+        "profilePresent",
+        "challengeInputFound",
+        "challengeInputValueLength",
+        "postSignup",
+    ):
+        if key in snapshot:
+            parts.append(f"{key}={str(snapshot[key])[:160]}")
+    buttons = snapshot.get("buttons")
+    if isinstance(buttons, list) and buttons:
+        rendered = [
+            str(item.get("text", "") or "").strip()
+            for item in buttons
+            if isinstance(item, dict) and str(item.get("text", "") or "").strip()
+        ]
+        if rendered:
+            parts.append("buttons=" + " | ".join(rendered[:8]))
+    if not parts:
+        try:
+            parts.append(json.dumps(snapshot, ensure_ascii=False)[:500])
+        except Exception:
+            parts.append(str(snapshot)[:500])
+    return "；" + "；".join(parts)
+
+
+def _snapshot_has_pending_turnstile(snapshot: dict[str, Any]) -> bool:
+    try:
+        value_length = int(snapshot.get("challengeInputValueLength") or 0)
+    except (TypeError, ValueError):
+        value_length = 0
+    return bool(snapshot.get("challengeInputFound")) and value_length <= 0
+
+
+def _wait_for_manual_turnstile_completion(
+    *,
+    deadline: float,
+    max_wait_seconds: float,
+) -> str:
+    if max_wait_seconds <= 0:
+        return "disabled"
+
+    manual_deadline = min(deadline, time.time() + max_wait_seconds)
+    if manual_deadline <= time.time():
+        return "expired"
+
+    print(
+        "[*] Turnstile 自动求解未返回响应，等待人工完成验证/点击 Complete sign up "
+        f"（最长 {max_wait_seconds:.0f}s）。"
+    )
+    while time.time() < manual_deadline:
+        if _turnstile_response_value():
+            return "turnstile-ready"
+        if _auth_token_candidate_available():
+            return "auth-token"
+        snapshot = _profile_page_snapshot()
+        if _profile_snapshot_indicates_submitted(snapshot):
+            return "submitted"
+        time.sleep(1.0)
+    return "timeout"
+
+
+def _click_turnstile_iframe_coordinates(challenge_iframe: Any) -> list[str]:
+    try:
+        width, height = challenge_iframe.rect.size
+        width = int(width)
+        height = int(height)
+    except Exception:
+        width, height = 300, 80
+
+    def clamp(value: int, size: int) -> int:
+        if size <= 8:
+            return max(1, size // 2)
+        return max(4, min(value, size - 4))
+
+    jitter_x = secrets.randbelow(9) - 4
+    jitter_y = secrets.randbelow(7) - 3
+    points = (
+        (clamp(30 + jitter_x, width), clamp(max(24, height // 2) + jitter_y, height)),
+        (clamp(42 + jitter_x, width), clamp(max(24, height // 2) - jitter_y, height)),
+        (clamp(24 - jitter_x, width), clamp(max(28, height // 2 + 8), height)),
+    )
+
+    clicked: list[str] = []
+    for index, (click_x, click_y) in enumerate(points, start=1):
+        try:
+            page.actions.move_to(
+                challenge_iframe,
+                offset_x=click_x,
+                offset_y=click_y,
+                duration=0.25,
+            ).click()
+            clicked.append(f"shadow-iframe-coordinate:{index}")
+        except Exception:
+            continue
+    try:
+        page.actions.click(challenge_iframe)
+        clicked.append("shadow-iframe-center")
+    except Exception:
+        pass
+    return clicked
+
+
+def _click_turnstile_widget() -> str:
+    """Click the Turnstile widget through both the legacy shadow path and fallback heuristics."""
+    attempts: list[str] = []
+    try:
+        challenge_solution = page.ele("@name=cf-turnstile-response", timeout=0.2)
+        if challenge_solution:
             challenge_wrapper = challenge_solution.parent()
             challenge_iframe = challenge_wrapper.shadow_root.ele("tag:iframe")
-
             challenge_iframe.run_js(
                 """
 window.dtp = 1
@@ -1952,18 +2692,100 @@ function getRandomInt(min, max) {
 let screenX = getRandomInt(800, 1200);
 let screenY = getRandomInt(400, 600);
 
-Object.defineProperty(MouseEvent.prototype, 'screenX', { value: screenX });
-Object.defineProperty(MouseEvent.prototype, 'screenY', { value: screenY });
+try {
+    Object.defineProperty(MouseEvent.prototype, 'screenX', { value: screenX });
+    Object.defineProperty(MouseEvent.prototype, 'screenY', { value: screenY });
+} catch (e) {}
                 """
             )
-
+            attempts.extend(_click_turnstile_iframe_coordinates(challenge_iframe))
             challenge_iframe_body = challenge_iframe.ele("tag:body").shadow_root
             challenge_button = challenge_iframe_body.ele("tag:input")
             challenge_button.click()
+            attempts.append("legacy-shadow-input")
+    except Exception:
+        pass
+
+    if attempts:
+        return "+".join(attempts)
+
+    try:
+        return _click_cloudflare_challenge()
+    except Exception as exc:
+        return f"click-error:{str(exc)[:120]}"
+
+
+def get_turnstile_token(
+    *,
+    timeout: float = 45.0,
+    poll_interval: float = 1.0,
+    reset: bool = True,
+) -> str:
+    if reset:
+        try:
+            page.run_js("try { turnstile.reset() } catch(e) { }")
         except Exception:
             pass
-        time.sleep(1)
-    raise RuntimeError("failed to solve turnstile")
+
+    deadline = time.monotonic() + max(1.0, float(timeout))
+    last_click = ""
+    next_click_at = 0.0
+
+    while time.monotonic() < deadline:
+        response = _turnstile_response_value()
+        if response:
+            return response
+
+        now = time.monotonic()
+        if now >= next_click_at:
+            click_result = _click_turnstile_widget()
+            if click_result != "not-found":
+                last_click = click_result
+            next_click_at = now + 2.0
+
+        time.sleep(max(0.2, float(poll_interval)))
+
+    snapshot = _turnstile_debug_snapshot()
+    detail = _format_turnstile_debug(snapshot)
+    if last_click:
+        detail = f"{detail}；last_click={last_click}"
+    raise RuntimeError(f"failed to solve turnstile{detail}")
+
+
+def _sync_turnstile_token(token: str) -> bool:
+    try:
+        return bool(
+            page.run_js(
+                r"""
+const token = arguments[0];
+const challengeInput = document.querySelector('input[name="cf-turnstile-response"]');
+if (!challengeInput) {
+    return false;
+}
+const nativeSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')?.set;
+if (nativeSetter) {
+    nativeSetter.call(challengeInput, token);
+} else {
+    challengeInput.value = token;
+}
+challengeInput.dispatchEvent(new Event('input', { bubbles: true }));
+challengeInput.dispatchEvent(new Event('change', { bubbles: true }));
+try {
+    const state = window.__grokManagerTurnstile || {};
+    const last = state.last || {};
+    const callbackId = last.callbackId || state.lastCallbackId || '';
+    const callback = state.callbacks && state.callbacks[callbackId];
+    if (typeof callback === 'function') {
+        callback(token);
+    }
+} catch (e) {}
+return String(challengeInput.value || '').trim() === String(token || '').trim();
+                """,
+                token,
+            )
+        )
+    except Exception:
+        return False
 
 
 def build_profile() -> tuple[str, str, str]:
@@ -1977,6 +2799,11 @@ def fill_profile_and_submit(timeout: int = 120) -> dict[str, str]:
     given_name, family_name, password = build_profile()
     deadline = time.time() + timeout
     turnstile_token = ""
+    turnstile_notice_printed = False
+    external_turnstile_notice_printed = False
+    last_turnstile_error = ""
+    manual_turnstile_wait = _turnstile_manual_wait_seconds()
+    profile_filled_once = False
 
     while time.time() < deadline:
         filled = page.run_js(
@@ -2070,6 +2897,15 @@ return [
         )
 
         if filled == "not-ready":
+            if profile_filled_once:
+                snapshot = _profile_page_snapshot()
+                if _profile_snapshot_indicates_submitted(snapshot) or _auth_token_candidate_available():
+                    print("[*] 最终注册表单已离开，继续进入 sso cookie 采集阶段。")
+                    return {
+                        "given_name": given_name,
+                        "family_name": family_name,
+                        "password": password,
+                    }
             time.sleep(0.5)
             continue
 
@@ -2077,6 +2913,8 @@ return [
             print(f"[Debug] 最终注册页输入框已出现，但姓名/密码写入失败: {filled}")
             time.sleep(0.5)
             continue
+
+        profile_filled_once = True
 
         values_ok = page.run_js(
             """
@@ -2135,30 +2973,74 @@ return value ? 'ready' : 'pending';
         )
 
         if turnstile_state == "pending" and not turnstile_token:
-            print("[*] 检测到最终注册页存在 Turnstile，开始使用现有真人化点击逻辑。")
-            turnstile_token = get_turnstile_token()
-            if turnstile_token:
-                synced = page.run_js(
-                    """
-const token = arguments[0];
-const challengeInput = document.querySelector('input[name="cf-turnstile-response"]');
-if (!challengeInput) {
-    return false;
-}
-const nativeSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')?.set;
-if (nativeSetter) {
-    nativeSetter.call(challengeInput, token);
-} else {
-    challengeInput.value = token;
-}
-challengeInput.dispatchEvent(new Event('input', { bubbles: true }));
-challengeInput.dispatchEvent(new Event('change', { bubbles: true }));
-return String(challengeInput.value || '').trim() === String(token || '').trim();
-                    """,
-                    turnstile_token,
+            if not turnstile_notice_printed:
+                print("[*] 检测到最终注册页存在 Turnstile，开始使用现有真人化点击逻辑。")
+                turnstile_notice_printed = True
+            try:
+                turnstile_token = get_turnstile_token(
+                    timeout=15.0,
+                    reset=not bool(last_turnstile_error),
                 )
+            except RuntimeError as exc:
+                last_turnstile_error = str(exc)
+                print(
+                    "[Debug] Turnstile 本次求解失败，继续等待/重试: "
+                    f"{last_turnstile_error[:500]}"
+                )
+                solver_settings = _turnstile_solver_settings()
+                if solver_settings.get("enabled"):
+                    if not external_turnstile_notice_printed:
+                        print("[*] 自动点击未拿到 Turnstile 响应，切换到外部 solver。")
+                        external_turnstile_notice_printed = True
+                    try:
+                        turnstile_token = _solve_turnstile_with_external_solver(
+                            max_wait_seconds=max(1.0, deadline - time.time() - 2.0)
+                        )
+                    except RuntimeError as solver_exc:
+                        last_turnstile_error = (
+                            f"{last_turnstile_error}; external_solver={str(solver_exc)[:500]}"
+                        )
+                        print(
+                            "[Debug] 外部 Turnstile solver 本次失败: "
+                            f"{str(solver_exc)[:500]}"
+                        )
+                elif solver_settings.get("error") and not external_turnstile_notice_printed:
+                    print(f"[Debug] 外部 Turnstile solver 未启用: {solver_settings['error']}")
+                    external_turnstile_notice_printed = True
+
+                if not turnstile_token:
+                    manual_result = _wait_for_manual_turnstile_completion(
+                        deadline=deadline,
+                        max_wait_seconds=manual_turnstile_wait,
+                    )
+                    if manual_result in {"submitted", "auth-token"}:
+                        print("[*] 检测到人工完成注册或认证 token 已出现，继续采集 sso cookie。")
+                        return {
+                            "given_name": given_name,
+                            "family_name": family_name,
+                            "password": password,
+                        }
+                    if manual_result == "turnstile-ready":
+                        turnstile_token = _turnstile_response_value()
+                        if turnstile_token:
+                            if _sync_turnstile_token(turnstile_token):
+                                print("[*] Turnstile 响应已同步到最终注册表单。")
+                            else:
+                                turnstile_token = ""
+                                last_turnstile_error = "Turnstile token sync failed after manual wait"
+                    time.sleep(1.0)
+                    continue
+            if turnstile_token:
+                synced = _sync_turnstile_token(turnstile_token)
                 if synced:
                     print("[*] Turnstile 响应已同步到最终注册表单。")
+                else:
+                    last_turnstile_error = "Turnstile token sync failed"
+                    turnstile_token = ""
+                    time.sleep(0.5)
+                    continue
+        elif turnstile_state == "ready":
+            last_turnstile_error = ""
 
         time.sleep(1.2)
 
@@ -2220,12 +3102,46 @@ return challengeInput ? String(challengeInput.value || '').trim() : 'not-found';
                 "family_name": family_name,
                 "password": password,
             }
+        if _auth_token_candidate_available():
+            print("[*] 点击完成注册后检测到认证 token，继续采集 sso cookie。")
+            return {
+                "given_name": given_name,
+                "family_name": family_name,
+                "password": password,
+            }
+        snapshot = _profile_page_snapshot()
+        if _profile_snapshot_indicates_submitted(snapshot):
+            print("[*] 最终注册页已进入注册后阶段，继续采集 sso cookie。")
+            return {
+                "given_name": given_name,
+                "family_name": family_name,
+                "password": password,
+            }
         if isinstance(clicked, str) and clicked.startswith("NO_BUTTON:"):
             print(f"[Debug] 最终注册页未找到可点击提交按钮: {clicked}")
 
         time.sleep(0.5)
 
-    raise RuntimeError("未找到最终注册表单或完成注册按钮")
+    if last_turnstile_error:
+        snapshot = _profile_page_snapshot()
+        if _snapshot_has_pending_turnstile(snapshot):
+            raise RuntimeError(
+                "Turnstile 自动验证未通过，cf-turnstile-response 为空；"
+                "当前无图形环境无法人工介入时，请更换出口/IP/浏览器指纹，"
+                "或改用真实图形桌面/外部验证方案；"
+                f"last_turnstile={last_turnstile_error[:800]}"
+                f"{_format_profile_debug(snapshot)}"
+            )
+        raise RuntimeError(
+            "未找到最终注册表单或完成注册按钮；"
+            f"last_turnstile={last_turnstile_error[:800]}"
+            f"{_format_profile_debug(snapshot)}"
+        )
+    snapshot = _profile_page_snapshot()
+    raise RuntimeError(
+        "未找到最终注册表单或完成注册按钮"
+        f"{_format_profile_debug(snapshot)}"
+    )
 
 
 def extract_visible_numbers(timeout: int = 60):
@@ -2653,6 +3569,7 @@ def run_batch(
     pause_check: Callable[[], bool] | None = None,
     stop_check: Callable[[], bool] | None = None,
     progress_callback: Callable[[str, dict[str, Any]], None] | None = None,
+    push_to_api: bool = True,
 ) -> list[str]:
     """Run a maintainer registration batch and return collected SSO tokens.
 
@@ -2677,6 +3594,10 @@ def run_batch(
 
     The callback runs in the worker process; exceptions are swallowed so a
     broken hook never aborts a registration loop.
+
+    ``push_to_api`` is disabled by the parallel orchestrator for child
+    workers. The parent process then performs one deduplicated import after all
+    workers exit, avoiding concurrent writes to the Admin token store.
     """
     global run_logger, co
 
@@ -2789,7 +3710,7 @@ def run_batch(
                 time.sleep(2)
 
     finally:
-        if collected_sso:
+        if collected_sso and push_to_api:
             print(f"\n[*] 注册完成，推送 {len(collected_sso)} 个 token 到 API...")
             push_sso_to_api(collected_sso)
 
@@ -2901,6 +3822,7 @@ def _worker_entry(
                 pause_check=_is_paused if pause_event is not None else None,
                 stop_check=_is_stopped if stop_event is not None else None,
                 progress_callback=_emit if progress_queue is not None else None,
+                push_to_api=False,
             )
         finally:
             # Best-effort cleanup so a long-running orchestrator doesn't leak
@@ -3251,11 +4173,15 @@ def run_batch_parallel(
         if missing_tokens:
             all_tokens = _merge_tokens(all_tokens, missing_tokens)
             orch_logger.info(
-                "从 worker 输出文件恢复 %d 个未上报 token，补推到 API",
+                "从 worker 输出文件恢复 %d 个未上报 token",
                 len(missing_tokens),
             )
-            set_config_path(config_path_str)
-            push_sso_to_api(missing_tokens)
+
+    all_tokens = _merge_tokens([], all_tokens)
+    if all_tokens:
+        orch_logger.info("并发注册完成，父进程统一推送 %d 个 token 到 API", len(all_tokens))
+        set_config_path(config_path_str)
+        push_sso_to_api(all_tokens)
 
     return all_tokens
 

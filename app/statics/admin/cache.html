@@ -475,7 +475,7 @@ let _assetViewCache = null;
 
 function tr(key, params, fallback) {
   const value = t(key, params);
-  return value === key ? (fallback ?? key) : value;
+  return value === key ? (fallback == null ? key : fallback) : value;
 }
 
 function waitI18n() {
@@ -502,12 +502,13 @@ function _fmtRatio(value) {
 }
 
 function _usageSummary(stats) {
-  const used = _fmtBytes(stats.size_bytes ?? 0);
-  if (!stats?.limited || !stats?.limit_bytes) {
+  const safeStats = stats || {};
+  const used = _fmtBytes(safeStats.size_bytes == null ? 0 : safeStats.size_bytes);
+  if (!safeStats.limited || !safeStats.limit_bytes) {
     return tr('cache.usageSummaryUnlimited', { used }, `${used} · 未限制`);
   }
-  const limit = _fmtBytes(stats.limit_bytes);
-  const percent = _fmtRatio(stats.usage_percent);
+  const limit = _fmtBytes(safeStats.limit_bytes);
+  const percent = _fmtRatio(safeStats.usage_percent);
   return tr(
     'cache.usageSummaryLimited',
     { used, limit, percent },
@@ -518,8 +519,9 @@ function _usageSummary(stats) {
 function _applyUsageBar(id, type, stats) {
   const el = document.getElementById(id);
   if (!el) return;
-  const limited = !!stats?.limited && Number(stats.limit_bytes) > 0;
-  const percent = limited ? Number(stats.usage_percent ?? 0) : 0;
+  const safeStats = stats || {};
+  const limited = !!safeStats.limited && Number(safeStats.limit_bytes) > 0;
+  const percent = limited ? Number(safeStats.usage_percent == null ? 0 : safeStats.usage_percent) : 0;
   const safe = Number.isFinite(percent) ? percent : 0;
   el.style.width = `${Math.max(0, Math.min(safe, 100))}%`;
   el.classList.toggle('over', limited && safe > 100);
@@ -688,11 +690,11 @@ async function loadStats() {
     const d = await _api('GET', '/cache');
     const img = d.local_image || {};
     const vid = d.local_video || {};
-    document.getElementById('s-img-count').textContent = img.count ?? 0;
+    document.getElementById('s-img-count').textContent = img.count == null ? 0 : img.count;
     document.getElementById('s-img-size').textContent = _fmtMb(img.size_mb);
     document.getElementById('s-img-usage').textContent = _usageSummary(img);
     _applyUsageBar('s-img-progress', 'image', img);
-    document.getElementById('s-vid-count').textContent = vid.count ?? 0;
+    document.getElementById('s-vid-count').textContent = vid.count == null ? 0 : vid.count;
     document.getElementById('s-vid-size').textContent = _fmtMb(vid.size_mb);
     document.getElementById('s-vid-usage').textContent = _usageSummary(vid);
     _applyUsageBar('s-vid-progress', 'video', vid);
@@ -704,7 +706,7 @@ async function loadStats() {
 async function loadList() {
   try {
     const d = await _api('GET', `/cache/list?type=${_type}&page=${_page}&page_size=${_pageSize}`);
-    _total = d.total ?? 0;
+    _total = d.total == null ? 0 : d.total;
     _localItems = d.items || [];
     invalidateLocalView();
     _reconcileLocalSelection();
@@ -797,7 +799,7 @@ async function clearLocal() {
   if (!confirm(tr('cache.clearLocalConfirm', { type: getTypeNoun() }, `确定要清空所有本地${getTypeNoun()}缓存吗？`))) return;
   try {
     const d = await _api('POST', '/cache/clear', { type: _type });
-    const removed = d.result?.removed ?? 0;
+    const removed = d.result && d.result.removed != null ? d.result.removed : 0;
     showToast(tr('cache.clearLocalDone', { count: removed, type: getTypeNoun() }, `已清除 ${removed} 个${getTypeNoun()}文件`));
     _page = 1;
     loadStats();
@@ -846,7 +848,7 @@ async function loadAssets() {
     const d = await _api('GET', '/assets');
     _assetLoaded = true;
     _assetData = d.tokens || [];
-    _assetTotal = d.total_assets ?? _assetData.reduce((sum, row) => sum + (row.count || 0), 0);
+    _assetTotal = d.total_assets == null ? _assetData.reduce((sum, row) => sum + (row.count || 0), 0) : d.total_assets;
     _expanded = {};
     invalidateAssetView();
     _reconcileAssetSelection();
@@ -951,7 +953,8 @@ async function clearTokenAssets(token, masked) {
   if (!confirm(tr('cache.clearTokenConfirm', { token: masked }, `确定要清理 ${masked} 的全部在线资产吗？`))) return;
   try {
     const d = await _api('POST', '/assets/clear-token', { token });
-    showToast(tr('cache.clearTokenDone', { count: d.deleted ?? 0 }, `已删除 ${d.deleted ?? 0} 个文件`));
+    const deleted = d.deleted == null ? 0 : d.deleted;
+    showToast(tr('cache.clearTokenDone', { count: deleted }, `已删除 ${deleted} 个文件`));
     await loadAssets();
   } catch (e) {
     showToast(tr('cache.clearFailed', { message: e.message }, `清理失败: ${e.message}`), 'error');
@@ -1046,7 +1049,7 @@ async function deleteSelectedLocal() {
   if (!confirm(tr('cache.deleteSelectedConfirm', { n: names.length }, `确定要删除选中的 ${names.length} 个文件吗？`))) return;
   try {
     const d = await _api('POST', '/cache/items/delete', { type: _type, names });
-    const deleted = d.result?.deleted ?? names.length;
+    const deleted = d.result && d.result.deleted != null ? d.result.deleted : names.length;
     showToast(tr('cache.deleteSelectedDone', { count: deleted }, `已删除 ${deleted} 个文件`), 'success');
     clearLocalSelection();
     loadStats();
@@ -1178,10 +1181,12 @@ async function runAssetClear(tokens) {
       if (['done', 'error', 'cancelled'].includes(ev.type)) {
         done(es);
         if (ev.type === 'done') {
-          const summary = ev.result?.summary || {};
+          const summary = ev.result && ev.result.summary ? ev.result.summary : {};
+          const ok = summary.ok == null ? 0 : summary.ok;
+          const fail = summary.fail == null ? 0 : summary.fail;
           progress.finish(
-            tr('cache.clearAllDone', { ok: summary.ok ?? 0, fail: summary.fail ?? 0 }, `清理完成：成功 ${summary.ok ?? 0}，失败 ${summary.fail ?? 0}`),
-            (summary.fail ?? 0) > 0 ? 'error' : 'success'
+            tr('cache.clearAllDone', { ok, fail }, `清理完成：成功 ${ok}，失败 ${fail}`),
+            fail > 0 ? 'error' : 'success'
           );
           clearAssetSelection(false);
           loadAssets();
@@ -1249,8 +1254,8 @@ function _esc(value) {
 (async () => {
   await waitI18n();
   applyCacheI18n();
-  await renderAdminHeader?.();
-  await renderSiteFooter?.();
+  if (typeof renderAdminHeader === 'function') await renderAdminHeader();
+  if (typeof renderSiteFooter === 'function') await renderSiteFooter();
   const key = await adminKey.get();
   if (!key || !await verifyKey(ADMIN_API + '/verify', key).catch(() => false)) {
     location.href = '/admin/login';

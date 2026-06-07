@@ -327,6 +327,47 @@ class ImageGenerationRetryTests(unittest.TestCase):
         self.assertEqual(directory.released, ["bad-token"])
         self.assertEqual(directory.feedback_calls[0][1], FeedbackKind.SUCCESS)
 
+    def test_lite_stream_cancellation_drains_background_batch_task(self) -> None:
+        from app.control.model.registry import get as get_model
+        from app.products.openai import images
+
+        spec = get_model("grok-imagine-image-lite")
+        self.assertIsNotNone(spec)
+
+        async def run() -> bool:
+            started = asyncio.Event()
+            cancelled = asyncio.Event()
+
+            async def fake_run_lite_batch(**_kwargs):
+                started.set()
+                try:
+                    await asyncio.Event().wait()
+                except asyncio.CancelledError:
+                    cancelled.set()
+                    raise
+
+            with (
+                patch.object(images, "get_config", return_value=_FakeConfig({"chat.timeout": "1"})),
+                patch.object(images, "_run_lite_batch", side_effect=fake_run_lite_batch),
+            ):
+                stream = await images._generate_lite(
+                    spec=spec,
+                    prompt="draw a cat",
+                    n=1,
+                    response_format="url",
+                    stream=True,
+                    chat_format=True,
+                )
+                next_chunk = asyncio.create_task(stream.__anext__())
+                await asyncio.wait_for(started.wait(), timeout=1)
+                next_chunk.cancel()
+                with self.assertRaises(asyncio.CancelledError):
+                    await next_chunk
+                await asyncio.wait_for(cancelled.wait(), timeout=1)
+                return cancelled.is_set()
+
+        self.assertTrue(asyncio.run(run()))
+
     def test_ws_generation_retries_next_account_after_rate_limit_event(self) -> None:
         from app.dataplane import account as account_module
         from app.control.model.registry import get as get_model

@@ -20,6 +20,10 @@ uv run python -m app.maintainer --count 0
 
 默认读取仓库根目录的 `maintainer.config.json`，也可以通过 `--config` 或环境变量 `GROK_MAINTAINER_CONFIG` 指定。
 
+### Turnstile
+
+最终注册页出现 Turnstile 时会先自动点击验证，并通过 CDP 注入内置 `turnstilePatch/script.js`，不再依赖 Chrome 扩展加载。`web.turnstile_manual_wait_sec=0` 表示自动模式：只有真实图形桌面默认等待 180 秒供人工完成验证；Headless、Xvfb、无 `DISPLAY` 的 Linux 服务器默认不等待。设置为正数可固定等待秒数。要完全关闭人工等待，可设置 `MAINTAINER_TURNSTILE_MANUAL_WAIT_SEC=off`。
+
 ### API 回写
 
 - 兼容旧接口：`/v1/admin/tokens`
