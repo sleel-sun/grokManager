@@ -3,14 +3,14 @@
   const MODELS_ENDPOINT = '/webui/api/models';
   const CHAT_ENDPOINT = '/webui/api/chat/completions';
   const MCP_SERVERS_ENDPOINT = '/webui/api/mcp/servers';
+  const MCP_IMPORT_ENDPOINT = '/webui/api/mcp/servers/import';
+  const MCP_TOOLS_ENDPOINT = '/webui/api/mcp/tools';
+  const CODE_PREVIEWS_ENDPOINT = '/webui/api/code-previews';
   const PREFERRED_MODEL = 'grok-4.20-0309';
   const STORE_KEY = 'grok2api_webui_chat_sessions_v1';
   const SIDEBAR_STORE_KEY = 'grok2api_webui_sidebar_collapsed_v1';
   const MCP_SETTINGS_KEY = 'grok2api_webui_mcp_settings_v1';
   const SEARCH_SETTINGS_KEY = 'grok2api_webui_search_settings_v1';
-  const PREVIEW_STORE_INDEX_KEY = 'grok2api_webui_code_preview_index_v1';
-  const PREVIEW_STORE_PREFIX = 'grok2api_webui_code_preview_';
-  const PREVIEW_MAX_STORED = 30;
   const PREVIEW_IFRAME_SANDBOX = 'allow-scripts allow-forms allow-modals allow-popups';
   const PREVIEW_CSP = [
     "default-src 'none'",
@@ -47,6 +47,8 @@
   const mcpAuto = document.getElementById('mcpAuto');
   const mcpToolChoice = document.getElementById('mcpToolChoice');
   const mcpRefreshBtn = document.getElementById('mcpRefreshBtn');
+  const mcpDiscoverToolsBtn = document.getElementById('mcpDiscoverToolsBtn');
+  const mcpStatus = document.getElementById('mcpStatus');
   const mcpServerList = document.getElementById('mcpServerList');
   const mcpFormTitle = document.getElementById('mcpFormTitle');
   const mcpResetFormBtn = document.getElementById('mcpResetFormBtn');
@@ -57,6 +59,9 @@
   const mcpCwdInput = document.getElementById('mcpCwdInput');
   const mcpTimeoutInput = document.getElementById('mcpTimeoutInput');
   const mcpServerEnabledInput = document.getElementById('mcpServerEnabledInput');
+  const mcpJsonInput = document.getElementById('mcpJsonInput');
+  const mcpJsonReplaceInput = document.getElementById('mcpJsonReplaceInput');
+  const mcpJsonImportBtn = document.getElementById('mcpJsonImportBtn');
   const mcpDeleteBtn = document.getElementById('mcpDeleteBtn');
   const mcpSaveBtn = document.getElementById('mcpSaveBtn');
   const sessionModal = document.getElementById('sessionModal');
@@ -78,9 +83,17 @@
   let availableModels = [];
   let activeEdit = null;
   let mcpServers = [];
+  let mcpToolStatusByServerId = {};
+  let mcpToolsLoading = false;
   let mcpSettings = { enabled: false, auto: true, selectedIds: [], toolChoice: 'auto' };
   let searchSettings = { enabled: false, preset: 'default' };
   let editingMcpServerId = '';
+  let storeKey = STORE_KEY;
+  let sidebarStoreKey = SIDEBAR_STORE_KEY;
+  let mcpSettingsKey = MCP_SETTINGS_KEY;
+  let searchSettingsKey = SEARCH_SETTINGS_KEY;
+  let currentStorageScope = 'anonymous';
+  let requireSessionStorageScope = false;
   const PROMPT_MIN_HEIGHT = 36;
   const PROMPT_MAX_HEIGHT = 108;
   let pendingThreadScrollFrame = 0;
@@ -559,63 +572,60 @@
     return 'Code';
   }
 
-  function createPreviewId() {
-    return `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
-  }
-
-  function previewStorageKey(id) {
-    return `${PREVIEW_STORE_PREFIX}${id}`;
-  }
-
-  function pruneStoredPreviews(index) {
-    const sorted = index
-      .filter((item) => item && item.id)
-      .sort((a, b) => Number(b.createdAt || 0) - Number(a.createdAt || 0));
-    sorted.slice(PREVIEW_MAX_STORED).forEach((item) => {
-      try {
-        localStorage.removeItem(previewStorageKey(item.id));
-      } catch (_e) {}
-    });
-    return sorted.slice(0, PREVIEW_MAX_STORED);
-  }
-
-  function savePreviewDocument(srcdoc) {
-    const id = createPreviewId();
+  async function savePreviewDocument(srcdoc) {
     const title = text('webui.chat.previewFrameTitle', 'Code preview');
-    const createdAt = Date.now();
-    let index = [];
-    try {
-      const rawIndex = localStorage.getItem(PREVIEW_STORE_INDEX_KEY);
-      index = rawIndex ? JSON.parse(rawIndex) : [];
-      if (!Array.isArray(index)) index = [];
-    } catch (_e) {
-      index = [];
+    const headers = {
+      'Content-Type': 'application/json',
+      ...(await getAuthHeaders()),
+    };
+    const res = await fetch(CODE_PREVIEWS_ENDPOINT, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ srcdoc, title }),
+    });
+    if (!res.ok) {
+      const detail = await res.text().catch(() => '');
+      throw new Error(detail || `HTTP ${res.status}`);
     }
-
-    localStorage.setItem(previewStorageKey(id), JSON.stringify({ srcdoc, title, createdAt }));
-    index.unshift({ id, createdAt });
-    localStorage.setItem(PREVIEW_STORE_INDEX_KEY, JSON.stringify(pruneStoredPreviews(index)));
-
-    const url = new URL('/webui/code-preview', window.location.origin);
-    url.searchParams.set('id', id);
-    return url.href;
+    const data = await res.json().catch(() => null);
+    const rawUrl = data && data.url ? String(data.url) : '';
+    if (rawUrl) {
+      return new URL(rawUrl, window.location.origin).href;
+    }
+    const id = data && data.id ? String(data.id) : '';
+    if (id) {
+      const url = new URL('/webui/code-preview', window.location.origin);
+      url.searchParams.set('id', id);
+      return url.href;
+    }
+    throw new Error(text('webui.chat.previewSaveFailed', 'Failed to save preview URL'));
   }
 
-  function openPreviewUrl(url) {
-    const opened = window.open(url, '_blank');
+  function openPreviewPlaceholder() {
+    const opened = window.open('about:blank', '_blank');
     if (!opened) {
       toast(text('webui.chat.previewOpenFailed', 'Preview popup was blocked'), 'error');
-      return;
+      return null;
     }
     try {
       opened.opener = null;
     } catch (_e) {}
+    try {
+      opened.document.title = text('webui.chat.previewFrameTitle', 'Code preview');
+      opened.document.body.innerHTML = '<div style="font:14px system-ui;padding:24px;color:#555">Preparing preview...</div>';
+    } catch (_e) {}
+    return opened;
   }
 
-  function openPreviewDocument(srcdoc) {
+  async function openPreviewDocument(srcdoc) {
+    const opened = openPreviewPlaceholder();
+    if (!opened) return;
     try {
-      openPreviewUrl(savePreviewDocument(srcdoc));
+      opened.location.href = await savePreviewDocument(srcdoc);
     } catch (error) {
+      try {
+        opened.close();
+      } catch (_e) {}
       toast(error.message || text('webui.chat.previewSaveFailed', 'Failed to save preview URL'), 'error');
     }
   }
@@ -703,11 +713,11 @@
         lastPreviewUrl = '';
       }
 
-      function getPreviewUrl() {
+      async function getPreviewUrl() {
         const srcdoc = lastSrcdoc || buildPreviewDocument(snippets, index);
         if (!srcdoc) return '';
         if (!lastPreviewUrl) {
-          lastPreviewUrl = savePreviewDocument(srcdoc);
+          lastPreviewUrl = await savePreviewDocument(srcdoc);
         }
         return lastPreviewUrl;
       }
@@ -724,13 +734,13 @@
       });
 
       refreshBtn.addEventListener('click', renderPreview);
-      openBtn.addEventListener('click', () => {
+      openBtn.addEventListener('click', async () => {
         const srcdoc = lastSrcdoc || buildPreviewDocument(snippets, index);
-        if (srcdoc) openPreviewDocument(srcdoc);
+        if (srcdoc) await openPreviewDocument(srcdoc);
       });
       copyUrlBtn.addEventListener('click', async () => {
         try {
-          const url = getPreviewUrl();
+          const url = await getPreviewUrl();
           if (!url) return;
           await copyToClipboard(url);
           toast(text('webui.chat.previewUrlCopied', 'Preview URL copied'), 'info');
@@ -977,13 +987,21 @@
 
   function loadStore() {
     try {
-      const raw = localStorage.getItem(STORE_KEY);
+      const raw = localStorage.getItem(storeKey);
       if (!raw) return { sessions: [], currentSessionId: '' };
       const parsed = JSON.parse(raw);
-      if (Array.isArray(parsed)) return { sessions: parsed, currentSessionId: parsed[0] && parsed[0].id || '' };
+      const rawSessions = Array.isArray(parsed)
+        ? parsed
+        : (Array.isArray(parsed && parsed.sessions) ? parsed.sessions : []);
+      const scopedSessions = rawSessions.filter(sessionMatchesStorageScope);
+      const storedCurrentId = Array.isArray(parsed)
+        ? (scopedSessions[0] && scopedSessions[0].id || '')
+        : (parsed && parsed.currentSessionId ? String(parsed.currentSessionId) : '');
       return {
-        sessions: Array.isArray(parsed && parsed.sessions) ? parsed.sessions : [],
-        currentSessionId: parsed && parsed.currentSessionId ? String(parsed.currentSessionId) : '',
+        sessions: scopedSessions,
+        currentSessionId: scopedSessions.some((item) => item && item.id === storedCurrentId)
+          ? storedCurrentId
+          : (scopedSessions[0] && scopedSessions[0].id || ''),
       };
     } catch {
       return { sessions: [], currentSessionId: '' };
@@ -993,6 +1011,7 @@
   function persistStore() {
     const serializedSessions = sessions.map((session) => ({
       ...session,
+      storageScope: currentStorageScope,
       messages: Array.isArray(session.messages)
         ? session.messages.map((message) => ({
             ...message,
@@ -1002,7 +1021,7 @@
           }))
         : [],
     }));
-    localStorage.setItem(STORE_KEY, JSON.stringify({ sessions: serializedSessions, currentSessionId }));
+    localStorage.setItem(storeKey, JSON.stringify({ sessions: serializedSessions, currentSessionId }));
   }
 
   function applySidebarState() {
@@ -1013,7 +1032,7 @@
 
   function loadSidebarState() {
     try {
-      sidebarCollapsed = localStorage.getItem(SIDEBAR_STORE_KEY) === 'true';
+      sidebarCollapsed = localStorage.getItem(sidebarStoreKey) === 'true';
     } catch {
       sidebarCollapsed = false;
     }
@@ -1024,7 +1043,7 @@
     sidebarCollapsed = !sidebarCollapsed;
     applySidebarState();
     try {
-      localStorage.setItem(SIDEBAR_STORE_KEY, String(sidebarCollapsed));
+      localStorage.setItem(sidebarStoreKey, String(sidebarCollapsed));
     } catch {}
   }
 
@@ -1045,6 +1064,7 @@
       titleLocked: false,
       model: modelSelect.value || PREFERRED_MODEL,
       system: '',
+      storageScope: currentStorageScope,
       messages: [],
       updatedAt: Date.now(),
     };
@@ -1057,6 +1077,7 @@
       titleLocked: Boolean(item && item.titleLocked),
       model: item && item.model ? String(item.model) : PREFERRED_MODEL,
       system: item && item.system ? String(item.system) : '',
+      storageScope: currentStorageScope,
       messages: Array.isArray(item && item.messages)
         ? item.messages
           .filter((entry) => {
@@ -1123,17 +1144,43 @@
   }
 
   async function getAuthHeaders() {
-    const key = await webuiKey.get();
-    return key ? { Authorization: `Bearer ${key}` } : {};
+    return webuiAuthHeaders();
   }
 
   async function ensureAccess() {
-    const stored = await webuiKey.get();
-    if (stored && await verifyKey(VERIFY_ENDPOINT, stored)) return true;
-    if (stored) webuiKey.clear();
-    if (await verifyKey(VERIFY_ENDPOINT, '')) return true;
+    if (await verifyStoredWebuiAccess(VERIFY_ENDPOINT)) return true;
     location.href = '/webui/login';
     return false;
+  }
+
+  function migrateLegacyStorageKey(baseKey, scopedKey, shouldMigrate) {
+    if (!shouldMigrate || !baseKey || !scopedKey || baseKey === scopedKey) return;
+    try {
+      if (localStorage.getItem(scopedKey) || !localStorage.getItem(baseKey)) return;
+      localStorage.setItem(scopedKey, localStorage.getItem(baseKey));
+    } catch {}
+  }
+
+  async function initStorageScope() {
+    const auth = await webuiAuth.get();
+    const shouldMigrateLegacy = Boolean(auth.user && (auth.user.legacy || auth.user.anonymous));
+    currentStorageScope = webuiStorageScopeSuffix(await webuiStorageScope());
+    requireSessionStorageScope = !shouldMigrateLegacy;
+    storeKey = await webuiScopedStorageKey(STORE_KEY);
+    sidebarStoreKey = await webuiScopedStorageKey(SIDEBAR_STORE_KEY);
+    mcpSettingsKey = await webuiScopedStorageKey(MCP_SETTINGS_KEY);
+    searchSettingsKey = await webuiScopedStorageKey(SEARCH_SETTINGS_KEY);
+    migrateLegacyStorageKey(STORE_KEY, storeKey, shouldMigrateLegacy);
+    migrateLegacyStorageKey(SIDEBAR_STORE_KEY, sidebarStoreKey, shouldMigrateLegacy);
+    migrateLegacyStorageKey(MCP_SETTINGS_KEY, mcpSettingsKey, shouldMigrateLegacy);
+    migrateLegacyStorageKey(SEARCH_SETTINGS_KEY, searchSettingsKey, shouldMigrateLegacy);
+  }
+
+  function sessionMatchesStorageScope(item) {
+    if (!requireSessionStorageScope) return true;
+    const rawScope = item && (item.storageScope || item.storage_scope || item.userScope || item.ownerScope);
+    if (!rawScope) return false;
+    return webuiStorageScopeSuffix(rawScope) === currentStorageScope;
   }
 
   function setStatus(textValue) {
@@ -1142,7 +1189,7 @@
 
   function loadMcpSettings() {
     try {
-      const raw = localStorage.getItem(MCP_SETTINGS_KEY);
+      const raw = localStorage.getItem(mcpSettingsKey);
       const parsed = raw ? JSON.parse(raw) : {};
       mcpSettings = {
         enabled: Boolean(parsed && parsed.enabled),
@@ -1161,13 +1208,13 @@
 
   function persistMcpSettings() {
     try {
-      localStorage.setItem(MCP_SETTINGS_KEY, JSON.stringify(mcpSettings));
+      localStorage.setItem(mcpSettingsKey, JSON.stringify(mcpSettings));
     } catch {}
   }
 
   function loadSearchSettings() {
     try {
-      const raw = localStorage.getItem(SEARCH_SETTINGS_KEY);
+      const raw = localStorage.getItem(searchSettingsKey);
       const parsed = raw ? JSON.parse(raw) : {};
       searchSettings = {
         enabled: Boolean(parsed && parsed.enabled),
@@ -1182,7 +1229,7 @@
 
   function persistSearchSettings() {
     try {
-      localStorage.setItem(SEARCH_SETTINGS_KEY, JSON.stringify(searchSettings));
+      localStorage.setItem(searchSettingsKey, JSON.stringify(searchSettings));
     } catch {}
   }
 
@@ -1190,7 +1237,10 @@
     const isChatModel = currentModelCapability() === 'chat';
     if (webSearchPreset) {
       webSearchPreset.value = searchSettings.preset || 'default';
-      webSearchPreset.disabled = Boolean(sending || !searchSettings.enabled || !isChatModel);
+      webSearchPreset.disabled = Boolean(sending || !isChatModel);
+      webSearchPreset.title = isChatModel
+        ? text('webui.chat.search.mode', 'Search depth')
+        : text('webui.chat.search.chatOnly', 'Web search is only available for chat models');
     }
     if (!webSearchBtn) return;
     const enabled = Boolean(searchSettings.enabled && isChatModel);
@@ -1205,16 +1255,55 @@
       : text('webui.chat.search.chatOnly', 'Web search is only available for chat models');
   }
 
+  function formatMcpStatusLine(enabledCount, selectedCount, toolCount) {
+    if (!enabledCount) {
+      return text('webui.chat.mcp.noEnabled', 'No enabled MCP plugins');
+    }
+    if (!mcpSettings.enabled) {
+      return text('webui.chat.mcp.disabledHint', 'MCP is configured but disabled for chat');
+    }
+    if (mcpSettings.auto) {
+      return text('webui.chat.mcp.autoHint', 'Auto mode will use all {n} enabled plugins', { n: enabledCount });
+    }
+    if (!selectedCount) {
+      return text('webui.chat.mcp.noneSelected', 'Select at least one enabled plugin');
+    }
+    if (toolCount) {
+      return text('webui.chat.mcp.selectedWithTools', '{selected} selected, {tools} tools discovered', {
+        selected: selectedCount,
+        tools: toolCount,
+      });
+    }
+    return text('webui.chat.mcp.selectedCount', '{n} selected', { n: selectedCount });
+  }
+
   function syncMcpControls() {
     if (mcpEnabled) mcpEnabled.checked = Boolean(mcpSettings.enabled);
     if (mcpAuto) mcpAuto.checked = Boolean(mcpSettings.auto);
     if (mcpToolChoice) mcpToolChoice.value = mcpSettings.toolChoice || 'auto';
+    const enabledCount = mcpServers.filter((server) => server && server.enabled).length;
+    const selectedCount = mcpSettings.auto
+      ? enabledCount
+      : mcpSettings.selectedIds.filter((id) => mcpServers.some((server) => server.id === id && server.enabled)).length;
+    const callable = mcpSettings.toolChoice !== 'none';
+    const toolCount = Object.values(mcpToolStatusByServerId).reduce((sum, info) => {
+      if (!info || !Array.isArray(info.tools)) return sum;
+      return sum + info.tools.length;
+    }, 0);
+    if (mcpStatus) {
+      mcpStatus.textContent = formatMcpStatusLine(enabledCount, selectedCount, toolCount);
+      mcpStatus.classList.toggle('is-warning', Boolean(mcpSettings.enabled && callable && enabledCount && !selectedCount));
+    }
+    if (mcpDiscoverToolsBtn) {
+      mcpDiscoverToolsBtn.disabled = Boolean(mcpToolsLoading || sending || !enabledCount);
+      mcpDiscoverToolsBtn.textContent = mcpToolsLoading
+        ? text('webui.chat.mcp.discoveringTools', 'Discovering...')
+        : text('webui.chat.mcp.discoverTools', 'Discover tools');
+    }
+    if (mcpJsonImportBtn) {
+      mcpJsonImportBtn.disabled = Boolean(sending);
+    }
     if (mcpBtn) {
-      const enabledCount = mcpServers.filter((server) => server && server.enabled).length;
-      const selectedCount = mcpSettings.auto
-        ? enabledCount
-        : mcpSettings.selectedIds.filter((id) => mcpServers.some((server) => server.id === id && server.enabled)).length;
-      const callable = mcpSettings.toolChoice !== 'none';
       mcpBtn.classList.toggle('active', Boolean(mcpSettings.enabled && callable && selectedCount));
       mcpBtn.textContent = selectedCount
         ? `MCP ${selectedCount}`
@@ -1240,9 +1329,36 @@
     mcpServers = Array.isArray(data && data.servers) ? data.servers : [];
     const existingIds = new Set(mcpServers.map((server) => server && server.id).filter(Boolean));
     mcpSettings.selectedIds = mcpSettings.selectedIds.filter((id) => existingIds.has(id));
+    mcpToolStatusByServerId = Object.fromEntries(
+      Object.entries(mcpToolStatusByServerId).filter(([id]) => existingIds.has(id))
+    );
     persistMcpSettings();
     renderMcpServers();
     syncMcpControls();
+  }
+
+  async function loadMcpTools() {
+    mcpToolsLoading = true;
+    syncMcpControls();
+    try {
+      const headers = await mcpAuthHeaders();
+      const res = await fetch(MCP_TOOLS_ENDPOINT, { headers, cache: 'no-store' });
+      if (!res.ok) throw new Error(`mcp tools ${res.status}`);
+      const data = await res.json();
+      const next = {};
+      (Array.isArray(data && data.servers) ? data.servers : []).forEach((server) => {
+        if (!server || !server.server_id) return;
+        next[String(server.server_id)] = {
+          error: server.error ? String(server.error) : '',
+          tools: Array.isArray(server.tools) ? server.tools : [],
+        };
+      });
+      mcpToolStatusByServerId = next;
+      renderMcpServers();
+    } finally {
+      mcpToolsLoading = false;
+      syncMcpControls();
+    }
   }
 
   function openMcpModal() {
@@ -1305,10 +1421,27 @@
     if (mcpDeleteBtn) mcpDeleteBtn.hidden = !editingMcpServerId;
   }
 
+  function formatMcpToolSummary(serverId) {
+    const status = mcpToolStatusByServerId[String(serverId || '')];
+    if (!status) return text('webui.chat.mcp.toolsUnknown', 'Tools not discovered');
+    if (status.error) return text('webui.chat.mcp.toolsError', 'Tool discovery failed: {error}', { error: status.error });
+    const tools = Array.isArray(status.tools) ? status.tools : [];
+    if (!tools.length) return text('webui.chat.mcp.toolsEmpty', 'No tools exposed');
+    const names = tools
+      .map((tool) => String((tool && (tool.name || tool.title)) || '').trim())
+      .filter(Boolean)
+      .slice(0, 4);
+    return text('webui.chat.mcp.toolsSummary', '{n} tools: {tools}', {
+      n: tools.length,
+      tools: names.join(', ') || '-',
+    });
+  }
+
   function renderMcpServers() {
     if (!mcpServerList) return;
     if (!mcpServers.length) {
       mcpServerList.innerHTML = `<div class="webui-mcp-empty">${escapeHtml(text('webui.chat.mcp.empty', 'No MCP plugins installed yet.'))}</div>`;
+      syncMcpControls();
       return;
     }
 
@@ -1322,6 +1455,9 @@
       checkbox.type = 'checkbox';
       checkbox.checked = (mcpSettings.auto && server.enabled) || mcpSettings.selectedIds.includes(server.id);
       checkbox.disabled = Boolean(mcpSettings.auto || !server.enabled);
+      checkbox.title = mcpSettings.auto
+        ? text('webui.chat.mcp.autoSelectHint', 'Turn off auto mode to choose plugins manually')
+        : text('webui.chat.mcp.selectPlugin', 'Select this plugin');
       checkbox.addEventListener('change', () => {
         const selected = new Set(mcpSettings.selectedIds);
         if (checkbox.checked) selected.add(server.id);
@@ -1338,20 +1474,77 @@
 
       const title = document.createElement('span');
       title.className = 'webui-mcp-item-title';
-      title.textContent = server.name || server.id;
+      const titleText = document.createElement('span');
+      titleText.textContent = server.name || server.id;
+      const badge = document.createElement('span');
+      badge.className = `webui-mcp-item-badge${server.enabled ? '' : ' disabled'}`;
+      badge.textContent = server.enabled
+        ? text('webui.chat.mcp.enabledBadge', 'Enabled')
+        : text('webui.chat.mcp.disabledBadge', 'Disabled');
+      title.appendChild(titleText);
+      title.appendChild(badge);
 
       const command = document.createElement('span');
       command.className = 'webui-mcp-item-command';
       const args = Array.isArray(server.args) ? server.args.join(' ') : '';
       command.textContent = [server.command, args].filter(Boolean).join(' ');
 
+      const tools = document.createElement('span');
+      tools.className = `webui-mcp-item-tools${mcpToolStatusByServerId[server.id] && mcpToolStatusByServerId[server.id].error ? ' error' : ''}`;
+      tools.textContent = formatMcpToolSummary(server.id);
+
       body.appendChild(title);
       body.appendChild(command);
+      body.appendChild(tools);
       item.appendChild(checkbox);
       item.appendChild(body);
       fragment.appendChild(item);
     });
     mcpServerList.replaceChildren(fragment);
+  }
+
+  function parseMcpImportConfig() {
+    const raw = (mcpJsonInput && mcpJsonInput.value || '').trim();
+    if (!raw) throw new Error(text('webui.chat.mcp.importEmpty', 'Paste MCP JSON first'));
+    try {
+      return JSON.parse(raw);
+    } catch (_error) {
+      throw new Error(text('webui.chat.mcp.importInvalidJson', 'Invalid JSON'));
+    }
+  }
+
+  async function importMcpServersFromJson() {
+    try {
+      const config = parseMcpImportConfig();
+      const headers = await mcpAuthHeaders(true);
+      const res = await fetch(MCP_IMPORT_ENDPOINT, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          config,
+          replace: mcpJsonReplaceInput ? Boolean(mcpJsonReplaceInput.checked) : false,
+        }),
+      });
+      if (!res.ok) throw new Error(await res.text().catch(() => `HTTP ${res.status}`));
+      const data = await res.json();
+      mcpServers = Array.isArray(data && data.servers) ? data.servers : mcpServers;
+      const existingIds = new Set(mcpServers.map((server) => server && server.id).filter(Boolean));
+      mcpSettings.selectedIds = mcpSettings.selectedIds.filter((id) => existingIds.has(id));
+      mcpToolStatusByServerId = {};
+      persistMcpSettings();
+      renderMcpServers();
+      syncMcpControls();
+      toast(
+        text('webui.chat.mcp.importDone', 'Imported {created}, updated {updated}, skipped {skipped}', {
+          created: data && data.created ? data.created : 0,
+          updated: data && data.updated ? data.updated : 0,
+          skipped: Array.isArray(data && data.skipped) ? data.skipped.length : 0,
+        }),
+        'info'
+      );
+    } catch (error) {
+      toast(error.message || String(error), 'error');
+    }
   }
 
   function buildMcpServerPayload() {
@@ -1478,6 +1671,7 @@
     modelSelect.disabled = next;
     if (mcpBtn) mcpBtn.disabled = next;
     syncSearchControls();
+    syncMcpControls();
     if (systemInput) systemInput.disabled = next;
     renderSendButton();
   }
@@ -2373,8 +2567,6 @@
     if (typeof renderWebuiHeader === 'function') await renderWebuiHeader();
     if (typeof renderSiteFooter === 'function') await renderSiteFooter();
     if (window.I18n && typeof window.I18n.apply === 'function') I18n.apply(document);
-    loadMcpSettings();
-    loadSearchSettings();
     renderSendButton();
     if (window.I18n && typeof window.I18n.onReady === 'function') {
       window.I18n.onReady(() => {
@@ -2384,6 +2576,9 @@
       });
     }
     if (!await ensureAccess()) return;
+    await initStorageScope();
+    loadMcpSettings();
+    loadSearchSettings();
     loadSidebarState();
     syncSearchControls();
     syncMcpControls();
@@ -2391,6 +2586,8 @@
       console.warn('webui mcp load failed', error);
     });
     await loadModels();
+    syncSearchControls();
+    syncMcpControls();
     restoreSessions();
     resizePromptInput();
     promptInput.focus();
@@ -2460,6 +2657,12 @@
       loadMcpServers().catch((error) => toast(error.message || String(error), 'error'));
     });
   }
+  if (mcpDiscoverToolsBtn) {
+    mcpDiscoverToolsBtn.addEventListener('click', () => {
+      loadMcpTools().catch((error) => toast(error.message || String(error), 'error'));
+    });
+  }
+  if (mcpJsonImportBtn) mcpJsonImportBtn.addEventListener('click', importMcpServersFromJson);
   if (mcpResetFormBtn) mcpResetFormBtn.addEventListener('click', () => resetMcpForm(null));
   if (mcpSaveBtn) mcpSaveBtn.addEventListener('click', saveMcpServer);
   if (mcpDeleteBtn) mcpDeleteBtn.addEventListener('click', deleteMcpServer);

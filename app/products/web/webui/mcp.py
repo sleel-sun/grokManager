@@ -11,6 +11,7 @@ import asyncio
 import json
 import os
 import re
+import shlex
 import time
 import uuid
 from dataclasses import dataclass
@@ -23,7 +24,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 from app.control.model import registry as model_registry
-from app.platform.auth.middleware import verify_webui_key
+from app.platform.auth.middleware import WebUIUser, verify_webui_key
 from app.platform.errors import AppError, ValidationError
 from app.platform.logging.logger import logger
 from app.platform.paths import data_path
@@ -35,7 +36,6 @@ from app.products.openai.schemas import ChatCompletionRequest
 
 router = APIRouter(
     prefix="/webui/api",
-    dependencies=[Depends(verify_webui_key)],
     tags=["WebUI - MCP"],
 )
 
@@ -44,6 +44,7 @@ _MCP_PROTOCOL_VERSION = "2025-06-18"
 _MAX_TOOL_RESULT_CHARS = 12000
 _MAX_MODEL_TOOL_STEPS = 4
 _VALID_TOOL_CHOICE = {"auto", "required", "none"}
+_WEBUI_CHAT_REQUEST_OVERRIDES = {"temporary": True, "disableMemory": True}
 
 
 class McpServerConfig(BaseModel):
@@ -69,6 +70,11 @@ class McpServerPatch(BaseModel):
     env: dict[str, str] | None = None
     cwd: str | None = None
     timeout_s: float | None = Field(None, ge=1.0, le=300.0)
+
+
+class McpServerImportRequest(BaseModel):
+    config: Any
+    replace: bool = False
 
 
 @dataclass(slots=True)
@@ -110,9 +116,16 @@ def _tool_function_name(server_id: str, tool_name: str, used: set[str]) -> str:
     return name
 
 
-def _read_store_sync() -> list[dict[str, Any]]:
+def _store_path_for_user(user: WebUIUser | None = None) -> Path:
+    if user is None or user.legacy or user.anonymous:
+        return _STORE_PATH
+    return data_path("webui", "users", user.id, "mcp_servers.json")
+
+
+def _read_store_sync(path: Path | None = None) -> list[dict[str, Any]]:
+    store_path = path or _STORE_PATH
     try:
-        raw = _STORE_PATH.read_text(encoding="utf-8")
+        raw = store_path.read_text(encoding="utf-8")
     except FileNotFoundError:
         return []
     try:
@@ -123,22 +136,23 @@ def _read_store_sync() -> list[dict[str, Any]]:
     return servers if isinstance(servers, list) else []
 
 
-def _write_store_sync(servers: list[dict[str, Any]]) -> None:
-    _STORE_PATH.parent.mkdir(parents=True, exist_ok=True)
+def _write_store_sync(servers: list[dict[str, Any]], path: Path | None = None) -> None:
+    store_path = path or _STORE_PATH
+    store_path.parent.mkdir(parents=True, exist_ok=True)
     payload = {"servers": servers, "updated_at": int(time.time())}
-    _STORE_PATH.write_text(
+    store_path.write_text(
         json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
         encoding="utf-8",
     )
 
 
-async def _load_servers() -> list[dict[str, Any]]:
-    servers = await asyncio.to_thread(_read_store_sync)
+async def _load_servers(user: WebUIUser | None = None) -> list[dict[str, Any]]:
+    servers = await asyncio.to_thread(_read_store_sync, _store_path_for_user(user))
     return [_normalize_server(item) for item in servers if isinstance(item, dict)]
 
 
-async def _save_servers(servers: list[dict[str, Any]]) -> None:
-    await asyncio.to_thread(_write_store_sync, servers)
+async def _save_servers(servers: list[dict[str, Any]], user: WebUIUser | None = None) -> None:
+    await asyncio.to_thread(_write_store_sync, servers, _store_path_for_user(user))
 
 
 def _normalize_server(item: dict[str, Any]) -> dict[str, Any]:
@@ -170,6 +184,172 @@ def _server_from_model(model: McpServerConfig) -> dict[str, Any]:
     data = _normalize_server(model.model_dump(exclude_none=True))
     data["id"] = model.id.strip() if model.id and model.id.strip() else _new_server_id(data["name"])
     return data
+
+
+def _coerce_bool(value: Any, *, default: bool) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return default
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"1", "true", "yes", "on", "enabled"}:
+            return True
+        if normalized in {"0", "false", "no", "off", "disabled"}:
+            return False
+    return default
+
+
+def _coerce_args(value: Any) -> list[str]:
+    if isinstance(value, list):
+        return [str(item) for item in value if item is not None]
+    if isinstance(value, str):
+        if not value.strip():
+            return []
+        try:
+            return shlex.split(value)
+        except ValueError:
+            return [value]
+    return []
+
+
+def _coerce_env(value: Any) -> dict[str, str]:
+    if isinstance(value, dict):
+        return {str(key): str(val) for key, val in value.items() if key}
+    if isinstance(value, list):
+        env: dict[str, str] = {}
+        for item in value:
+            key, sep, val = str(item).partition("=")
+            if sep and key.strip():
+                env[key.strip()] = val
+        return env
+    return {}
+
+
+def _import_entries(config: Any) -> list[tuple[str, dict[str, Any]]]:
+    if isinstance(config, str):
+        try:
+            config = json.loads(config)
+        except json.JSONDecodeError:
+            return []
+    if isinstance(config, list):
+        return [(str(index + 1), item) for index, item in enumerate(config) if isinstance(item, dict)]
+    if not isinstance(config, dict):
+        return []
+
+    for key in ("mcpServers", "mcp_servers", "servers"):
+        raw = config.get(key)
+        if isinstance(raw, dict):
+            return [(str(name), item) for name, item in raw.items() if isinstance(item, dict)]
+        if isinstance(raw, list):
+            return [(str(index + 1), item) for index, item in enumerate(raw) if isinstance(item, dict)]
+
+    if isinstance(config.get("command"), (str, list)):
+        return [(str(config.get("name") or config.get("id") or "MCP Server"), config)]
+
+    if config and all(isinstance(value, dict) for value in config.values()):
+        return [(str(name), item) for name, item in config.items()]
+
+    return []
+
+
+def _server_from_import_entry(name_hint: str, item: dict[str, Any]) -> tuple[dict[str, Any] | None, str | None]:
+    transport = str(item.get("transport") or item.get("type") or "stdio").strip().lower()
+    if transport and transport != "stdio":
+        return None, f"{name_hint}: unsupported transport {transport}"
+
+    raw_command = item.get("command") or item.get("cmd")
+    args = _coerce_args(item.get("args") if "args" in item else item.get("arguments"))
+    if isinstance(raw_command, list):
+        command_parts = [str(part) for part in raw_command if part is not None]
+        raw_command = command_parts[0] if command_parts else ""
+        args = command_parts[1:] + args
+    command = str(raw_command or "").strip()
+    if not command:
+        return None, f"{name_hint}: command is required"
+
+    name = str(item.get("name") or name_hint or item.get("id") or "MCP Server").strip()[:80] or "MCP Server"
+    raw_enabled = item.get("enabled", None)
+    enabled = _coerce_bool(raw_enabled, default=True)
+    if "disabled" in item:
+        enabled = not _coerce_bool(item.get("disabled"), default=False)
+
+    server = _normalize_server(
+        {
+            "id": str(item.get("id") or "").strip(),
+            "name": name,
+            "description": str(item.get("description") or ""),
+            "enabled": enabled,
+            "transport": "stdio",
+            "command": command,
+            "args": args,
+            "env": _coerce_env(item.get("env") if "env" in item else item.get("environment")),
+            "cwd": item.get("cwd") or item.get("workingDirectory") or item.get("working_directory"),
+            "timeout_s": (
+                item.get("timeout_s")
+                if "timeout_s" in item
+                else item.get("timeout")
+                if "timeout" in item
+                else item.get("timeoutSeconds", 30.0)
+            ),
+        }
+    )
+    return server, None
+
+
+def _parse_imported_servers(config: Any) -> tuple[list[dict[str, Any]], list[str]]:
+    imported: list[dict[str, Any]] = []
+    skipped: list[str] = []
+    entries = _import_entries(config)
+    if not entries:
+        return [], ["No MCP server entries found"]
+    for name_hint, item in entries:
+        server, error = _server_from_import_entry(name_hint, item)
+        if error:
+            skipped.append(error)
+            continue
+        if server is not None:
+            imported.append(server)
+    return imported, skipped
+
+
+def _merge_imported_servers(
+    existing: list[dict[str, Any]],
+    imported: list[dict[str, Any]],
+    *,
+    replace: bool,
+) -> tuple[list[dict[str, Any]], int, int]:
+    if replace:
+        return imported, len(imported), 0
+
+    servers = [dict(server) for server in existing]
+    created = 0
+    updated = 0
+
+    def rebuild_indexes() -> tuple[dict[str, int], dict[str, int]]:
+        by_id = {str(server.get("id")): index for index, server in enumerate(servers) if server.get("id")}
+        by_name = {str(server.get("name") or "").strip().lower(): index for index, server in enumerate(servers) if server.get("name")}
+        return by_id, by_name
+
+    for server in imported:
+        by_id, by_name = rebuild_indexes()
+        server_id = str(server.get("id") or "")
+        name_key = str(server.get("name") or "").strip().lower()
+        index = by_id.get(server_id) if server_id else None
+        if index is None and name_key:
+            index = by_name.get(name_key)
+        if index is None:
+            servers.append(server)
+            created += 1
+            continue
+        if server_id not in by_id and servers[index].get("id"):
+            server["id"] = servers[index]["id"]
+        servers[index] = server
+        updated += 1
+
+    return servers, created, updated
 
 
 def _validate_server_for_run(server: dict[str, Any]) -> None:
@@ -493,7 +673,7 @@ async def _model_pass_stream(
 
 def _request_overrides(req: ChatCompletionRequest) -> dict[str, Any] | None:
     spec = model_registry.get(req.model)
-    overrides: dict[str, Any] = {}
+    overrides: dict[str, Any] = dict(_WEBUI_CHAT_REQUEST_OVERRIDES)
     if req.deepsearch:
         overrides["deepsearchPreset"] = req.deepsearch
     if spec and spec.uses_console_responses() and req.reasoning_effort is not None:
@@ -592,7 +772,11 @@ def should_handle_mcp(req: ChatCompletionRequest) -> bool:
     return bool(spec and spec.enabled and spec.is_chat())
 
 
-async def webui_chat_completions_with_mcp(req: ChatCompletionRequest):
+async def webui_chat_completions_with_mcp(
+    req: ChatCompletionRequest,
+    *,
+    user: WebUIUser | None = None,
+):
     spec = model_registry.get(req.model)
     if spec is None or not spec.enabled:
         raise ValidationError(
@@ -602,15 +786,19 @@ async def webui_chat_completions_with_mcp(req: ChatCompletionRequest):
         )
     upstream_headers = build_upstream_response_headers(spec)
     return StreamingResponse(
-        _sse_with_heartbeat(_safe_sse(_mcp_agent_stream(req))),
+        _sse_with_heartbeat(_safe_sse(_mcp_agent_stream(req, user=user))),
         media_type="text/event-stream",
         headers={**_SSE_HEADERS, **upstream_headers},
     )
 
 
-async def _mcp_agent_stream(req: ChatCompletionRequest) -> AsyncGenerator[str, None]:
+async def _mcp_agent_stream(
+    req: ChatCompletionRequest,
+    *,
+    user: WebUIUser | None = None,
+) -> AsyncGenerator[str, None]:
     options = _selected_mcp_options(req)
-    servers = await _load_servers()
+    servers = await (_load_servers(user) if user is not None else _load_servers())
     selected_ids = set(options["server_ids"])
     selected = [
         server
@@ -726,25 +914,60 @@ async def _mcp_agent_stream(req: ChatCompletionRequest) -> AsyncGenerator[str, N
 
 
 @router.get("/mcp/servers")
-async def list_mcp_servers():
-    servers = await _load_servers()
+async def list_mcp_servers(user: WebUIUser = Depends(verify_webui_key)):
+    servers = await _load_servers(user)
     return JSONResponse({"servers": servers})
 
 
 @router.post("/mcp/servers")
-async def create_mcp_server(config: McpServerConfig):
+async def create_mcp_server(
+    config: McpServerConfig,
+    user: WebUIUser = Depends(verify_webui_key),
+):
     server = _server_from_model(config)
-    servers = await _load_servers()
+    servers = await _load_servers(user)
     if any(item.get("id") == server["id"] for item in servers):
         raise HTTPException(status_code=409, detail="MCP server id already exists")
     servers.append(server)
-    await _save_servers(servers)
+    await _save_servers(servers, user)
     return JSONResponse({"server": server})
 
 
+@router.post("/mcp/servers/import")
+async def import_mcp_servers(
+    req: McpServerImportRequest,
+    user: WebUIUser = Depends(verify_webui_key),
+):
+    imported, skipped = _parse_imported_servers(req.config)
+    existing = await _load_servers(user)
+    if not imported:
+        return JSONResponse(
+            {
+                "created": 0,
+                "updated": 0,
+                "skipped": skipped,
+                "servers": existing,
+            }
+        )
+    servers, created, updated = _merge_imported_servers(existing, imported, replace=req.replace)
+    await _save_servers(servers, user)
+    return JSONResponse(
+        {
+            "created": created,
+            "updated": updated,
+            "skipped": skipped,
+            "servers": servers,
+        }
+    )
+
+
 @router.put("/mcp/servers/{server_id}")
-async def update_mcp_server(server_id: str, patch: McpServerPatch):
-    servers = await _load_servers()
+async def update_mcp_server(
+    server_id: str,
+    patch: McpServerPatch,
+    user: WebUIUser = Depends(verify_webui_key),
+):
+    servers = await _load_servers(user)
     for index, server in enumerate(servers):
         if server.get("id") != server_id:
             continue
@@ -754,24 +977,27 @@ async def update_mcp_server(server_id: str, patch: McpServerPatch):
         next_server["id"] = server_id
         next_server = _normalize_server(next_server)
         servers[index] = next_server
-        await _save_servers(servers)
+        await _save_servers(servers, user)
         return JSONResponse({"server": next_server})
     raise HTTPException(status_code=404, detail="MCP server not found")
 
 
 @router.delete("/mcp/servers/{server_id}")
-async def delete_mcp_server(server_id: str):
-    servers = await _load_servers()
+async def delete_mcp_server(
+    server_id: str,
+    user: WebUIUser = Depends(verify_webui_key),
+):
+    servers = await _load_servers(user)
     next_servers = [server for server in servers if server.get("id") != server_id]
     if len(next_servers) == len(servers):
         raise HTTPException(status_code=404, detail="MCP server not found")
-    await _save_servers(next_servers)
+    await _save_servers(next_servers, user)
     return JSONResponse({"status": "ok"})
 
 
 @router.get("/mcp/tools")
-async def list_mcp_tools():
-    servers = [server for server in await _load_servers() if server.get("enabled")]
+async def list_mcp_tools(user: WebUIUser = Depends(verify_webui_key)):
+    servers = [server for server in await _load_servers(user) if server.get("enabled")]
     result: list[dict[str, Any]] = []
     for server in servers:
         try:

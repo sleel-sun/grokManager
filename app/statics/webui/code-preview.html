@@ -41,13 +41,12 @@
     <section id="previewEmpty" class="preview-empty" hidden>
       <div>
         <strong>Preview content is not available.</strong>
-        <p>Open this URL in the same browser that generated it, or regenerate the preview from WebUI chat.</p>
+        <p>The preview may have expired or the shared link is invalid. Regenerate it from WebUI chat if needed.</p>
       </div>
     </section>
   </main>
   <script>
     (function () {
-      var STORE_PREFIX = 'grok2api_webui_code_preview_';
       var params = new URLSearchParams(window.location.search);
       var id = String(params.get('id') || '').replace(/[^a-zA-Z0-9_-]/g, '');
       var frame = document.getElementById('previewFrame');
@@ -63,24 +62,22 @@
 
       function readPreview() {
         if (!id) return null;
-        try {
-          var raw = window.localStorage.getItem(STORE_PREFIX + id);
-          return raw ? JSON.parse(raw) : null;
-        } catch (_e) {
-          return null;
-        }
+        return fetch('/webui/api/code-previews/' + encodeURIComponent(id), { cache: 'no-store' })
+          .then(function (res) { return res.ok ? res.json() : null; })
+          .catch(function () { return null; });
       }
 
       function loadPreview() {
-        var doc = readPreview();
-        if (!doc || typeof doc.srcdoc !== 'string' || !doc.srcdoc.trim()) {
-          showEmpty();
-          return;
-        }
-        frame.hidden = false;
-        empty.hidden = true;
-        frame.srcdoc = doc.srcdoc;
-        if (doc.title) document.title = String(doc.title);
+        Promise.resolve(readPreview()).then(function (doc) {
+          if (!doc || typeof doc.srcdoc !== 'string' || !doc.srcdoc.trim()) {
+            showEmpty();
+            return;
+          }
+          frame.hidden = false;
+          empty.hidden = true;
+          frame.srcdoc = doc.srcdoc;
+          if (doc.title) document.title = String(doc.title);
+        });
       }
 
       function copyUrl() {

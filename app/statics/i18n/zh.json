@@ -1,7 +1,8 @@
 {
   "common": {
     "invalidKey": "密钥无效",
-    "connectionFailed": "连接失败"
+    "connectionFailed": "连接失败",
+    "authStorageFailed": "已验证，但无法保存登录状态；请检查浏览器存储权限"
   },
   "login": {
     "adminPageTitle": "grokManager - Admin",
@@ -11,7 +12,8 @@
     "continue": "继续",
     "webuiPageTitle": "grokManager - WebUI",
     "webuiTitle": "WebUI",
-    "webuiSubtitle": "请输入访问密钥",
+    "webuiSubtitle": "请输入用户名和访问密码",
+    "webuiUsernamePlaceholder": "用户名（单密码模式可留空）",
     "webuiPlaceholder": "访问密钥",
     "enter": "进入",
     "goToAdmin": "进入管理后台"
@@ -95,6 +97,15 @@
         "choiceNone": "禁用",
         "installed": "已安装插件",
         "refresh": "刷新",
+        "discoverTools": "检测工具",
+        "discoveringTools": "检测中…",
+        "importTitle": "JSON 导入",
+        "importDesc": "粘贴 Claude/Cursor 风格的 mcpServers JSON，可自动导入。",
+        "importReplace": "替换现有 MCP 插件配置",
+        "importButton": "导入",
+        "importEmpty": "请先粘贴 MCP JSON",
+        "importInvalidJson": "JSON 格式无效",
+        "importDone": "已导入 {created} 个，更新 {updated} 个，跳过 {skipped} 个",
         "addTitle": "添加 MCP 插件",
         "editTitle": "编辑 MCP 插件",
         "newConfig": "新建",
@@ -112,6 +123,20 @@
         "commandRequired": "请输入 MCP 启动命令",
         "saved": "MCP 插件已保存",
         "deleted": "MCP 插件已删除",
+        "noEnabled": "没有已启用的 MCP 插件",
+        "disabledHint": "MCP 已配置，但当前聊天未启用",
+        "autoHint": "自动模式会使用全部 {n} 个已启用插件",
+        "noneSelected": "请至少选择一个已启用插件",
+        "selectedCount": "已选择 {n} 个插件",
+        "selectedWithTools": "已选择 {selected} 个插件，检测到 {tools} 个工具",
+        "autoSelectHint": "关闭自动使用后可手动选择插件",
+        "selectPlugin": "选择此插件",
+        "enabledBadge": "启用",
+        "disabledBadge": "停用",
+        "toolsUnknown": "尚未检测工具",
+        "toolsEmpty": "未暴露工具",
+        "toolsError": "工具检测失败：{error}",
+        "toolsSummary": "{n} 个工具：{tools}",
         "statusReady": "MCP 已就绪：{n} 个工具",
         "statusRunning": "正在调用 MCP 工具：{tool}",
         "statusDone": "MCP 工具已完成：{tool}",
@@ -374,6 +399,15 @@
     "saveBarShort": "保存",
     "discardChanges": "放弃更改",
     "randomize": "随机生成",
+    "webuiUsers": {
+      "add": "添加用户",
+      "empty": "未配置 WebUI 用户，将继续使用单密码模式。",
+      "username": "用户名",
+      "password": "密码",
+      "displayName": "显示名",
+      "enabled": "启用",
+      "remove": "删除"
+    },
     "loadFailed": "配置加载失败：{message}",
     "saving": "正在保存更改…",
     "saveSuccess": "更改已保存",
@@ -451,6 +485,10 @@
         "webuiKey": {
           "label": "WebUI 访问密码",
           "desc": "WebUI 的访问鉴权密码。配置后访问时必须提供。"
+        },
+        "webuiUsers": {
+          "label": "WebUI 用户",
+          "desc": "配置后 WebUI 使用用户名 + 密码登录，并按用户隔离浏览器端会话、搜索设置与 MCP 配置。留空时继续使用单密码模式。"
         },
         "temporary": {
           "label": "临时会话",

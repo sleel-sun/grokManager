@@ -1,51 +1,6 @@
 window.renderSiteFooter = async function renderSiteFooter() {
-  if (document.querySelector('.site-footer')) return;
-
-  let version = '';
-  try {
-    const res = await fetch('/meta', { cache: 'no-store' });
-    if (res.ok) {
-      const data = await res.json();
-      version = String(data?.version || '').trim();
-    }
-  } catch {}
-
-  const footer = document.createElement('div');
-  footer.className = 'site-footer';
-  footer.setAttribute('aria-hidden', 'true');
-
-  const link = (text, href) => {
-    const node = document.createElement('a');
-    node.href = href;
-    node.target = '_blank';
-    node.rel = 'noopener';
-    node.textContent = text;
-    return node;
-  };
-
-  const sep = () => {
-    const node = document.createElement('span');
-    node.textContent = '·';
-    return node;
-  };
-
-  const brand = link('grokManager', 'https://github.com/sleel-sun/grokManager');
-  footer.appendChild(brand);
-
-  footer.appendChild(sep());
-
-  const author = link('@sleel-sun', 'https://github.com/sleel-sun');
-  footer.appendChild(author);
-
-  if (version) {
-    footer.appendChild(sep());
-
-    const ver = link(`v${version}`, 'https://github.com/sleel-sun/grokManager/releases');
-    ver.className = 'site-footer-version';
-    footer.appendChild(ver);
-  }
-
-  document.body.appendChild(footer);
+  const footer = document.querySelector('.site-footer');
+  if (footer) footer.remove();
 };
 
 const _bootSiteFooter = () => {

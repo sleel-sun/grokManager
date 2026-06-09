@@ -10,6 +10,9 @@ api_key = ""
 webui_enabled = false
 # WebUI 访问密码
 webui_key = ""
+# WebUI 多用户列表；配置后 WebUI 使用用户名 + 密码登录，并按用户隔离浏览器端会话与 MCP 配置
+# 示例：[{ username = "alice", password = "secret", display_name = "Alice", enabled = true }]
+webui_users = []
 
 
 # ==================== 日志配置 ====================

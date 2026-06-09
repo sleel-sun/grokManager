@@ -361,8 +361,7 @@
   const getLiveKit = () => window.LiveKitClient || window.LivekitClient || null;
 
   const getAuthHeaders = async () => {
-    const key = await webuiKey.get();
-    return key ? { Authorization: `Bearer ${key}` } : {};
+    return webuiAuthHeaders();
   };
 
   const addRemoteAudioTrack = (track) => {

@@ -1,7 +1,8 @@
 {
   "common": {
     "invalidKey": "Invalid key",
-    "connectionFailed": "Connection failed"
+    "connectionFailed": "Connection failed",
+    "authStorageFailed": "Verified, but the login state could not be saved; check browser storage permissions"
   },
   "login": {
     "adminPageTitle": "grokManager - Admin",
@@ -11,7 +12,8 @@
     "continue": "Continue",
     "webuiPageTitle": "grokManager - WebUI",
     "webuiTitle": "WebUI",
-    "webuiSubtitle": "Enter access key",
+    "webuiSubtitle": "Enter username and access password",
+    "webuiUsernamePlaceholder": "Username (optional in single-password mode)",
     "webuiPlaceholder": "Access Key",
     "enter": "Enter",
     "goToAdmin": "Go to Admin Panel"
@@ -95,6 +97,15 @@
         "choiceNone": "Disabled",
         "installed": "Installed Plugins",
         "refresh": "Refresh",
+        "discoverTools": "Discover tools",
+        "discoveringTools": "Discovering...",
+        "importTitle": "Import JSON",
+        "importDesc": "Paste Claude/Cursor style mcpServers JSON to import automatically.",
+        "importReplace": "Replace existing MCP plugin configs",
+        "importButton": "Import",
+        "importEmpty": "Paste MCP JSON first",
+        "importInvalidJson": "Invalid JSON",
+        "importDone": "Imported {created}, updated {updated}, skipped {skipped}",
         "addTitle": "Add MCP Plugin",
         "editTitle": "Edit MCP Plugin",
         "newConfig": "New",
@@ -112,6 +123,20 @@
         "commandRequired": "MCP command is required",
         "saved": "MCP plugin saved",
         "deleted": "MCP plugin deleted",
+        "noEnabled": "No enabled MCP plugins",
+        "disabledHint": "MCP is configured but disabled for chat",
+        "autoHint": "Auto mode will use all {n} enabled plugins",
+        "noneSelected": "Select at least one enabled plugin",
+        "selectedCount": "{n} selected",
+        "selectedWithTools": "{selected} selected, {tools} tools discovered",
+        "autoSelectHint": "Turn off auto mode to choose plugins manually",
+        "selectPlugin": "Select this plugin",
+        "enabledBadge": "Enabled",
+        "disabledBadge": "Disabled",
+        "toolsUnknown": "Tools not discovered",
+        "toolsEmpty": "No tools exposed",
+        "toolsError": "Tool discovery failed: {error}",
+        "toolsSummary": "{n} tools: {tools}",
         "statusReady": "MCP ready: {n} tools",
         "statusRunning": "Calling MCP tool: {tool}",
         "statusDone": "MCP tool completed: {tool}",
@@ -374,6 +399,15 @@
     "saveBarShort": "Save",
     "discardChanges": "Discard Changes",
     "randomize": "Generate Value",
+    "webuiUsers": {
+      "add": "Add user",
+      "empty": "No WebUI users configured. Single-password mode remains active.",
+      "username": "Username",
+      "password": "Password",
+      "displayName": "Display name",
+      "enabled": "Enabled",
+      "remove": "Remove"
+    },
     "loadFailed": "Failed to load configuration: {message}",
     "saving": "Saving changes...",
     "saveSuccess": "Changes saved",
@@ -451,6 +485,10 @@
         "webuiKey": {
           "label": "WebUI Access Password",
           "desc": "Authentication password required to access the WebUI when enabled."
+        },
+        "webuiUsers": {
+          "label": "WebUI Users",
+          "desc": "When configured, WebUI login uses username + password and browser-side chat sessions, search settings, and MCP configuration are isolated per user. Leave empty to keep single-password mode."
         },
         "temporary": {
           "label": "Temporary Sessions",

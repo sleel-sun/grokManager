@@ -11,8 +11,6 @@ window.renderWebuiHeader = async function renderWebuiHeader() {
     }
   })();
   const HEADER_HTML_CACHE_KEY = `grokmanager.webui_header_html.${scriptVersion}`;
-  const META_VERSION_CACHE_KEY = `grokmanager.meta_version.${scriptVersion}`;
-  let appVersion = '';
 
   const readSessionCache = (key) => {
     try {
@@ -111,45 +109,20 @@ window.renderWebuiHeader = async function renderWebuiHeader() {
     }
   };
 
-  const loadVersion = async () => {
-    const cachedVersion = window.__grokmanagerMetaVersion || readSessionCache(META_VERSION_CACHE_KEY);
-    if (cachedVersion) {
-      appVersion = String(cachedVersion).trim();
-      window.__grokmanagerMetaVersion = appVersion;
-      return;
-    }
-    try {
-      const res = await fetch('/meta');
-      if (!res.ok) throw new Error('meta unavailable');
-      const data = await res.json();
-      appVersion = String(data?.version || '').trim();
-      window.__grokmanagerMetaVersion = appVersion;
-      writeSessionCache(META_VERSION_CACHE_KEY, appVersion);
-    } catch {
-      appVersion = '';
-    }
-  };
+  const removeRepositoryMeta = () => {
+    mount.querySelector('#hd-user')?.remove();
+    mount.querySelector('#hd-version')?.remove();
 
-  const applyVersion = () => {
-    const right = mount.querySelector('.admin-header-right');
-    if (!right) return;
-    let node = mount.querySelector('#hd-version');
-    if (!appVersion) {
-      node?.remove();
-      return;
-    }
-    if (!node) {
-      node = document.createElement('span');
-      node.id = 'hd-version';
-      node.className = 'admin-header-version';
-      right.insertBefore(node, right.firstChild);
-    }
-    const value = `v${appVersion}`;
-    node.textContent = value;
-    node.title = value;
+    const brandLink = mount.querySelector('.admin-brand-link');
+    if (!brandLink) return;
+    const replacement = document.createElement('span');
+    replacement.className = 'admin-brand-link';
+    const brand = document.createElement('span');
+    brand.className = 'admin-brand';
+    brand.textContent = 'grokManager';
+    replacement.appendChild(brand);
+    brandLink.replaceWith(replacement);
   };
-
-  await loadVersion();
 
   try {
     const cachedHtml = window.__grokmanagerWebuiHeaderHtml || readSessionCache(HEADER_HTML_CACHE_KEY);
@@ -168,10 +141,9 @@ window.renderWebuiHeader = async function renderWebuiHeader() {
       <header class="admin-header webui-header-bar">
         <div class="admin-header-inner webui-header-inner">
           <div class="admin-brand-wrap">
-            <a href="https://github.com/sleel-sun/grokManager" target="_blank" rel="noopener" class="admin-brand-link">
+            <span class="admin-brand-link">
               <span class="admin-brand">grokManager</span>
-            </a>
-            <a href="https://github.com/sleel-sun" target="_blank" rel="noopener" class="admin-username" id="hd-user">@sleel-sun</a>
+            </span>
           </div>
           <nav class="admin-nav">
             <a href="/webui/chat" class="admin-nav-link" data-nav="/webui/chat" data-i18n="webui.header.chat">聊天</a>
@@ -225,6 +197,8 @@ window.renderWebuiHeader = async function renderWebuiHeader() {
       </header>`;
   }
 
+  removeRepositoryMeta();
+
   const active = mount.dataset.active || location.pathname;
   mount.querySelectorAll('[data-nav]').forEach((link) => {
     link.classList.toggle('active', link.dataset.nav === active);
@@ -232,6 +206,5 @@ window.renderWebuiHeader = async function renderWebuiHeader() {
 
   const syncLanguageMenu = initLanguageMenu();
   applyHeaderI18n();
-  applyVersion();
   syncLanguageMenu?.();
 };

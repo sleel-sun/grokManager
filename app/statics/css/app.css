@@ -1140,6 +1140,11 @@ textarea.input.webui-textarea{padding:8px 0 !important;resize:none !important}
   display:grid;gap:10px;padding:14px;border:1px solid #eee7dc;border-radius:18px;background:#fffaf1
 }
 .webui-mcp-section-head{display:flex;align-items:center;justify-content:space-between;gap:10px;font-size:13px}
+.webui-mcp-section-actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap;justify-content:flex-end}
+.webui-mcp-status{
+  padding:9px 11px;border-radius:13px;background:#f7f3eb;color:#665d51;font-size:12px;font-weight:650
+}
+.webui-mcp-status.is-warning{background:#fff3d7;color:#7b4f00}
 .webui-mcp-list{display:grid;gap:8px;max-height:180px;overflow:auto}
 .webui-mcp-empty{
   padding:14px;border-radius:14px;background:#f7f3eb;color:#8b8375;font-size:12px;text-align:center
@@ -1150,12 +1155,21 @@ textarea.input.webui-textarea{padding:8px 0 !important;resize:none !important}
 }
 .webui-mcp-item.disabled{opacity:.58}
 .webui-mcp-item input{width:16px;height:16px;accent-color:#181612}
-.webui-mcp-item-body{min-width:0;text-align:left;display:grid;gap:3px}
-.webui-mcp-item-title{font-size:13px;font-weight:750;color:#1d1a16}
+.webui-mcp-item-body{min-width:0;text-align:left;display:grid;gap:4px}
+.webui-mcp-item-title{display:flex;align-items:center;gap:8px;min-width:0;font-size:13px;font-weight:750;color:#1d1a16}
+.webui-mcp-item-title > span:first-child{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.webui-mcp-item-badge{
+  flex:0 0 auto;padding:3px 7px;border-radius:999px;background:#e7f4df;color:#2f641f;font-size:10px;font-weight:800
+}
+.webui-mcp-item-badge.disabled{background:#eee7dc;color:#81786c}
 .webui-mcp-item-command{font-size:11px;color:#81786c;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.webui-mcp-item-tools{font-size:11px;color:#4f6959;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.webui-mcp-item-tools.error{color:#a33924}
 .webui-mcp-form{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
 .webui-mcp-form label{display:grid;gap:6px;color:#5f584e;font-size:12px;font-weight:650}
 .webui-mcp-textarea{min-height:72px;resize:vertical;line-height:1.45}
+.webui-mcp-json-input{min-height:118px;font-family:var(--mono-font);font-size:12px}
+.webui-mcp-import-option{justify-content:flex-start}
 .webui-mcp-form .webui-mcp-switch{grid-template-columns:auto 1fr;display:flex}
 @media (max-width: 960px){
   .webui-mcp-switches{grid-template-columns:1fr}

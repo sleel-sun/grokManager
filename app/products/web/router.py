@@ -2,10 +2,18 @@
 
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from fastapi.responses import FileResponse, RedirectResponse
 
-from app.platform.auth.middleware import is_webui_enabled, verify_webui_key
+from app.platform.auth.middleware import (
+    WebUIUser,
+    clear_webui_logout_cookie,
+    clear_webui_session_cookie,
+    is_webui_enabled,
+    set_webui_logout_cookie,
+    set_webui_session_cookie,
+    verify_webui_key,
+)
 from app.platform.meta import get_project_version
 from app.platform.update_check import get_latest_release_info
 from .static_html import serve_static_html
@@ -76,9 +84,20 @@ async def webui_login():
         raise HTTPException(404, "Not Found")
     return _serve_html("webui/login.html")
 
-@router.get("/webui/api/verify", dependencies=[Depends(verify_webui_key)], tags=["WebUI - System"])
-async def webui_verify():
-    return {"status": "ok"}
+
+@router.get("/webui/logout", include_in_schema=False)
+async def webui_logout():
+    response = RedirectResponse("/webui/login?logout=1")
+    clear_webui_session_cookie(response)
+    set_webui_logout_cookie(response)
+    return response
+
+
+@router.get("/webui/api/verify", tags=["WebUI - System"])
+async def webui_verify(response: Response, user: WebUIUser = Depends(verify_webui_key)):
+    clear_webui_logout_cookie(response)
+    set_webui_session_cookie(response, user)
+    return {"status": "ok", "user": user.public_dict()}
 
 
 @router.get("/meta", include_in_schema=False)

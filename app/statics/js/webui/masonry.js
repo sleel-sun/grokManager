@@ -551,10 +551,7 @@
   }
 
   async function ensureAccess() {
-    const stored = await webuiKey.get();
-    if (stored && await verifyKey(VERIFY_ENDPOINT, stored)) return true;
-    if (stored) webuiKey.clear();
-    if (await verifyKey(VERIFY_ENDPOINT, '')) return true;
+    if (await verifyStoredWebuiAccess(VERIFY_ENDPOINT)) return true;
     location.href = '/webui/login';
     return false;
   }
@@ -565,7 +562,7 @@
       return;
     }
 
-    const token = await webuiKey.get();
+    const token = await webuiSocketToken();
     const wsUrl = buildWebSocketUrl(IMAGINE_WS_ENDPOINT, token ? { access_token: token } : {});
     const socket = new WebSocket(wsUrl);
     activeSocket = socket;

@@ -1,14 +1,13 @@
 """WebUI imagine endpoint backed by Grok Imagine WebSocket only."""
 
 import asyncio
-import hmac
 import uuid
 from typing import Optional
 
 import orjson
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
-from app.platform.auth.middleware import get_webui_key, is_webui_enabled
+from app.platform.auth.middleware import WEBUI_SESSION_COOKIE, authenticate_webui_session_cookie, authenticate_webui_token
 from app.platform.config.snapshot import get_config
 from app.platform.errors import UpstreamError
 from app.platform.logging.logger import logger
@@ -124,11 +123,8 @@ def _extract_token(value: str | None) -> str:
     return raw
 
 
-def _is_allowed(token: str) -> bool:
-    webui_key = get_webui_key()
-    if not webui_key:
-        return is_webui_enabled()
-    return bool(token) and hmac.compare_digest(token, webui_key)
+def _is_allowed(token: str, session_cookie: str | None = None) -> bool:
+    return authenticate_webui_token(token) is not None or authenticate_webui_session_cookie(session_cookie) is not None
 
 
 def _websocket_token(websocket: WebSocket) -> str:
@@ -140,7 +136,7 @@ def _websocket_token(websocket: WebSocket) -> str:
 
 @router.websocket("/imagine/ws")
 async def imagine_ws(websocket: WebSocket):
-    if not _is_allowed(_websocket_token(websocket)):
+    if not _is_allowed(_websocket_token(websocket), websocket.cookies.get(WEBUI_SESSION_COOKIE)):
         await websocket.close(code=1008)
         return
 

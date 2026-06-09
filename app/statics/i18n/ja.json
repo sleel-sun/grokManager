@@ -1,7 +1,8 @@
 {
   "common": {
     "invalidKey": "無効なキーです",
-    "connectionFailed": "接続に失敗しました"
+    "connectionFailed": "接続に失敗しました",
+    "authStorageFailed": "認証済みですがログイン状態を保存できません。ブラウザのストレージ権限を確認してください"
   },
   "login": {
     "adminPageTitle": "grokManager - 管理",
@@ -11,7 +12,8 @@
     "continue": "続行",
     "webuiPageTitle": "grokManager - WebUI",
     "webuiTitle": "WebUI",
-    "webuiSubtitle": "アクセスキーを入力してください",
+    "webuiSubtitle": "ユーザー名とアクセスパスワードを入力してください",
+    "webuiUsernamePlaceholder": "ユーザー名（単一パスワードモードでは任意）",
     "webuiPlaceholder": "アクセスキー",
     "enter": "入る",
     "goToAdmin": "管理パネルへ"
@@ -325,6 +327,15 @@
     "saveBarShort": "保存",
     "discardChanges": "変更を破棄",
     "randomize": "値を生成",
+    "webuiUsers": {
+      "add": "ユーザーを追加",
+      "empty": "WebUI ユーザーは未設定です。単一パスワードモードが有効です。",
+      "username": "ユーザー名",
+      "password": "パスワード",
+      "displayName": "表示名",
+      "enabled": "有効",
+      "remove": "削除"
+    },
     "loadFailed": "構成の読み込みに失敗しました: {message}",
     "saving": "変更を保存しています...",
     "saveSuccess": "変更を保存しました",
@@ -388,6 +399,7 @@
         "apiKey": { "label": "API アクセスキー" },
         "webuiEnabled": { "label": "WebUI を有効化" },
         "webuiKey": { "label": "WebUI アクセスパスワード" },
+        "webuiUsers": { "label": "WebUI ユーザー", "desc": "設定すると WebUI はユーザー名 + パスワードでログインし、ブラウザー側のチャット、検索設定、MCP 設定をユーザーごとに分離します。空の場合は単一パスワードモードを維持します。" },
         "temporary": { "label": "一時セッション" },
         "memory": { "label": "会話メモリ" },
         "stream": { "label": "デフォルトのストリーミング" },

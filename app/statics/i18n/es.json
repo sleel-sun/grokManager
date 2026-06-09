@@ -1,7 +1,8 @@
 {
   "common": {
     "invalidKey": "Clave no válida",
-    "connectionFailed": "Error de conexión"
+    "connectionFailed": "Error de conexión",
+    "authStorageFailed": "Verificado, pero no se pudo guardar la sesión; revisa los permisos de almacenamiento del navegador"
   },
   "login": {
     "adminPageTitle": "grokManager - Administración",
@@ -11,7 +12,8 @@
     "continue": "Continuar",
     "webuiPageTitle": "grokManager - WebUI",
     "webuiTitle": "WebUI",
-    "webuiSubtitle": "Introduzca la clave de acceso",
+    "webuiSubtitle": "Introduzca el usuario y la contraseña de acceso",
+    "webuiUsernamePlaceholder": "Usuario (opcional en modo de contraseña única)",
     "webuiPlaceholder": "Clave de acceso",
     "enter": "Entrar",
     "goToAdmin": "Ir al Panel de Administración"
@@ -325,6 +327,15 @@
     "saveBarShort": "Guardar",
     "discardChanges": "Descartar cambios",
     "randomize": "Generar valor",
+    "webuiUsers": {
+      "add": "Agregar usuario",
+      "empty": "No hay usuarios WebUI configurados. El modo de contraseña única sigue activo.",
+      "username": "Usuario",
+      "password": "Contraseña",
+      "displayName": "Nombre visible",
+      "enabled": "Activo",
+      "remove": "Eliminar"
+    },
     "loadFailed": "No se pudo cargar la configuración: {message}",
     "saving": "Guardando cambios...",
     "saveSuccess": "Cambios guardados",
@@ -388,6 +399,7 @@
         "apiKey": { "label": "Clave de acceso API" },
         "webuiEnabled": { "label": "Activar WebUI" },
         "webuiKey": { "label": "Contraseña de acceso WebUI" },
+        "webuiUsers": { "label": "Usuarios WebUI", "desc": "Cuando se configura, WebUI usa usuario + contraseña y aísla por usuario las conversaciones del navegador, la búsqueda y la configuración MCP. Déjelo vacío para mantener el modo de contraseña única." },
         "temporary": { "label": "Sesiones temporales" },
         "memory": { "label": "Memoria de conversación" },
         "stream": { "label": "Streaming predeterminado" },

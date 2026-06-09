@@ -119,6 +119,59 @@ def test_webui_mcp_request_options_and_model_gate() -> None:
     assert not should_handle_mcp(image_req)
 
 
+def test_mcp_import_accepts_claude_style_json_and_upserts_by_name() -> None:
+    imported, skipped = mcp_module._parse_imported_servers(
+        {
+            "mcpServers": {
+                "filesystem": {
+                    "command": "npx",
+                    "args": ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"],
+                    "env": {"TOKEN": 123},
+                    "disabled": False,
+                    "timeout": 45,
+                },
+                "remote": {
+                    "type": "sse",
+                    "url": "https://example.invalid/sse",
+                },
+                "broken": {
+                    "args": ["--missing-command"],
+                },
+            }
+        }
+    )
+
+    assert len(imported) == 1
+    assert imported[0]["name"] == "filesystem"
+    assert imported[0]["command"] == "npx"
+    assert imported[0]["args"] == ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
+    assert imported[0]["env"] == {"TOKEN": "123"}
+    assert imported[0]["enabled"] is True
+    assert imported[0]["timeout_s"] == 45.0
+    assert any("unsupported transport sse" in item for item in skipped)
+    assert any("command is required" in item for item in skipped)
+
+    existing = [
+        {
+            "id": "filesystem-existing",
+            "name": "filesystem",
+            "enabled": False,
+            "transport": "stdio",
+            "command": "old",
+            "args": [],
+            "env": {},
+            "cwd": None,
+            "timeout_s": 30,
+        }
+    ]
+    merged, created, updated = mcp_module._merge_imported_servers(existing, imported, replace=False)
+
+    assert created == 0
+    assert updated == 1
+    assert merged[0]["id"] == "filesystem-existing"
+    assert merged[0]["command"] == "npx"
+
+
 def test_mcp_agent_stream_executes_tool_and_returns_final_answer(
     tmp_path: Path,
     monkeypatch,

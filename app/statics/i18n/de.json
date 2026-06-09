@@ -1,7 +1,8 @@
 {
   "common": {
     "invalidKey": "Ungültiger Schlüssel",
-    "connectionFailed": "Verbindung fehlgeschlagen"
+    "connectionFailed": "Verbindung fehlgeschlagen",
+    "authStorageFailed": "Verifiziert, aber der Anmeldestatus konnte nicht gespeichert werden; prüfen Sie die Browser-Speicherberechtigungen"
   },
   "login": {
     "adminPageTitle": "grokManager - Admin",
@@ -11,7 +12,8 @@
     "continue": "Weiter",
     "webuiPageTitle": "grokManager - WebUI",
     "webuiTitle": "WebUI",
-    "webuiSubtitle": "Geben Sie den Zugriffsschlüssel ein",
+    "webuiSubtitle": "Geben Sie Benutzername und Zugriffspasswort ein",
+    "webuiUsernamePlaceholder": "Benutzername (im Ein-Passwort-Modus optional)",
     "webuiPlaceholder": "Zugriffsschlüssel",
     "enter": "Öffnen",
     "goToAdmin": "Zum Administrationsbereich"
@@ -325,6 +327,15 @@
     "saveBarShort": "Speichern",
     "discardChanges": "Änderungen verwerfen",
     "randomize": "Wert generieren",
+    "webuiUsers": {
+      "add": "Benutzer hinzufügen",
+      "empty": "Keine WebUI-Benutzer konfiguriert. Der Ein-Passwort-Modus bleibt aktiv.",
+      "username": "Benutzername",
+      "password": "Passwort",
+      "displayName": "Anzeigename",
+      "enabled": "Aktiv",
+      "remove": "Entfernen"
+    },
     "loadFailed": "Konfiguration konnte nicht geladen werden: {message}",
     "saving": "Änderungen werden gespeichert...",
     "saveSuccess": "Änderungen gespeichert",
@@ -388,6 +399,7 @@
         "apiKey": { "label": "API-Zugriffsschlüssel" },
         "webuiEnabled": { "label": "WebUI aktivieren" },
         "webuiKey": { "label": "WebUI-Zugriffspasswort" },
+        "webuiUsers": { "label": "WebUI-Benutzer", "desc": "Wenn konfiguriert, verwendet WebUI Benutzername + Passwort und isoliert browserseitige Chats, Sucheinstellungen und MCP-Konfiguration pro Benutzer. Leer lassen, um den Ein-Passwort-Modus beizubehalten." },
         "temporary": { "label": "Temporäre Sitzungen" },
         "memory": { "label": "Konversationsspeicher" },
         "stream": { "label": "Standard-Streaming" },
