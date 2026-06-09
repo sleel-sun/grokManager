@@ -625,25 +625,72 @@
       white-space:normal;
       line-height:1.35;
     }
-    #modal-model-permissions .modal { width:min(860px,94vw) }
+    #modal-model-permissions {
+      align-items:flex-start;
+      overflow:auto;
+      padding:24px 0;
+    }
+    #modal-model-permissions .modal {
+      width:min(920px,94vw);
+      max-height:min(760px,92dvh);
+      display:grid;
+      grid-template-rows:auto minmax(0,1fr) auto;
+      overflow:hidden;
+    }
+    #modal-model-permissions .dialog-body {
+      min-width:0;
+      min-height:0;
+      overflow:auto;
+      padding-right:2px;
+    }
     #modal-model-permissions .dialog-label { width:72px }
+    #perm-results {
+      min-width:0;
+      max-width:100%;
+      overflow:hidden;
+    }
     .model-permission-result {
-      max-height:360px;
+      width:100%;
+      max-width:100%;
+      max-height:min(360px,42vh);
       overflow:auto;
       border:1px solid var(--border);
       border-radius:14px;
       background:#fff;
+      -webkit-overflow-scrolling:touch;
     }
     .model-permission-result table {
-      min-width:780px;
+      width:100%;
+      min-width:720px;
+      table-layout:fixed;
       border-collapse:collapse;
     }
+    .model-permission-result th:nth-child(1),
+    .model-permission-result td:nth-child(1) { width:22% }
+    .model-permission-result th:nth-child(2),
+    .model-permission-result td:nth-child(2) { width:9% }
+    .model-permission-result th:nth-child(3),
+    .model-permission-result td:nth-child(3) { width:14% }
+    .model-permission-result th:nth-child(4),
+    .model-permission-result td:nth-child(4) { width:10% }
+    .model-permission-result th:nth-child(5),
+    .model-permission-result td:nth-child(5) { width:10% }
+    .model-permission-result th:nth-child(6),
+    .model-permission-result td:nth-child(6) { width:14% }
+    .model-permission-result th:nth-child(7),
+    .model-permission-result td:nth-child(7) { width:21% }
     .model-permission-result th,
     .model-permission-result td {
       padding:9px 10px;
       font-size:12px;
-      white-space:nowrap;
+      white-space:normal;
+      overflow-wrap:anywhere;
+      word-break:break-word;
+      vertical-align:top;
       border-bottom:1px solid #f1ede7;
+    }
+    .model-permission-result th {
+      white-space:nowrap;
     }
     .model-permission-result tr:last-child td { border-bottom:0 }
     .model-permission-summary {

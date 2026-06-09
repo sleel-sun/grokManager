@@ -9,6 +9,7 @@ from app.control.model import registry as model_registry
 from app.platform.auth.middleware import verify_webui_key
 from app.products.openai.router import chat_completions_endpoint
 from app.products.openai.schemas import ChatCompletionRequest
+from .mcp import should_handle_mcp, webui_chat_completions_with_mcp
 
 router = APIRouter(prefix="/webui/api", dependencies=[Depends(verify_webui_key)], tags=["WebUI - Chat"])
 
@@ -41,6 +42,8 @@ async def list_webui_models():
 
 @router.post("/chat/completions")
 async def webui_chat_completions(req: ChatCompletionRequest):
+    if should_handle_mcp(req):
+        return await webui_chat_completions_with_mcp(req)
     return await chat_completions_endpoint(req)
 
 

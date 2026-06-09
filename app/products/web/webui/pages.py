@@ -31,6 +31,13 @@ async def webui_chat_page():
     return _serve_html("chat.html")
 
 
+@router.get("/webui/code-preview")
+async def webui_code_preview_page():
+    if not is_webui_enabled():
+        raise HTTPException(status_code=404, detail="Not Found")
+    return _serve_html("code-preview.html")
+
+
 @router.get("/webui/chatkit")
 async def webui_chatkit_page():
     if not is_webui_enabled():

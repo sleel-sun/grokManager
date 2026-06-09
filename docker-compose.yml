@@ -93,6 +93,8 @@ services:
       - ./data:/app/data
       - ./logs:/app/logs
     command: ["/app/scripts/run_maintainer.sh"]
+    healthcheck:
+      disable: true
     restart: unless-stopped
 
   # 防 403 / 防封版的 WARP + Privoxy + FlareSolverr 编排在
