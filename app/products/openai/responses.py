@@ -41,6 +41,10 @@ from app.dataplane.reverse.protocol.tool_prompt import (
     extract_tool_names,
     inject_into_message,
 )
+from app.dataplane.reverse.protocol.xai_console import (
+    console_tool_choice_override,
+    split_console_server_tools,
+)
 from app.dataplane.reverse.protocol.tool_parser import parse_tool_calls
 from ._tool_sieve import ToolSieve
 
@@ -247,8 +251,17 @@ async def create(
     # Tool prompt injection — only modify the message text, never the Grok payload
     # Normalise to Chat Completions format first (Responses API uses a flat structure)
     tool_names: list[str] = []
-    if tools:
-        chat_tools = _to_chat_tools(tools)
+    local_tools, console_tools = split_console_server_tools(tools, spec)
+    if console_tools:
+        request_overrides = request_overrides or {}
+        request_overrides["tools"] = console_tools
+        console_choice = console_tool_choice_override(
+            tool_choice, local_tools=local_tools
+        )
+        if console_choice is not None:
+            request_overrides["tool_choice"] = console_choice
+    if local_tools:
+        chat_tools = _to_chat_tools(local_tools)
         tool_names = extract_tool_names(chat_tools)
         tool_prompt = build_tool_system_prompt(chat_tools, tool_choice)
         message = inject_into_message(message, tool_prompt)

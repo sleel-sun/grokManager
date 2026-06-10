@@ -40,6 +40,8 @@ from app.dataplane.reverse.protocol.xai_chat import (
 from app.dataplane.reverse.protocol.xai_console import (
     ConsoleResponsesStreamAdapter,
     build_console_responses_payload,
+    console_tool_choice_override,
+    split_console_server_tools,
 )
 from app.dataplane.reverse.protocol.xai_usage import is_invalid_credentials_error
 from app.dataplane.reverse.planner import build_plan
@@ -677,9 +679,18 @@ async def completions(
 
     # ── Tool call setup ───────────────────────────────────────────────────────
     tool_names: list[str] = []
-    if tools:
-        tool_names = extract_tool_names(tools)
-        tool_prompt = build_tool_system_prompt(tools, tool_choice)
+    local_tools, console_tools = split_console_server_tools(tools, spec)
+    if console_tools:
+        request_overrides = request_overrides or {}
+        request_overrides["tools"] = console_tools
+        console_choice = console_tool_choice_override(
+            tool_choice, local_tools=local_tools
+        )
+        if console_choice is not None:
+            request_overrides["tool_choice"] = console_choice
+    if local_tools:
+        tool_names = extract_tool_names(local_tools)
+        tool_prompt = build_tool_system_prompt(local_tools, tool_choice)
         message = inject_into_message(message, tool_prompt)
     tool_overrides: dict | None = None
 

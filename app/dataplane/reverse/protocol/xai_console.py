@@ -14,6 +14,24 @@ from app.dataplane.reverse.protocol.xai_chat import (
 
 
 _REQUESTED_REASONING_EFFORT_KEY = "_reasoning_effort"
+CONSOLE_SERVER_SIDE_TOOL_TYPES = frozenset({"web_search", "x_search"})
+_CONSOLE_DEFAULT_SEARCH_TOOLS = (
+    {"type": "web_search"},
+    {"type": "x_search"},
+)
+_CONSOLE_FUNCTION_TOOL_EXCLUDED_KEYS = frozenset(
+    {"type", "function", "name", "description", "parameters", "strict"}
+)
+_CONSOLE_PAYLOAD_EXCLUDED_KEYS = frozenset(
+    {
+        "model",
+        "input",
+        "reasoning",
+        "reasoning_effort",
+        "deepsearchPreset",
+        _REQUESTED_REASONING_EFFORT_KEY,
+    }
+)
 
 
 def _display_model_name(model: str) -> str:
@@ -40,20 +58,13 @@ def build_console_responses_payload(
 ) -> dict[str, Any]:
     """Build a Responses-compatible payload for console.x.ai/v1/responses."""
     payload: dict[str, Any] = {}
-    if request_overrides:
+    normalized_overrides = _normalize_console_request_overrides(request_overrides)
+    if normalized_overrides:
         payload.update(
             {
                 key: value
-                for key, value in request_overrides.items()
-                if value is not None
-                and key
-                not in {
-                    "model",
-                    "input",
-                    "reasoning",
-                    "reasoning_effort",
-                    _REQUESTED_REASONING_EFFORT_KEY,
-                }
+                for key, value in normalized_overrides.items()
+                if value is not None and key not in _CONSOLE_PAYLOAD_EXCLUDED_KEYS
             }
         )
     requested_effort = _extract_requested_reasoning_effort(request_overrides)
@@ -76,6 +87,122 @@ def build_console_responses_payload(
     payload["input"] = message
     payload["stream"] = stream
     return payload
+
+
+def _normalize_console_request_overrides(
+    request_overrides: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    if not request_overrides:
+        return None
+
+    overrides = dict(request_overrides)
+    preset = overrides.get("deepsearchPreset")
+    if preset:
+        overrides["tools"] = _merge_console_search_tools(overrides.get("tools"))
+        if overrides.get("tool_choice") is None:
+            overrides["tool_choice"] = "auto"
+    return overrides
+
+
+def _merge_console_search_tools(value: Any) -> list[dict[str, Any]]:
+    tools = (
+        [tool for tool in value if isinstance(tool, dict)]
+        if isinstance(value, list)
+        else []
+    )
+    merged = [dict(tool) for tool in tools]
+    seen = {str(tool.get("type") or "").strip() for tool in merged}
+    for default_tool in _CONSOLE_DEFAULT_SEARCH_TOOLS:
+        tool_type = str(default_tool.get("type") or "")
+        if tool_type not in seen:
+            merged.append(dict(default_tool))
+            seen.add(tool_type)
+    return merged
+
+
+def split_console_server_tools(
+    tools: list[Any] | None,
+    spec: ModelSpec | None,
+) -> tuple[list[dict[str, Any]] | None, list[dict[str, Any]]]:
+    """Split xAI Console server-side tools from local function tools.
+
+    OpenAI-compatible function tools are handled locally through XML prompt
+    injection. xAI's ``web_search`` / ``x_search`` tools must instead be sent
+    through to console.x.ai for server-side execution.
+    """
+    if not tools:
+        return None, []
+    if spec is None or not spec.uses_console_responses():
+        return tools, []
+
+    local_tools: list[dict[str, Any]] = []
+    server_tools: list[dict[str, Any]] = []
+    for tool in tools:
+        server_tool = _console_server_tool_from(tool)
+        if server_tool is not None:
+            server_tools.append(server_tool)
+        elif isinstance(tool, dict):
+            local_tools.append(tool)
+    return (local_tools or None), server_tools
+
+
+def _console_server_tool_from(tool: Any) -> dict[str, Any] | None:
+    if not isinstance(tool, dict):
+        return None
+
+    tool_type = str(tool.get("type") or "").strip()
+    if tool_type in CONSOLE_SERVER_SIDE_TOOL_TYPES:
+        return dict(tool)
+
+    if tool_type != "function":
+        return None
+    function = tool.get("function")
+    if not isinstance(function, dict):
+        return None
+
+    function_name = str(function.get("name") or "").strip()
+    if function_name not in CONSOLE_SERVER_SIDE_TOOL_TYPES:
+        return None
+
+    server_tool: dict[str, Any] = {"type": function_name}
+    for source in (tool, function):
+        for key, value in source.items():
+            if key not in _CONSOLE_FUNCTION_TOOL_EXCLUDED_KEYS and value is not None:
+                server_tool[key] = value
+    return server_tool
+
+
+def console_tool_choice_override(
+    tool_choice: Any,
+    *,
+    local_tools: list[dict[str, Any]] | None = None,
+) -> Any:
+    """Return a safe ``tool_choice`` value to forward with server-side tools."""
+    if tool_choice is None:
+        return "auto"
+    if isinstance(tool_choice, str):
+        return tool_choice
+    if isinstance(tool_choice, dict):
+        server_choice = _console_tool_choice_from_function(tool_choice)
+        if server_choice is not None:
+            return server_choice
+        # Function choices refer to local XML tool calls, not xAI server tools.
+        if tool_choice.get("type") == "function":
+            return None
+        return tool_choice
+    return None
+
+
+def _console_tool_choice_from_function(tool_choice: dict[str, Any]) -> dict[str, str] | None:
+    if tool_choice.get("type") != "function":
+        return None
+    function = tool_choice.get("function")
+    if not isinstance(function, dict):
+        return None
+    function_name = str(function.get("name") or "").strip()
+    if function_name not in CONSOLE_SERVER_SIDE_TOOL_TYPES:
+        return None
+    return {"type": function_name}
 
 
 def _extract_requested_reasoning_effort(
@@ -106,6 +233,8 @@ class ConsoleResponsesStreamAdapter:
         "image_urls",
         "_seen_image_urls",
         "_pending_text",
+        "_search_sources",
+        "_search_urls_seen",
     )
 
     def __init__(self) -> None:
@@ -114,6 +243,8 @@ class ConsoleResponsesStreamAdapter:
         self.image_urls: list[tuple[str, str]] = []
         self._seen_image_urls: set[str] = set()
         self._pending_text = ""
+        self._search_sources: list[dict[str, str]] = []
+        self._search_urls_seen: set[str] = set()
 
     def references_suffix(self) -> str:
         return ""
@@ -122,7 +253,7 @@ class ConsoleResponsesStreamAdapter:
         return []
 
     def search_sources_list(self) -> list[dict] | None:
-        return None
+        return list(self._search_sources) or None
 
     def _append_text(self, events: list[FrameEvent], text: str) -> None:
         combined = self._pending_text + text
@@ -154,6 +285,7 @@ class ConsoleResponsesStreamAdapter:
 
         event_type = str(obj.get("type") or obj.get("event") or "")
         events: list[FrameEvent] = []
+        self._collect_search_sources(obj)
 
         if event_type.endswith("output_item.done") or event_type.endswith("output_item.added"):
             self._append_response_images(events, obj.get("item") or obj.get("output_item"))
@@ -212,6 +344,14 @@ class ConsoleResponsesStreamAdapter:
             self.image_urls.append((normalized, resolved_id))
             events.append(FrameEvent("image", normalized, resolved_id))
 
+    def _collect_search_sources(self, obj: Any) -> None:
+        for source in _iter_search_sources(obj):
+            url = source.get("url", "")
+            if not url or url in self._search_urls_seen:
+                continue
+            self._search_urls_seen.add(url)
+            self._search_sources.append(source)
+
 
 def _extract_delta(obj: dict[str, Any]) -> str:
     value = obj.get("delta")
@@ -222,6 +362,62 @@ def _extract_delta(obj: dict[str, Any]) -> str:
     if isinstance(value, dict):
         value = value.get("text") or value.get("content")
     return str(value) if value is not None else ""
+
+
+def _iter_search_sources(obj: Any, source_type: str | None = None):
+    if isinstance(obj, list):
+        for item in obj:
+            yield from _iter_search_sources(item, source_type)
+        return
+    if not isinstance(obj, dict):
+        return
+
+    item_type = str(obj.get("type") or "")
+    if item_type == "x_search_call":
+        source_type = "x_post"
+    elif item_type == "web_search_call":
+        source_type = "web"
+
+    for key in ("sources", "results"):
+        values = obj.get(key)
+        if isinstance(values, list):
+            for item in values:
+                source = _search_source_from_dict(item, source_type or "web")
+                if source:
+                    yield source
+
+    for value in obj.values():
+        if isinstance(value, (dict, list)):
+            yield from _iter_search_sources(value, source_type)
+
+
+def _search_source_from_dict(item: Any, source_type: str) -> dict[str, str] | None:
+    if not isinstance(item, dict):
+        return None
+
+    url = str(item.get("url") or item.get("link") or "").strip()
+    username = str(item.get("username") or item.get("userName") or item.get("handle") or "").strip()
+    post_id = str(item.get("postId") or item.get("post_id") or item.get("id") or "").strip()
+    if not url and username and post_id:
+        clean_user = username[1:] if username.startswith("@") else username
+        url = f"https://x.com/{clean_user}/status/{post_id}"
+
+    if not url:
+        return None
+
+    text = str(item.get("text") or item.get("snippet") or "").strip()
+    title = str(item.get("title") or item.get("name") or "").strip()
+    if not title and username:
+        title = f"X/@{username[1:] if username.startswith('@') else username}"
+        if text:
+            title = f"{title}: {text[:50]}{'...' if len(text) > 50 else ''}"
+    if not title:
+        title = url
+
+    resolved_type = source_type
+    if "x.com/" in url or "twitter.com/" in url:
+        resolved_type = "x_post"
+    return {"url": url, "title": title, "type": resolved_type}
 
 
 _ASSETS_BASE = "https://assets.grok.com/"
@@ -453,4 +649,10 @@ def _extract_completed_reasoning(response: Any) -> list[str]:
     return out
 
 
-__all__ = ["ConsoleResponsesStreamAdapter", "build_console_responses_payload"]
+__all__ = [
+    "CONSOLE_SERVER_SIDE_TOOL_TYPES",
+    "ConsoleResponsesStreamAdapter",
+    "build_console_responses_payload",
+    "console_tool_choice_override",
+    "split_console_server_tools",
+]

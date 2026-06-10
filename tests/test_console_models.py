@@ -1,14 +1,84 @@
+import asyncio
 import unittest
+from unittest.mock import patch
 
+import orjson
+
+from app.dataplane.account.lease import AccountLease
 from app.control.model.enums import ModeId, Tier
 from app.control.model.registry import list_enabled, resolve
 from app.dataplane.reverse.planner import build_plan
 from app.dataplane.reverse.protocol.xai_console import (
     ConsoleResponsesStreamAdapter,
     build_console_responses_payload,
+    console_tool_choice_override,
+    split_console_server_tools,
 )
 from app.dataplane.reverse.runtime.endpoint_table import CONSOLE_RESPONSES
 from app.products.openai.router import _openai_model_payload
+
+
+class _FakeConfig:
+    def get(self, _key, default=None):
+        return default
+
+    def get_bool(self, _key, default=False):
+        return bool(default)
+
+    def get_float(self, _key, default=0.0):
+        return float(default)
+
+    def get_int(self, _key, default=0):
+        return int(default)
+
+    def get_list(self, _key, default=None):
+        return list(default or [])
+
+
+class _FakeAccountDirectory:
+    async def release(self, _acct):
+        return None
+
+    async def feedback(self, *_args, **_kwargs):
+        return None
+
+
+class _FakeProxyRuntime:
+    async def acquire(self, **_kwargs):
+        return None
+
+
+class _FakeConsoleResponse:
+    status_code = 200
+    content = b""
+
+    async def aiter_lines(self):
+        yield 'data: {"type":"response.output_text.delta","delta":"ok"}'
+        yield 'data: {"type":"response.completed","response":{}}'
+        yield "data: [DONE]"
+
+
+class _CaptureSession:
+    def __init__(self, capture: dict[str, object], **_kwargs) -> None:
+        self._capture = capture
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *_args):
+        return None
+
+    async def post(self, endpoint, *, headers, data, timeout, stream):
+        self._capture["endpoint"] = endpoint
+        self._capture["headers"] = headers
+        self._capture["payload"] = orjson.loads(data)
+        self._capture["timeout"] = timeout
+        self._capture["stream"] = stream
+        return _FakeConsoleResponse()
+
+
+async def _noop_quota_sync(*_args, **_kwargs):
+    return None
 
 
 class ConsoleModelRoutingTests(unittest.TestCase):
@@ -25,6 +95,7 @@ class ConsoleModelRoutingTests(unittest.TestCase):
         "grok-4.20-0309-reasoning-heavy",
         "grok-4.20-multi-agent-0309",
         "grok-4.20-fast",
+        "grok-4.3-fast",
         "grok-4.20-auto",
         "grok-4.20-expert",
         "grok-4.20-heavy",
@@ -207,6 +278,292 @@ class ConsoleModelRoutingTests(unittest.TestCase):
         self.assertTrue(payload["stream"])
         self.assertEqual(payload["temperature"], 0.2)
 
+    def test_console_server_side_search_tools_are_split_from_local_tools(self) -> None:
+        spec = resolve("grok-4.3")
+        local_tools, console_tools = split_console_server_tools(
+            [
+                {"type": "web_search"},
+                {"type": "x_search", "enable_video_understanding": True},
+                {
+                    "type": "function",
+                    "function": {"name": "lookup", "parameters": {"type": "object"}},
+                },
+            ],
+            spec,
+        )
+
+        self.assertEqual(
+            console_tools,
+            [
+                {"type": "web_search"},
+                {"type": "x_search", "enable_video_understanding": True},
+            ],
+        )
+        self.assertEqual(len(local_tools or []), 1)
+        self.assertEqual((local_tools or [])[0]["function"]["name"], "lookup")
+
+    def test_console_search_tools_are_not_split_for_grok_web_models(self) -> None:
+        spec = resolve("grok-4.20-fast")
+
+        local_tools, console_tools = split_console_server_tools(
+            [{"type": "web_search"}],
+            spec,
+        )
+
+        self.assertEqual(local_tools, [{"type": "web_search"}])
+        self.assertEqual(console_tools, [])
+
+    def test_console_function_named_search_tools_are_mapped_to_server_tools(self) -> None:
+        spec = resolve("grok-4.3")
+
+        local_tools, console_tools = split_console_server_tools(
+            [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "web_search",
+                        "description": "Search the web",
+                        "parameters": {"type": "object"},
+                        "search_context_size": "high",
+                    },
+                },
+                {
+                    "type": "function",
+                    "function": {"name": "x_search", "parameters": {"type": "object"}},
+                    "enable_video_understanding": True,
+                },
+            ],
+            spec,
+        )
+
+        self.assertIsNone(local_tools)
+        self.assertEqual(
+            console_tools,
+            [
+                {"type": "web_search", "search_context_size": "high"},
+                {"type": "x_search", "enable_video_understanding": True},
+            ],
+        )
+
+    def test_console_tool_choice_defaults_to_auto_for_server_side_tools(self) -> None:
+        self.assertEqual(console_tool_choice_override(None), "auto")
+        self.assertEqual(console_tool_choice_override("required"), "required")
+        self.assertEqual(
+            console_tool_choice_override(
+                {"type": "function", "function": {"name": "web_search"}},
+            ),
+            {"type": "web_search"},
+        )
+        self.assertEqual(
+            console_tool_choice_override(
+                {"type": "function", "function": {"name": "x_search"}},
+            ),
+            {"type": "x_search"},
+        )
+        self.assertIsNone(
+            console_tool_choice_override(
+                {"type": "function", "function": {"name": "lookup"}},
+            )
+        )
+        self.assertIsNone(
+            console_tool_choice_override(
+                {"type": "function", "function": {"name": "lookup"}},
+                local_tools=[
+                    {
+                        "type": "function",
+                        "function": {"name": "lookup"},
+                    }
+                ],
+            )
+        )
+
+    def test_build_console_responses_payload_passes_search_tools(self) -> None:
+        payload = build_console_responses_payload(
+            model="grok-4.3",
+            message="[user]: hi",
+            stream=True,
+            request_overrides={
+                "tools": [{"type": "web_search"}, {"type": "x_search"}],
+                "tool_choice": "auto",
+            },
+        )
+
+        self.assertEqual(
+            payload["tools"],
+            [{"type": "web_search"}, {"type": "x_search"}],
+        )
+        self.assertEqual(payload["tool_choice"], "auto")
+
+    def test_build_console_responses_payload_maps_deepsearch_to_search_tools(self) -> None:
+        payload = build_console_responses_payload(
+            model="grok-4.3",
+            message="[user]: search latest xAI news",
+            stream=True,
+            request_overrides={
+                "temporary": True,
+                "disableMemory": True,
+                "deepsearchPreset": "default",
+            },
+        )
+
+        self.assertEqual(
+            payload["tools"],
+            [{"type": "web_search"}, {"type": "x_search"}],
+        )
+        self.assertEqual(payload["tool_choice"], "auto")
+        self.assertNotIn("deepsearchPreset", payload)
+
+    def test_build_console_responses_payload_preserves_explicit_search_tools(self) -> None:
+        payload = build_console_responses_payload(
+            model="grok-4.3",
+            message="[user]: search latest xAI news",
+            stream=True,
+            request_overrides={
+                "deepsearchPreset": "deeper",
+                "tools": [{"type": "web_search", "search_context_size": "high"}],
+                "tool_choice": "required",
+            },
+        )
+
+        self.assertEqual(
+            payload["tools"],
+            [
+                {"type": "web_search", "search_context_size": "high"},
+                {"type": "x_search"},
+            ],
+        )
+        self.assertEqual(payload["tool_choice"], "required")
+        self.assertNotIn("deepsearchPreset", payload)
+
+    def test_chat_completions_deepsearch_reaches_console_payload_as_tools(self) -> None:
+        capture = self._run_console_chat_capture(
+            request_overrides={"deepsearchPreset": "default"},
+        )
+
+        self.assertEqual(capture["endpoint"], CONSOLE_RESPONSES)
+        self.assertEqual(
+            capture["payload"]["tools"],
+            [{"type": "web_search"}, {"type": "x_search"}],
+        )
+        self.assertEqual(capture["payload"]["tool_choice"], "auto")
+        self.assertNotIn("deepsearchPreset", capture["payload"])
+
+    def test_chat_completions_explicit_search_tools_reach_console_payload(self) -> None:
+        capture = self._run_console_chat_capture(
+            tools=[
+                {"type": "web_search"},
+                {"type": "x_search", "enable_video_understanding": True},
+                {
+                    "type": "function",
+                    "function": {"name": "lookup", "parameters": {"type": "object"}},
+                },
+            ],
+            tool_choice="auto",
+        )
+
+        self.assertEqual(
+            capture["payload"]["tools"],
+            [
+                {"type": "web_search"},
+                {"type": "x_search", "enable_video_understanding": True},
+            ],
+        )
+        self.assertEqual(capture["payload"]["tool_choice"], "auto")
+        self.assertEqual(
+            [tool["type"] for tool in capture["payload"].get("tools", [])],
+            ["web_search", "x_search"],
+        )
+
+    def test_chat_completions_function_named_search_tools_reach_console_payload(self) -> None:
+        capture = self._run_console_chat_capture(
+            tools=[
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "web_search",
+                        "parameters": {"type": "object"},
+                        "search_context_size": "high",
+                    },
+                },
+                {
+                    "type": "function",
+                    "function": {"name": "x_search", "parameters": {"type": "object"}},
+                    "enable_video_understanding": True,
+                },
+            ],
+            tool_choice={"type": "function", "function": {"name": "web_search"}},
+        )
+
+        self.assertEqual(
+            capture["payload"]["tools"],
+            [
+                {"type": "web_search", "search_context_size": "high"},
+                {"type": "x_search", "enable_video_understanding": True},
+            ],
+        )
+        self.assertEqual(capture["payload"]["tool_choice"], {"type": "web_search"})
+
+    def _run_console_chat_capture(
+        self,
+        *,
+        tools: list[dict] | None = None,
+        tool_choice=None,
+        request_overrides: dict | None = None,
+    ) -> dict[str, object]:
+        from app.products.openai import chat
+
+        capture: dict[str, object] = {}
+        account = AccountLease(
+            lease_id=1,
+            idx=0,
+            token="test-sso-token",
+            pool_id=int(Tier.BASIC),
+            mode_id=int(ModeId.AUTO),
+            selected_at=0,
+        )
+
+        async def fake_reserve_account(*_args, **_kwargs):
+            return account, int(ModeId.AUTO)
+
+        async def run():
+            return await chat.completions(
+                model="grok-4.3",
+                messages=[{"role": "user", "content": "search latest xAI news"}],
+                stream=False,
+                emit_think=False,
+                tools=tools,
+                tool_choice=tool_choice,
+                request_overrides=request_overrides,
+            )
+
+        with (
+            patch("app.dataplane.account._directory", _FakeAccountDirectory()),
+            patch.object(chat, "get_config", return_value=_FakeConfig()),
+            patch.object(chat, "selection_max_retries", return_value=0),
+            patch.object(chat, "reserve_account", side_effect=fake_reserve_account),
+            patch.object(chat, "get_proxy_runtime", return_value=_FakeProxyRuntime()),
+            patch.object(chat, "build_session_kwargs", return_value={}),
+            patch.object(
+                chat,
+                "build_http_headers",
+                return_value={"authorization": "Bearer test"},
+            ),
+            patch.object(
+                chat,
+                "ResettableSession",
+                side_effect=lambda **kwargs: _CaptureSession(capture, **kwargs),
+            ),
+            patch.object(chat, "_quota_sync", side_effect=_noop_quota_sync),
+            patch.object(chat, "_fail_sync", side_effect=_noop_quota_sync),
+        ):
+            result = asyncio.run(run())
+
+        self.assertEqual(
+            ((result.get("choices") or [{}])[0].get("message") or {}).get("content"),
+            "ok",
+        )
+        return capture
+
     def test_build_console_responses_payload_pins_public_model_identity(self) -> None:
         payload = build_console_responses_payload(
             model="grok-4.3",
@@ -363,6 +720,38 @@ class ConsoleModelRoutingTests(unittest.TestCase):
             "https://assets.grok.com/images/123e4567-e89b-12d3-a456-426614174000.jpg",
         )
         self.assertIn(("soft_stop", ""), [(ev.kind, ev.content) for ev in events])
+
+    def test_console_responses_stream_adapter_collects_search_sources(self) -> None:
+        adapter = ConsoleResponsesStreamAdapter()
+
+        adapter.feed(
+            '{"type":"response.output_item.done","item":{'
+            '"type":"web_search_call","action":{"sources":[{'
+            '"url":"https://example.com/post","title":"Example source"'
+            '}]}}}'
+        )
+        adapter.feed(
+            '{"type":"response.output_item.done","item":{'
+            '"type":"x_search_call","results":[{'
+            '"username":"xai","postId":"123","text":"Latest update from xAI"'
+            '}]}}'
+        )
+
+        self.assertEqual(
+            adapter.search_sources_list(),
+            [
+                {
+                    "url": "https://example.com/post",
+                    "title": "Example source",
+                    "type": "web",
+                },
+                {
+                    "url": "https://x.com/xai/status/123",
+                    "title": "X/@xai: Latest update from xAI",
+                    "type": "x_post",
+                },
+            ],
+        )
 
 
 if __name__ == "__main__":
