@@ -7,7 +7,7 @@ import mimetypes
 from typing import Annotated, AsyncGenerator, AsyncIterable, Literal
 
 import orjson
-from fastapi import APIRouter, Depends, File, Form, Query, Request, UploadFile
+from fastapi import APIRouter, Depends, File, Form, Header, Query, Request, UploadFile
 from fastapi.responses import JSONResponse, StreamingResponse, FileResponse
 
 from app.control.account.state_machine import is_manageable
@@ -17,6 +17,7 @@ from app.platform.logging.logger import logger
 from app.platform.storage import image_files_dir, video_files_dir
 from app.control.model import registry as model_registry
 from app.control.model.spec import ModelSpec
+from app.products._upstream_headers import build_upstream_response_headers
 from .schemas import (
     ChatCompletionRequest,
     ImageGenerationRequest,
@@ -58,34 +59,224 @@ def _model_available_for_pools(spec: ModelSpec, pools: frozenset[str]) -> bool:
 # ---------------------------------------------------------------------------
 
 
+def _is_anthropic_client(anthropic_version: str | None) -> bool:
+    """Anthropic SDKs always send ``anthropic-version`` on every request.
+
+    OpenAI SDKs never do. Using header presence as a content-negotiation hint
+    lets us serve Anthropic-format model listings on the shared ``/v1/models``
+    path without breaking existing OpenAI clients.
+    """
+    return bool(anthropic_version and anthropic_version.strip())
+
+
+def _model_capability_names(spec: ModelSpec) -> list[str]:
+    capabilities: list[str] = []
+    if spec.is_chat():
+        capabilities.append("chat")
+    if spec.is_image():
+        capabilities.append("image")
+    if spec.is_image_edit():
+        capabilities.append("image_edit")
+    if spec.is_video():
+        capabilities.append("video")
+    if spec.is_voice():
+        capabilities.append("voice")
+    return capabilities
+
+
+def _model_primary_type(spec: ModelSpec) -> str:
+    if spec.is_image_edit():
+        return "image_edit"
+    if spec.is_image():
+        return "image"
+    if spec.is_video():
+        return "video"
+    if spec.is_voice():
+        return "voice"
+    if spec.is_chat():
+        return "chat"
+    return "unknown"
+
+
+def _model_generation_metadata(spec: ModelSpec) -> dict:
+    if spec.is_image_edit():
+        input_modalities = ["text", "image"]
+        output_modalities = ["image"]
+        methods = ["chat.completions", "images.edits"]
+        endpoints = ["/v1/chat/completions", "/v1/images/edits"]
+        modality = "text+image->image"
+    elif spec.is_image():
+        input_modalities = ["text"]
+        output_modalities = ["image"]
+        methods = ["chat.completions", "images.generations"]
+        endpoints = ["/v1/chat/completions", "/v1/images/generations"]
+        modality = "text->image"
+    elif spec.is_video():
+        input_modalities = ["text", "image"]
+        output_modalities = ["video"]
+        methods = ["chat.completions", "videos.create"]
+        endpoints = ["/v1/chat/completions", "/v1/videos"]
+        modality = "text+image->video"
+    elif spec.is_voice():
+        input_modalities = ["text", "audio"]
+        output_modalities = ["audio"]
+        methods = ["chat.completions"]
+        endpoints = ["/v1/chat/completions"]
+        modality = "text+audio->audio"
+    else:
+        input_modalities = ["text"]
+        output_modalities = ["text"]
+        methods = ["chat.completions", "responses"]
+        endpoints = ["/v1/chat/completions", "/v1/responses"]
+        modality = "text->text"
+
+    modalities = list(dict.fromkeys([*input_modalities, *output_modalities]))
+    return {
+        "modalities": modalities,
+        "input_modalities": input_modalities,
+        "output_modalities": output_modalities,
+        "supported_generation_methods": methods,
+        "supportedGenerationMethods": methods,
+        "endpoints": endpoints,
+        "supported_endpoints": endpoints,
+        "architecture": {
+            "modality": modality,
+            "input_modalities": input_modalities,
+            "output_modalities": output_modalities,
+        },
+    }
+
+
+def _model_pool_names(spec: ModelSpec) -> list[str]:
+    return [_POOL_ID_TO_NAME[pool_id] for pool_id in spec.pool_candidates()]
+
+
+def _model_availability_payload(
+    spec: ModelSpec,
+    available_pools: frozenset[str] | None,
+) -> dict:
+    required = _model_pool_names(spec)
+    if available_pools is None:
+        status = "unknown"
+        reason = "Account pool availability was not evaluated for this request."
+    else:
+        status = "available" if bool(set(required) & available_pools) else "unavailable"
+        reason = (
+            "At least one required account pool is active."
+            if status == "available"
+            else "Requires an active/manageable account in one of the required pools."
+        )
+    return {
+        "status": status,
+        "reason": reason,
+        "required_pools": required,
+        "available_pools": sorted(available_pools) if available_pools is not None else [],
+    }
+
+
+def _model_routing_payload(spec: ModelSpec) -> dict:
+    return {
+        "upstream_profile": spec.upstream_profile,
+        "upstream_model": spec.upstream_model_name(),
+        "mode_id": int(spec.mode_id),
+        "pool_candidates": _model_pool_names(spec),
+    }
+
+
+def _openai_model_payload(
+    spec: ModelSpec,
+    created: int,
+    available_pools: frozenset[str] | None = None,
+) -> dict:
+    capabilities = _model_capability_names(spec)
+    primary_type = _model_primary_type(spec)
+    return {
+        "id": spec.model_name,
+        "object": "model",
+        "created": created,
+        "owned_by": "xai",
+        "name": spec.public_name,
+        "type": primary_type,
+        "model_type": primary_type,
+        "capability": capabilities[0] if capabilities else "unknown",
+        "capabilities": capabilities,
+        "availability": _model_availability_payload(spec, available_pools),
+        "routing": _model_routing_payload(spec),
+        **_model_generation_metadata(spec),
+    }
+
+
+def _anthropic_model_payload(spec: ModelSpec, created: int) -> dict:
+    """Return Anthropic-format model entry (see Anthropic List Models API).
+
+    Anthropic represents timestamps as ISO-8601 strings and uses
+    ``display_name`` / ``type: "model"`` instead of OpenAI's ``name`` /
+    ``object: "model"``.
+    """
+    from datetime import datetime, timezone
+
+    return {
+        "type": "model",
+        "id": spec.model_name,
+        "display_name": spec.public_name,
+        "created_at": datetime.fromtimestamp(created, tz=timezone.utc).isoformat().replace("+00:00", "Z"),
+    }
+
+
 @router.get("/models", tags=[_TAG_MODELS], dependencies=[Depends(verify_api_key)])
-async def list_models(request: Request):
+async def list_models(
+    request: Request,
+    anthropic_version: str | None = Header(default=None, alias="anthropic-version"),
+):
     import time
 
     pools = await _available_pools(request)
-    models = [
+    created = int(time.time())
+    available = model_registry.list_enabled()
+
+    if _is_anthropic_client(anthropic_version):
+        data = [_anthropic_model_payload(m, created) for m in available]
+        return JSONResponse(
+            {
+                "data": data,
+                "has_more": False,
+                "first_id": data[0]["id"] if data else None,
+                "last_id": data[-1]["id"] if data else None,
+            }
+        )
+
+    return JSONResponse(
         {
-            "id": m.model_name,
-            "object": "model",
-            "created": int(time.time()),
-            "owned_by": "xai",
-            "name": m.public_name,
+            "object": "list",
+            "data": [_openai_model_payload(m, created, pools) for m in available],
         }
-        for m in model_registry.list_enabled()
-        if _model_available_for_pools(m, pools)
-    ]
-    return JSONResponse({"object": "list", "data": models})
+    )
 
 
 @router.get(
     "/models/{model_id}", tags=[_TAG_MODELS], dependencies=[Depends(verify_api_key)]
 )
-async def get_model_endpoint(model_id: str, request: Request):
+async def get_model_endpoint(
+    model_id: str,
+    request: Request,
+    anthropic_version: str | None = Header(default=None, alias="anthropic-version"),
+):
     import time
 
     spec = model_registry.get(model_id)
     pools = await _available_pools(request)
-    if spec is None or not _model_available_for_pools(spec, pools):
+    if spec is None or not spec.enabled:
+        if _is_anthropic_client(anthropic_version):
+            return JSONResponse(
+                {
+                    "type": "error",
+                    "error": {
+                        "type": "not_found_error",
+                        "message": f"Model {model_id!r} not found",
+                    },
+                },
+                status_code=404,
+            )
         return JSONResponse(
             {
                 "error": {
@@ -95,15 +286,11 @@ async def get_model_endpoint(model_id: str, request: Request):
             },
             status_code=404,
         )
-    return JSONResponse(
-        {
-            "id": spec.model_name,
-            "object": "model",
-            "created": int(time.time()),
-            "owned_by": "xai",
-            "name": spec.public_name,
-        }
-    )
+
+    created = int(time.time())
+    if _is_anthropic_client(anthropic_version):
+        return JSONResponse(_anthropic_model_payload(spec, created))
+    return JSONResponse(_openai_model_payload(spec, created, pools))
 
 
 # ---------------------------------------------------------------------------
@@ -117,27 +304,15 @@ async def _safe_sse(stream: AsyncIterable[str]) -> AsyncGenerator[str, None]:
         async for chunk in stream:
             yield chunk
     except AppError as exc:
-        payload = orjson.dumps(_openai_error_payload(exc)).decode()
+        payload = orjson.dumps({"error": exc.to_dict()["error"]}).decode()
         yield f"event: error\ndata: {payload}\n\n"
         yield "data: [DONE]\n\n"
     except Exception as exc:
-        payload = orjson.dumps(_openai_error_payload(exc)).decode()
+        payload = orjson.dumps(
+            {"error": {"message": str(exc), "type": "server_error"}}
+        ).decode()
         yield f"event: error\ndata: {payload}\n\n"
         yield "data: [DONE]\n\n"
-
-
-def _unwrap_single_exception_group(exc: BaseException) -> BaseException:
-    """Expose the real error from single-failure TaskGroup wrappers."""
-    while isinstance(exc, BaseExceptionGroup) and len(exc.exceptions) == 1:
-        exc = exc.exceptions[0]
-    return exc
-
-
-def _openai_error_payload(exc: BaseException) -> dict:
-    exc = _unwrap_single_exception_group(exc)
-    if isinstance(exc, AppError):
-        return {"error": exc.to_dict()["error"]}
-    return {"error": {"message": str(exc), "type": "server_error"}}
 
 
 _SSE_HEADERS = {
@@ -159,17 +334,45 @@ async def _sse_with_heartbeat(
     """
     yield ": heartbeat stream connected\n" + " " * 2048 + "\n\n"
 
-    aiter = stream.__aiter__()
-    while True:
+    queue: asyncio.Queue[tuple[str, str | Exception | None]] = asyncio.Queue()
+
+    async def _producer() -> None:
         try:
-            chunk = await asyncio.wait_for(aiter.__anext__(), timeout=interval)
-            yield chunk
-        except asyncio.TimeoutError:
-            yield ": ping\n\n"
-        except StopAsyncIteration:
+            async for chunk in stream:
+                await queue.put(("chunk", chunk))
+        except Exception as exc:
+            await queue.put(("error", exc))
+        else:
+            await queue.put(("done", None))
+
+    producer = asyncio.create_task(_producer(), name="sse-heartbeat-producer")
+    try:
+        while True:
+            try:
+                kind, payload = await asyncio.wait_for(queue.get(), timeout=interval)
+            except asyncio.TimeoutError:
+                if producer.done() and queue.empty():
+                    try:
+                        await producer
+                    except asyncio.CancelledError:
+                        pass
+                    break
+                yield ": ping\n\n"
+                continue
+
+            if kind == "chunk":
+                yield str(payload)
+                continue
+            if kind == "error":
+                raise payload
             break
+    finally:
+        if not producer.done():
+            producer.cancel()
+        try:
+            await producer
         except asyncio.CancelledError:
-            break
+            pass
 
 
 # ---------------------------------------------------------------------------
@@ -228,6 +431,42 @@ def _validate_image_edit_n(n: int, *, param: str) -> None:
         raise ValidationError("n must be between 1 and 2 for image edit", param=param)
 
 
+def _content_text(content: object) -> str:
+    if isinstance(content, str):
+        return content.strip()
+    if not isinstance(content, list):
+        return ""
+
+    parts: list[str] = []
+    for block in content:
+        if not isinstance(block, dict):
+            continue
+        if block.get("type") not in {"text", "input_text"}:
+            continue
+        text = block.get("text")
+        if isinstance(text, str) and text.strip():
+            parts.append(text.strip())
+    return "\n".join(parts).strip()
+
+
+def _last_user_text_prompt(messages: list) -> str:
+    for msg in reversed(messages):
+        if getattr(msg, "role", None) != "user":
+            continue
+        prompt = _content_text(getattr(msg, "content", None))
+        if prompt:
+            return prompt
+    return ""
+
+
+def _coalesce_uploads(*groups: list[UploadFile] | None) -> list[UploadFile]:
+    uploads: list[UploadFile] = []
+    for group in groups:
+        if group:
+            uploads.extend(group)
+    return uploads
+
+
 async def _upload_to_data_uri(upload: UploadFile, *, param: str) -> str:
     raw = await upload.read()
     if not raw:
@@ -261,7 +500,7 @@ async def chat_completions_endpoint(req: ChatCompletionRequest):
     )
 
     spec = model_registry.get(req.model)
-    if spec is None:
+    if spec is None or not spec.enabled:
         raise ValidationError(
             f"Model {req.model!r} does not exist or you do not have access to it.",
             param="model",
@@ -294,20 +533,15 @@ async def chat_completions_endpoint(req: ChatCompletionRequest):
             fmt = cfg.response_format or "url"
             n = cfg.n or 1
             _validate_image_n(req.model, n, param="image_config.n")
-            # Extract prompt from last user message.
-            prompt = next(
-                (
-                    m.content
-                    for m in reversed(req.messages)
-                    if m.role == "user"
-                    and isinstance(m.content, str)
-                    and m.content.strip()
-                ),
-                "",
-            )
+            prompt = _last_user_text_prompt(req.messages)
+            if not prompt:
+                raise ValidationError(
+                    "Image generation requires a non-empty text prompt",
+                    param="messages",
+                )
             result = await img_gen(
                 model=req.model,
-                prompt=prompt or "",
+                prompt=prompt,
                 n=n,
                 size=size,
                 response_format=fmt,
@@ -336,6 +570,9 @@ async def chat_completions_endpoint(req: ChatCompletionRequest):
             request_overrides: dict | None = None
             if req.deepsearch:
                 request_overrides = {"deepsearchPreset": req.deepsearch}
+            if spec.uses_console_responses() and req.reasoning_effort is not None:
+                request_overrides = request_overrides or {}
+                request_overrides["_reasoning_effort"] = req.reasoning_effort
             # reasoning_effort=None → config default; "none" → off; otherwise → on.
             if req.reasoning_effort is None:
                 emit_think: bool | None = None
@@ -356,38 +593,43 @@ async def chat_completions_endpoint(req: ChatCompletionRequest):
     except AppError:
         raise
     except Exception as exc:
-        exposed_exc = _unwrap_single_exception_group(exc)
         logger.exception(
             "chat completions endpoint failed: model={} stream={} error={}",
             req.model,
             is_stream,
-            exposed_exc,
+            exc,
         )
         # Video failures must surface their real HTTP status code so downstream
         # billing gateways (e.g. New API) don't misread an SSE-wrapped error as a
         # successful 200 response.
-        if isinstance(exposed_exc, AppError):
-            raise exposed_exc from exc
         if spec.is_video():
             raise
         if is_stream:
-            _payload = orjson.dumps(_openai_error_payload(exposed_exc)).decode()
+            _err_msg = str(
+                exc
+            )  # capture before Python clears the except-scope variable
 
             async def _err_stream():
-                yield f"event: error\ndata: {_payload}\n\n"
+                payload = orjson.dumps(
+                    {"error": {"message": _err_msg, "type": "server_error"}}
+                ).decode()
+                yield f"event: error\ndata: {payload}\n\n"
                 yield "data: [DONE]\n\n"
 
             return StreamingResponse(
-                _err_stream(), media_type="text/event-stream", headers=_SSE_HEADERS
+                _err_stream(),
+                media_type="text/event-stream",
+                headers={**_SSE_HEADERS, **build_upstream_response_headers(spec)},
             )
         raise
 
+    upstream_headers = build_upstream_response_headers(spec)
     if isinstance(result, dict):
-        return JSONResponse(result)
+        return JSONResponse(result, headers=upstream_headers)
     return StreamingResponse(
         _sse_with_heartbeat(_safe_sse(result)),
         media_type="text/event-stream",
-        headers=_SSE_HEADERS,
+        headers={**_SSE_HEADERS, **upstream_headers},
     )
 
 
@@ -404,7 +646,6 @@ async def _safe_sse_responses(stream) -> AsyncGenerator[str, None]:
     except Exception as exc:
         from app.platform.errors import AppError
 
-        exc = _unwrap_single_exception_group(exc)
         if isinstance(exc, AppError):
             err = exc.to_dict()["error"]
         else:
@@ -450,6 +691,10 @@ async def responses_endpoint(req: ResponsesCreateRequest):
     else:
         emit_think = True
 
+    request_overrides: dict | None = None
+    if spec.uses_console_responses() and isinstance(req.reasoning, dict) and "effort" in req.reasoning:
+        request_overrides = {"_reasoning_effort": req.reasoning.get("effort")}
+
     from .responses import create as responses_create
 
     result = await responses_create(
@@ -462,14 +707,16 @@ async def responses_endpoint(req: ResponsesCreateRequest):
         top_p=req.top_p or 0.95,
         tools=req.tools or None,
         tool_choice=req.tool_choice,
+        request_overrides=request_overrides,
     )
 
+    upstream_headers = build_upstream_response_headers(spec)
     if isinstance(result, dict):
-        return JSONResponse(result)
+        return JSONResponse(result, headers=upstream_headers)
     return StreamingResponse(
         _sse_with_heartbeat(_safe_sse_responses(result)),
         media_type="text/event-stream",
-        headers=_SSE_HEADERS,
+        headers={**_SSE_HEADERS, **upstream_headers},
     )
 
 
@@ -521,16 +768,31 @@ async def videos_create(
         Literal["fun", "normal", "spicy", "custom"] | None, Form()
     ] = None,
     input_reference: Annotated[
+        list[UploadFile] | None, File(alias="input_reference")
+    ] = None,
+    input_reference_array: Annotated[
         list[UploadFile] | None, File(alias="input_reference[]")
+    ] = None,
+    image: Annotated[
+        list[UploadFile] | None, File(alias="image")
+    ] = None,
+    image_array: Annotated[
+        list[UploadFile] | None, File(alias="image[]")
     ] = None,
 ):
     from .video import create_video
 
+    reference_uploads = _coalesce_uploads(
+        input_reference,
+        input_reference_array,
+        image,
+        image_array,
+    )
     references_payload = None
-    if input_reference:
+    if reference_uploads:
         references_payload = [
             {"image_url": await _upload_to_data_uri(f, param="input_reference")}
-            for f in input_reference[:5]
+            for f in reference_uploads[:5]
         ]
 
     result = await create_video(
@@ -577,7 +839,8 @@ async def videos_content(video_id: str):
 async def image_edits(
     model: Annotated[str, Form(...)],
     prompt: Annotated[str, Form(...)],
-    image: Annotated[list[UploadFile], File(..., alias="image[]")],
+    image: Annotated[list[UploadFile] | None, File(alias="image")] = None,
+    image_array: Annotated[list[UploadFile] | None, File(alias="image[]")] = None,
     mask: Annotated[UploadFile | None, File()] = None,
     n: Annotated[int, Form()] = 1,
     size: Annotated[str, Form()] = "1024x1024",
@@ -591,12 +854,15 @@ async def image_edits(
     if mask is not None:
         raise ValidationError("mask is not supported yet", param="mask")
     _validate_image_edit_n(n, param="n")
+    image_uploads = _coalesce_uploads(image, image_array)
+    if not image_uploads:
+        raise ValidationError("image is required", param="image")
 
     from .images import edit as img_edit
 
     image_inputs = [
         await _upload_to_data_uri(item, param=f"image.{index}")
-        for index, item in enumerate(image)
+        for index, item in enumerate(image_uploads)
     ]
     # Wrap input into a single-message conversation.
     content = [{"type": "text", "text": prompt}]
@@ -646,11 +912,25 @@ async def serve_image(id: str = Query(..., description="Image file ID")):
         raise ValidationError("Invalid file ID", param="id")
 
     img_dir = image_files_dir()
-    for ext in (".jpg", ".png"):
+    mime_by_ext = {
+        ".jpg": "image/jpeg",
+        ".jpeg": "image/jpeg",
+        ".png": "image/png",
+        ".webp": "image/webp",
+        ".gif": "image/gif",
+        ".bmp": "image/bmp",
+    }
+    matches = []
+    for ext, mime in mime_by_ext.items():
         path = img_dir / f"{id}{ext}"
         if path.exists():
-            mime = "image/png" if ext == ".png" else "image/jpeg"
-            return FileResponse(path, media_type=mime)
+            matches.append((path, mime))
+    if matches:
+        path, mime = max(
+            matches,
+            key=lambda item: item[0].stat().st_mtime_ns,
+        )
+        return FileResponse(path, media_type=mime)
 
     raise ValidationError(f"Image {id!r} not found", param="id")
 

@@ -2,6 +2,8 @@
 
 import asyncio
 import base64
+import binascii
+import hashlib
 import re
 from typing import Any, AsyncGenerator
 
@@ -38,6 +40,8 @@ from app.dataplane.reverse.protocol.xai_chat import (
 from app.dataplane.reverse.protocol.xai_console import (
     ConsoleResponsesStreamAdapter,
     build_console_responses_payload,
+    console_tool_choice_override,
+    split_console_server_tools,
 )
 from app.dataplane.reverse.protocol.xai_usage import is_invalid_credentials_error
 from app.dataplane.reverse.planner import build_plan
@@ -62,6 +66,8 @@ from ._format import (
 )
 from ._tool_sieve import ToolSieve
 from app.products._account_selection import reserve_account, selection_max_retries
+
+_FileInput = str | dict[str, str]
 
 
 def _to_chat_annotations(anns: list[dict]) -> list[dict]:
@@ -92,11 +98,28 @@ def _log_task_exception(task: "asyncio.Task") -> None:
 
 
 def _upstream_body_excerpt(exc: UpstreamError, *, limit: int = 240) -> str:
+    body = _upstream_body(exc).replace("\n", "\\n")
+    return body[:limit] or "-"
+
+
+def _upstream_body(exc: UpstreamError) -> str:
     details = getattr(exc, "details", {})
     if not isinstance(details, dict):
-        return "-"
-    body = str(details.get("body", "") or "").replace("\n", "\\n")
-    return body[:limit] or "-"
+        return ""
+    return str(details.get("body", "") or "")
+
+
+def _chat_pool_names(spec: ModelSpec) -> list[str]:
+    pool_names = {0: "basic", 1: "super", 2: "heavy"}
+    return [pool_names.get(pool_id, str(pool_id)) for pool_id in spec.pool_candidates()]
+
+
+def _no_available_account_error(spec: ModelSpec) -> RateLimitError:
+    pools = ", ".join(_chat_pool_names(spec))
+    return RateLimitError(
+        f"No active/manageable accounts are available for chat model {spec.model_name!r}; "
+        f"required pool(s): {pools}."
+    )
 
 
 def _transport_upstream_error(exc: BaseException, *, context: str) -> UpstreamError:
@@ -106,6 +129,30 @@ def _transport_upstream_error(exc: BaseException, *, context: str) -> UpstreamEr
     return UpstreamError(
         f"{context}: {exc}",
         status=502,
+        body=body,
+    )
+
+
+def _raise_chat_status_error(
+    *,
+    spec: ModelSpec | None,
+    status_code: int,
+    body: str,
+) -> None:
+    if spec and spec.uses_console_responses() and status_code == 404:
+        upstream_model = spec.upstream_model_name()
+        raise UpstreamError(
+            "Console Responses upstream does not expose model "
+            f"{upstream_model!r} for public model {spec.model_name!r}; "
+            "the model is listed locally for diagnostics, but it is unavailable "
+            "until the upstream account/Console API exposes that model id or the "
+            "registry maps it to a supported upstream model.",
+            status=status_code,
+            body=body,
+        )
+    raise UpstreamError(
+        f"Chat upstream returned {status_code}",
+        status=status_code,
         body=body,
     )
 
@@ -189,12 +236,100 @@ def _configured_retry_codes(cfg) -> frozenset[int]:
 
 def _should_retry_upstream(exc: UpstreamError, retry_codes: frozenset[int]) -> bool:
     """Return whether this upstream error should switch to another token."""
+    if _is_account_scoped_forbidden(exc):
+        return True
     return exc.status in retry_codes or is_invalid_credentials_error(exc)
+
+
+_CLOUDFLARE_CHALLENGE_MARKERS = (
+    "just a moment",
+    "cf-challenge",
+    "cf-mitigated",
+    "cloudflare",
+)
+_CHAT_ACCOUNT_RETRY_MIN_RETRIES = 20
+
+
+def _is_account_scoped_forbidden(exc: UpstreamError) -> bool:
+    """Treat empty/non-CF 403 responses as account entitlement failures."""
+    if exc.status != 403:
+        return False
+    return not _is_cloudflare_challenge(exc)
+
+
+def _is_cloudflare_challenge(exc: UpstreamError) -> bool:
+    """Return whether the upstream error is a proxy/clearance challenge."""
+    if exc.status != 403:
+        return False
+    haystack = f"{_upstream_body(exc)} {exc}".lower()
+    return any(marker in haystack for marker in _CLOUDFLARE_CHALLENGE_MARKERS)
+
+
+def _should_retry_same_account_upstream(exc: UpstreamError) -> bool:
+    """Retry transient proxy clearance failures without rotating accounts."""
+    return _is_cloudflare_challenge(exc)
+
+
+def _chat_max_retries(cfg) -> int:
+    """Use enough retries to rotate past account-specific 403 failures."""
+    configured = max(0, selection_max_retries())
+    account_min = max(
+        0,
+        cfg.get_int("chat.account_retry_min_retries", _CHAT_ACCOUNT_RETRY_MIN_RETRIES),
+    )
+    return max(configured, account_min)
 
 
 def _feedback_kind(exc: BaseException) -> "FeedbackKind":
     """Map an upstream exception to the appropriate FeedbackKind."""
     return feedback_kind_for_error(exc)
+
+
+_CONSOLE_ONLY_REQUEST_OVERRIDE_KEYS = frozenset(
+    {
+        "_reasoning_effort",
+        "reasoning",
+        "reasoning_effort",
+        "tools",
+        "tool_choice",
+    }
+)
+
+
+def _uses_console_responses_transport(
+    spec: ModelSpec | None,
+    files: list[_FileInput] | None = None,
+) -> bool:
+    """Console Responses currently rejects multimodal input; use app-chat then."""
+    return bool(spec and spec.uses_console_responses() and not files)
+
+
+def _legacy_chat_request_overrides(
+    request_overrides: dict | None,
+) -> dict | None:
+    if not request_overrides:
+        return None
+    cleaned = {
+        key: value
+        for key, value in request_overrides.items()
+        if value is not None and key not in _CONSOLE_ONLY_REQUEST_OVERRIDE_KEYS
+    }
+    return cleaned or None
+
+
+def _chat_exhausted_error(
+    model: str,
+    *,
+    attempted_accounts: int,
+    last_exc: UpstreamError,
+) -> BaseException:
+    if _is_account_scoped_forbidden(last_exc) or last_exc.status == 429:
+        return RateLimitError(
+            f"Chat model {model!r} has no available account quota/entitlement "
+            f"after {attempted_accounts} account attempts; "
+            f"last upstream status={last_exc.status}."
+        )
+    return last_exc
 
 
 async def _download_image_bytes(token: str, url: str) -> tuple[bytes, str]:
@@ -214,6 +349,36 @@ async def _download_image_bytes(token: str, url: str) -> tuple[bytes, str]:
     return b"".join(chunks), (content_type or infer_content_type(url) or "image/jpeg")
 
 
+_LOCAL_IMAGE_ID_RE = re.compile(r"^[0-9a-fA-F\-]{16,36}$")
+_DATA_IMAGE_RE = re.compile(r"^data:(image/[^;,]+);base64,(.*)$", re.IGNORECASE | re.DOTALL)
+_GROK_GENERATED_IMAGE_URL_RE = re.compile(
+    r"^https?://grok\.x\.ai/generated-image-[^?#]+\.(?:png|jpe?g|webp|gif)"
+    r"(?:[?#].*)?$",
+    re.IGNORECASE,
+)
+
+
+def _safe_image_file_id(url: str, image_id: str) -> str:
+    candidate = (image_id or "").strip().split(".", 1)[0]
+    if _LOCAL_IMAGE_ID_RE.fullmatch(candidate):
+        return candidate.lower()
+    return hashlib.sha1((url or candidate).encode("utf-8")).hexdigest()[:32]
+
+
+def _decode_data_image(url: str) -> tuple[bytes, str] | None:
+    match = _DATA_IMAGE_RE.match((url or "").strip())
+    if not match:
+        return None
+    try:
+        return base64.b64decode(match.group(2), validate=True), match.group(1)
+    except (ValueError, TypeError, binascii.Error):
+        return None
+
+
+def _is_inaccessible_generated_image_url(url: str) -> bool:
+    return bool(_GROK_GENERATED_IMAGE_URL_RE.match((url or "").strip()))
+
+
 def _save_image(raw: bytes, mime: str, image_id: str) -> str:
     """Save raw bytes to ``${DATA_DIR}/files/images`` and return the file ID."""
     return save_local_image(raw, mime, image_id)
@@ -231,6 +396,27 @@ async def _resolve_image(token: str, url: str, image_id: str) -> str:
     """
     cfg = get_config()
     fmt = _normalize_image_format(cfg.get_str("features.image_format", "grok_url"))
+    data_image = _decode_data_image(url)
+    if data_image is not None:
+        raw, mime = data_image
+        if fmt == "base64":
+            b64 = base64.b64encode(raw).decode()
+            return f"![image](data:{mime};base64,{b64})"
+        if fmt in {"local_url", "local_md"}:
+            file_id = await asyncio.to_thread(
+                _save_image,
+                raw,
+                mime,
+                _safe_image_file_id(url, image_id),
+            )
+            app_url = cfg.get_str("app.app_url", "").rstrip("/")
+            local_url = (
+                f"{app_url}/v1/files/image?id={file_id}"
+                if app_url
+                else f"/v1/files/image?id={file_id}"
+            )
+            return local_url if fmt == "local_url" else f"![image]({local_url})"
+        return url if fmt == "grok_url" else f"![image]({url})"
 
     # Formats that don't need downloading
     if fmt == "grok_url":
@@ -242,6 +428,12 @@ async def _resolve_image(token: str, url: str, image_id: str) -> str:
     try:
         raw, mime = await _download_image_bytes(token, url)
     except Exception as exc:
+        if _is_inaccessible_generated_image_url(url):
+            logger.warning(
+                "chat image download failed: dropping_inaccessible_grok_generated_url error={}",
+                exc,
+            )
+            return ""
         logger.warning(
             "chat image download failed: fallback_to=upstream_url error={}", exc
         )
@@ -252,7 +444,12 @@ async def _resolve_image(token: str, url: str, image_id: str) -> str:
         return f"![image](data:{mime};base64,{b64})"
 
     # local_url / local_md: save to disk and return local path
-    file_id = await asyncio.to_thread(_save_image, raw, mime, image_id)
+    file_id = await asyncio.to_thread(
+        _save_image,
+        raw,
+        mime,
+        _safe_image_file_id(url, image_id),
+    )
     app_url = cfg.get_str("app.app_url", "").rstrip("/")
     local_url = (
         f"{app_url}/v1/files/image?id={file_id}"
@@ -293,10 +490,10 @@ def _strip_generated_artifacts(text: str, *, strip_sources: bool = False) -> str
     return _INLINE_BASE64_IMG_RE.sub("[图片]", text)
 
 
-def _extract_message(messages: list[dict]) -> tuple[str, list[str]]:
+def _extract_message(messages: list[dict]) -> tuple[str, list[_FileInput]]:
     """Flatten OpenAI messages into a single prompt string + file attachments."""
     parts: list[str] = []
-    files: list[str] = []
+    files: list[_FileInput] = []
 
     for msg in messages:
         role = msg.get("role", "user")
@@ -355,18 +552,29 @@ def _extract_message(messages: list[dict]) -> tuple[str, list[str]]:
                     inner = block.get(btype) or {}
                     data = inner.get("data") or inner.get("file_data", "")
                     if data:
-                        files.append(data)
+                        filename = str(inner.get("filename") or "").strip()
+                        if filename:
+                            files.append({"data": data, "filename": filename})
+                        else:
+                            files.append(data)
 
     return "\n\n".join(parts), files
 
 
-async def _prepare_file_attachments(token: str, file_inputs: list[str]) -> list[str]:
+async def _prepare_file_attachments(token: str, file_inputs: list[_FileInput]) -> list[str]:
     """Upload OpenAI-style multimodal inputs and return Grok chat attachment IDs."""
     attachments: list[str] = []
     for file_input in file_inputs:
         if not file_input:
             continue
-        file_id, _file_uri = await upload_from_input(token, file_input)
+        if isinstance(file_input, dict):
+            file_id, _file_uri = await upload_from_input(
+                token,
+                file_input.get("data", ""),
+                filename=file_input.get("filename"),
+            )
+        else:
+            file_id, _file_uri = await upload_from_input(token, file_input)
         if file_id:
             attachments.append(file_id)
     return attachments
@@ -376,11 +584,9 @@ async def _stream_chat(
     token: str,
     mode_id: "ModeId",
     message: str,
-    files: list[str],
+    files: list[_FileInput],
     *,
     spec: ModelSpec | None = None,
-    tools: list[dict] | None = None,
-    tool_choice: Any = None,
     tool_overrides: dict | None = None,
     model_config_override: dict | None = None,
     request_overrides: dict | None = None,
@@ -389,14 +595,14 @@ async def _stream_chat(
     """Yield raw SSE lines from the selected upstream chat endpoint."""
     proxy = await get_proxy_runtime()
     lease = await proxy.acquire()
-    plan = build_plan(spec, request_overrides or {}) if spec else None
+    use_console_transport = _uses_console_responses_transport(spec, files)
+    plan = (
+        build_plan(spec, request_overrides or {})
+        if spec and (use_console_transport or not spec.uses_console_responses())
+        else None
+    )
 
-    if spec and spec.uses_console_responses():
-        if files:
-            raise ValidationError(
-                "file attachments are not supported for console Responses-backed models",
-                param="messages",
-            )
+    if use_console_transport:
         endpoint = plan.endpoint if plan else CONSOLE_RESPONSES
         origin = plan.origin if plan else "https://console.x.ai"
         referer = plan.referer if plan else "https://console.x.ai/"
@@ -405,13 +611,14 @@ async def _stream_chat(
             model=spec.upstream_model_name(),
             message=message,
             stream=True,
-            tools=tools,
-            tool_choice=tool_choice,
+            public_model=spec.model_name,
+            spec=spec,
             request_overrides=request_overrides,
         )
         transport_context = "Console Responses transport failed"
         stream_context = "Console Responses stream read failed"
     else:
+        is_console_attachment_fallback = bool(spec and spec.uses_console_responses())
         endpoint = plan.endpoint if plan else CHAT
         origin = plan.origin if plan else "https://grok.com"
         referer = plan.referer if plan else "https://grok.com/"
@@ -419,11 +626,15 @@ async def _stream_chat(
         attachments = await _prepare_file_attachments(token, files)
         payload = build_chat_payload(
             message=message,
-            mode_id=mode_id,
+            mode_id=ModeId.FAST if is_console_attachment_fallback else mode_id,
             file_attachments=attachments,
             tool_overrides=tool_overrides,
             model_config_override=model_config_override,
-            request_overrides=request_overrides,
+            request_overrides=(
+                _legacy_chat_request_overrides(request_overrides)
+                if is_console_attachment_fallback
+                else request_overrides
+            ),
         )
         transport_context = "Chat transport failed"
         stream_context = "Chat stream read failed"
@@ -458,9 +669,9 @@ async def _stream_chat(
                 body = response.content.decode("utf-8", "replace")[:400]
             except Exception:
                 body = ""
-            raise UpstreamError(
-                f"Chat upstream returned {response.status_code}",
-                status=response.status_code,
+            _raise_chat_status_error(
+                spec=spec,
+                status_code=response.status_code,
                 body=body,
             )
 
@@ -475,9 +686,10 @@ async def _stream_chat(
 
 def _new_stream_adapter(
     spec: ModelSpec,
+    files: list[_FileInput] | None = None,
 ) -> StreamAdapter | ConsoleResponsesStreamAdapter:
     """Return a stream adapter matching the selected upstream protocol."""
-    if spec.uses_console_responses():
+    if _uses_console_responses_transport(spec, files):
         return ConsoleResponsesStreamAdapter()
     return StreamAdapter()
 
@@ -523,18 +735,26 @@ async def completions(
         raise RateLimitError("Account directory not initialised")
     directory = _acct_dir
 
-    max_retries = selection_max_retries()
+    max_retries = _chat_max_retries(cfg)
     retry_codes = _configured_retry_codes(cfg)
     response_id = make_response_id()
     timeout_s = cfg.get_float("chat.timeout", 120.0)
 
     # ── Tool call setup ───────────────────────────────────────────────────────
     tool_names: list[str] = []
-    if tools:
-        tool_names = extract_tool_names(tools)
-        if not spec.uses_console_responses():
-            tool_prompt = build_tool_system_prompt(tools, tool_choice)
-            message = inject_into_message(message, tool_prompt)
+    local_tools, console_tools = split_console_server_tools(tools, spec)
+    if console_tools:
+        request_overrides = request_overrides or {}
+        request_overrides["tools"] = console_tools
+        console_choice = console_tool_choice_override(
+            tool_choice, local_tools=local_tools
+        )
+        if console_choice is not None:
+            request_overrides["tool_choice"] = console_choice
+    if local_tools:
+        tool_names = extract_tool_names(local_tools)
+        tool_prompt = build_tool_system_prompt(local_tools, tool_choice)
+        message = inject_into_message(message, tool_prompt)
     tool_overrides: dict | None = None
 
     # ── Streaming path ────────────────────────────────────────────────────────
@@ -550,13 +770,14 @@ async def completions(
                     exclude_tokens=excluded or None,
                 )
                 if acct is None:
-                    raise RateLimitError("No available accounts for this model tier")
+                    raise _no_available_account_error(spec)
 
                 token = acct.token
                 success = False
                 _retry = False
+                _retry_same_account = False
                 fail_exc: BaseException | None = None
-                adapter = _new_stream_adapter(spec)
+                adapter = _new_stream_adapter(spec, files)
                 collected_annotations: list[dict] = []
 
                 try:
@@ -564,15 +785,12 @@ async def completions(
                         ended = False
                         sieve = ToolSieve(tool_names)
                         tool_calls_emitted = False
-                        native_tool_call_count = 0
                         async for line in _stream_chat(
                             token=token,
                             mode_id=ModeId(selected_mode_id),
                             message=message,
                             files=files,
                             spec=spec,
-                            tools=tools if spec.uses_console_responses() else None,
-                            tool_choice=tool_choice,
                             tool_overrides=tool_overrides,
                             request_overrides=request_overrides,
                             timeout_s=timeout_s,
@@ -586,25 +804,7 @@ async def completions(
                             for ev in events:
                                 if tool_calls_emitted:
                                     break  # already sent [DONE], drop remaining events
-                                if ev.kind == "tool_call" and ev.tool_call is not None:
-                                    tc = ev.tool_call
-                                    if tool_names and tc.name not in tool_names:
-                                        continue
-                                    chunk = make_tool_call_chunk(
-                                        response_id,
-                                        model,
-                                        native_tool_call_count,
-                                        tc.call_id,
-                                        tc.name,
-                                        tc.arguments,
-                                        is_first=True,
-                                    )
-                                    native_tool_call_count += 1
-                                    yield f"data: {orjson.dumps(chunk).decode()}\n\n"
-                                    continue
                                 if ev.kind == "text":
-                                    if native_tool_call_count:
-                                        continue
                                     if tool_names:
                                         safe_text, parsed_calls = sieve.feed(ev.content)
                                         if safe_text:
@@ -653,44 +853,10 @@ async def completions(
                                 elif ev.kind == "annotation" and ev.annotation_data:
                                     collected_annotations.append(ev.annotation_data)
                                 elif ev.kind == "soft_stop":
-                                    if native_tool_call_count:
-                                        done_chunk = make_tool_call_done_chunk(
-                                            response_id, model
-                                        )
-                                        yield f"data: {orjson.dumps(done_chunk).decode()}\n\n"
-                                        yield "data: [DONE]\n\n"
-                                        tool_calls_emitted = True
-                                        success = True
-                                        logger.info(
-                                            "chat stream native tool_calls: attempt={}/{} model={} call_count={}",
-                                            attempt + 1,
-                                            max_retries + 1,
-                                            model,
-                                            native_tool_call_count,
-                                        )
                                     ended = True
                                     break
                             if ended:
                                 break
-
-                        if (
-                            native_tool_call_count
-                            and not tool_calls_emitted
-                        ):
-                            done_chunk = make_tool_call_done_chunk(
-                                response_id, model
-                            )
-                            yield f"data: {orjson.dumps(done_chunk).decode()}\n\n"
-                            yield "data: [DONE]\n\n"
-                            tool_calls_emitted = True
-                            success = True
-                            logger.info(
-                                "chat stream native tool_calls: attempt={}/{} model={} call_count={}",
-                                attempt + 1,
-                                max_retries + 1,
-                                model,
-                                native_tool_call_count,
-                            )
 
                         if not tool_calls_emitted and tool_names:
                             # Stream ended — flush sieve for any buffered XML
@@ -725,8 +891,15 @@ async def completions(
                                 )
 
                         if not tool_calls_emitted:
+                            extract_images = getattr(
+                                adapter, "extract_generated_images_from_text", None
+                            )
+                            if callable(extract_images):
+                                extract_images("".join(adapter.text_buf))
                             for url, img_id in adapter.image_urls:
                                 img_text = await _resolve_image(token, url, img_id)
+                                if not img_text:
+                                    continue
                                 chunk = make_stream_chunk(
                                     response_id, model, img_text + "\n"
                                 )
@@ -765,6 +938,19 @@ async def completions(
                     except UpstreamError as exc:
                         fail_exc = exc
                         if (
+                            _should_retry_same_account_upstream(exc)
+                            and attempt < max_retries
+                        ):
+                            _retry = True
+                            _retry_same_account = True
+                            logger.warning(
+                                "chat stream same-account retry scheduled: attempt={}/{} status={} token={}...",
+                                attempt + 1,
+                                max_retries,
+                                exc.status,
+                                token[:8],
+                            )
+                        elif (
                             _should_retry_upstream(exc, retry_codes)
                             and attempt < max_retries
                         ):
@@ -785,7 +971,11 @@ async def completions(
                                 exc.status,
                                 _upstream_body_excerpt(exc),
                             )
-                            raise
+                            raise _chat_exhausted_error(
+                                model,
+                                attempted_accounts=attempt + 1,
+                                last_exc=exc,
+                            ) from exc
 
                 finally:
                     await directory.release(acct)
@@ -810,14 +1000,15 @@ async def completions(
 
                 if success or not _retry:
                     return
-                excluded.append(token)
+                if not _retry_same_account:
+                    excluded.append(token)
 
         return _run_stream()
 
     # ── Non-streaming path ────────────────────────────────────────────────────
     excluded: list[str] = []
     token = ""
-    adapter = _new_stream_adapter(spec)
+    adapter = _new_stream_adapter(spec, files)
     for attempt in range(max_retries + 1):
         acct, selected_mode_id = await reserve_account(
             directory,
@@ -826,13 +1017,14 @@ async def completions(
             exclude_tokens=excluded or None,
         )
         if acct is None:
-            raise RateLimitError("No available accounts for this model tier")
+            raise _no_available_account_error(spec)
 
         token = acct.token
         success = False
         _retry = False
+        _retry_same_account = False
         fail_exc: BaseException | None = None
-        adapter = _new_stream_adapter(spec)  # fresh adapter per attempt
+        adapter = _new_stream_adapter(spec, files)  # fresh adapter per attempt
 
         try:
             try:
@@ -842,8 +1034,6 @@ async def completions(
                     message=message,
                     files=files,
                     spec=spec,
-                    tools=tools if spec.uses_console_responses() else None,
-                    tool_choice=tool_choice,
                     tool_overrides=tool_overrides,
                     request_overrides=request_overrides,
                     timeout_s=timeout_s,
@@ -864,7 +1054,20 @@ async def completions(
 
             except UpstreamError as exc:
                 fail_exc = exc
-                if _should_retry_upstream(exc, retry_codes) and attempt < max_retries:
+                if (
+                    _should_retry_same_account_upstream(exc)
+                    and attempt < max_retries
+                ):
+                    _retry = True
+                    _retry_same_account = True
+                    logger.warning(
+                        "chat same-account retry scheduled: attempt={}/{} status={} token={}...",
+                        attempt + 1,
+                        max_retries,
+                        exc.status,
+                        token[:8],
+                    )
+                elif _should_retry_upstream(exc, retry_codes) and attempt < max_retries:
                     _retry = True
                     logger.warning(
                         "chat retry scheduled: attempt={}/{} status={} token={}...",
@@ -882,7 +1085,11 @@ async def completions(
                         exc.status,
                         _upstream_body_excerpt(exc),
                     )
-                    raise
+                    raise _chat_exhausted_error(
+                        model,
+                        attempted_accounts=attempt + 1,
+                        last_exc=exc,
+                    ) from exc
 
         finally:
             await directory.release(acct)
@@ -905,9 +1112,13 @@ async def completions(
 
         if success or not _retry:
             break
-        excluded.append(token)
+        if not _retry_same_account:
+            excluded.append(token)
 
     full_text = "".join(adapter.text_buf)
+    extract_images = getattr(adapter, "extract_generated_images_from_text", None)
+    if callable(extract_images):
+        full_text = extract_images(full_text)
     if adapter.image_urls:
         img_texts = await asyncio.gather(
             *[_resolve_image(token, url, img_id) for url, img_id in adapter.image_urls],
@@ -917,6 +1128,8 @@ async def completions(
             if isinstance(img_text, BaseException):
                 logger.warning("chat image resolve failed: error={}", img_text)
             elif isinstance(img_text, str):
+                if not img_text:
+                    continue
                 if full_text:
                     full_text += "\n\n"
                 full_text += img_text
@@ -929,27 +1142,6 @@ async def completions(
 
     # ── Tool call detection (non-streaming) ──────────────────────────────────
     if tool_names:
-        native_calls = [
-            tc
-            for tc in getattr(adapter, "tool_calls", [])
-            if not tool_names or tc.name in tool_names
-        ]
-        if native_calls:
-            logger.info(
-                "chat request native tool_calls: attempt={}/{} model={} call_count={}",
-                attempt + 1,
-                max_retries + 1,
-                model,
-                len(native_calls),
-            )
-            pt = estimate_prompt_tokens(message)
-            return make_tool_call_response(
-                model,
-                native_calls,
-                prompt_content=message,
-                response_id=response_id,
-                usage=build_usage(pt, estimate_tool_call_tokens(native_calls)),
-            )
         parse_result = parse_tool_calls(full_text, tool_names)
         if parse_result.calls:
             logger.info(

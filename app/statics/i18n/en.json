@@ -1,7 +1,8 @@
 {
   "common": {
     "invalidKey": "Invalid key",
-    "connectionFailed": "Connection failed"
+    "connectionFailed": "Connection failed",
+    "authStorageFailed": "Verified, but the login state could not be saved; check browser storage permissions"
   },
   "login": {
     "adminPageTitle": "grokManager - Admin",
@@ -11,7 +12,8 @@
     "continue": "Continue",
     "webuiPageTitle": "grokManager - WebUI",
     "webuiTitle": "WebUI",
-    "webuiSubtitle": "Enter access key",
+    "webuiSubtitle": "Enter username and access password",
+    "webuiUsernamePlaceholder": "Username (optional in single-password mode)",
     "webuiPlaceholder": "Access Key",
     "enter": "Enter",
     "goToAdmin": "Go to Admin Panel"
@@ -62,6 +64,85 @@
       "cancel": "Cancel",
       "confirm": "Confirm",
       "copySuccess": "Copied",
+      "close": "Close",
+      "preview": "Preview result",
+      "previewHide": "Hide preview",
+      "previewRefresh": "Refresh",
+      "previewOpen": "Open",
+      "previewCopyUrl": "Copy URL",
+      "previewUrlCopied": "Preview URL copied",
+      "previewSaveFailed": "Failed to save preview URL",
+      "previewFrameTitle": "Code preview",
+      "previewOpenFailed": "Preview popup was blocked",
+      "search": {
+        "button": "Search",
+        "onButton": "Search on",
+        "manage": "Enable web search",
+        "mode": "Search depth",
+        "default": "Standard",
+        "deeper": "Deep",
+        "chatOnly": "Web search is only available for chat models"
+      },
+      "mcp": {
+        "button": "MCP",
+        "manage": "Manage MCP plugins",
+        "enabledTitle": "MCP enabled",
+        "title": "MCP Plugins",
+        "subtitle": "Install stdio MCP plugins and choose which tools AI may call.",
+        "enable": "Enable MCP for chat",
+        "auto": "Auto use all enabled plugins",
+        "toolChoice": "Call mode",
+        "choiceAuto": "Auto",
+        "choiceRequired": "Required once",
+        "choiceNone": "Disabled",
+        "installed": "Installed Plugins",
+        "refresh": "Refresh",
+        "discoverTools": "Discover tools",
+        "discoveringTools": "Discovering...",
+        "importTitle": "Import JSON",
+        "importDesc": "Paste Claude/Cursor style mcpServers JSON to import automatically.",
+        "importReplace": "Replace existing MCP plugin configs",
+        "importButton": "Import",
+        "importEmpty": "Paste MCP JSON first",
+        "importInvalidJson": "Invalid JSON",
+        "importDone": "Imported {created}, updated {updated}, skipped {skipped}",
+        "addTitle": "Add MCP Plugin",
+        "editTitle": "Edit MCP Plugin",
+        "newConfig": "New",
+        "name": "Name",
+        "command": "Command",
+        "args": "Arguments",
+        "env": "Environment",
+        "cwd": "Working directory",
+        "timeout": "Timeout seconds",
+        "serverEnabled": "Plugin enabled",
+        "delete": "Delete",
+        "save": "Save Plugin",
+        "empty": "No MCP plugins installed yet.",
+        "nameRequired": "MCP plugin name is required",
+        "commandRequired": "MCP command is required",
+        "saved": "MCP plugin saved",
+        "deleted": "MCP plugin deleted",
+        "noEnabled": "No enabled MCP plugins",
+        "disabledHint": "MCP is configured but disabled for chat",
+        "autoHint": "Auto mode will use all {n} enabled plugins",
+        "noneSelected": "Select at least one enabled plugin",
+        "selectedCount": "{n} selected",
+        "selectedWithTools": "{selected} selected, {tools} tools discovered",
+        "autoSelectHint": "Turn off auto mode to choose plugins manually",
+        "selectPlugin": "Select this plugin",
+        "enabledBadge": "Enabled",
+        "disabledBadge": "Disabled",
+        "toolsUnknown": "Tools not discovered",
+        "toolsEmpty": "No tools exposed",
+        "toolsError": "Tool discovery failed: {error}",
+        "toolsSummary": "{n} tools: {tools}",
+        "statusReady": "MCP ready: {n} tools",
+        "statusRunning": "Calling MCP tool: {tool}",
+        "statusDone": "MCP tool completed: {tool}",
+        "statusError": "MCP tool failed: {tool}",
+        "statusLimit": "MCP step limit reached"
+      },
       "renamePrompt": "Rename session",
       "deleteConfirm": "Delete this session?",
       "modelLabel": "Model",
@@ -113,7 +194,11 @@
       "errorText": "The connection did not complete. Check microphone access and try again.",
       "endedText": "The voice session has ended. You can start again at any time.",
       "livekitLoadFailed": "LiveKit SDK failed to load",
-      "invalidToken": "Voice token response invalid"
+      "invalidToken": "Voice token response invalid",
+      "microphoneUnsupported": "This browser or non-HTTPS page cannot open the microphone. Use HTTPS or localhost.",
+      "microphoneRequired": "Allow browser microphone access before connecting voice.",
+      "microphoneUnavailable": "The microphone could not be opened. Check browser permission or whether another app is using it.",
+      "webrtcConnectionFailed": "LiveKit returned a voice token, but the browser could not establish a WebRTC connection. An OK response from livekit.grok.com only proves HTTPS reachability; wss://livekit.grok.com/rtc and WebRTC ICE/TURN traffic must also be allowed."
     },
     "masonry": {
       "pageTitle": "grokManager - Masonry",
@@ -142,6 +227,8 @@
       "errors": {
         "enterPrompt": "Please enter a prompt",
         "requestFailed": "Request failed",
+        "imagePoolUnavailable": "Masonry image generation requires Super or Heavy accounts. Import Super/Heavy accounts first.",
+        "imageRateLimited": "Available Super/Heavy image accounts are rate-limited. Wait for quota reset or import more Super/Heavy accounts.",
         "initFailed": "Masonry page initialization failed"
       }
     }
@@ -243,6 +330,8 @@
     "importDone": "Import completed",
     "importJsonDone": "Import completed: {n} accounts processed",
     "importFailed": "Import failed",
+    "autoNsfwOnImport": "Enable NSFW after import",
+    "autoNsfwHint": "Requires extra time to check account status",
     "saving": "Saving changes…",
     "editDone": "Changes saved",
     "editFailed": "Failed to save changes",
@@ -287,7 +376,8 @@
       "fast": "Fast",
       "expert": "Expert",
       "heavy": "Heavy",
-      "grok_4_3": "Grok 4.3 Beta"
+      "grok_4_3": "Grok 4.3 Beta",
+      "console": "Console"
     },
     "status": {
       "active": "Active",
@@ -312,6 +402,15 @@
     "saveBarShort": "Save",
     "discardChanges": "Discard Changes",
     "randomize": "Generate Value",
+    "webuiUsers": {
+      "add": "Add user",
+      "empty": "No WebUI users configured. Single-password mode remains active.",
+      "username": "Username",
+      "password": "Password",
+      "displayName": "Display name",
+      "enabled": "Enabled",
+      "remove": "Remove"
+    },
     "loadFailed": "Failed to load configuration: {message}",
     "saving": "Saving changes...",
     "saveSuccess": "Changes saved",
@@ -389,6 +488,10 @@
         "webuiKey": {
           "label": "WebUI Access Password",
           "desc": "Authentication password required to access the WebUI when enabled."
+        },
+        "webuiUsers": {
+          "label": "WebUI Users",
+          "desc": "When configured, WebUI login uses username + password and browser-side chat sessions, search settings, and MCP configuration are isolated per user. Leave empty to keep single-password mode."
         },
         "temporary": {
           "label": "Temporary Sessions",

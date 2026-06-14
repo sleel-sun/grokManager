@@ -54,3 +54,6 @@ htmlcov/
 
 # Project specific
 .ace-tool/
+.antiban/
+*.deb
+*.deb.*

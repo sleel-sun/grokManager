@@ -73,9 +73,6 @@
     .status-tile { padding:14px; border-radius:14px; background:#fbf7ef; border:1px solid #f1e8da; }
     .status-label { color:#92887b; font-size:11px; }
     .status-value { margin-top:8px; font-size:18px; font-weight:750; color:#221f1a; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-    .progress-meter { margin:-2px 0 14px; display:flex; align-items:center; gap:10px; color:#82786a; font-size:12px; }
-    .progress-track { flex:1; height:8px; border-radius:999px; overflow:hidden; background:#eee7dc; }
-    .progress-fill { display:block; height:100%; width:0; border-radius:999px; background:#111; transition:width .25s ease; }
     .status-pill {
       display:inline-flex;
       align-items:center;
@@ -90,6 +87,38 @@
     .status-pill.running { background:#111; color:#fff; }
     .status-pill.completed { background:#e7f7df; color:#276018; }
     .status-pill.failed { background:#fde6e0; color:#9b2d19; }
+    .status-pill.paused { background:#fff1c4; color:#8a5a00; }
+    .status-pill.stopping { background:#e8e1d1; color:#564a35; }
+    .status-pill.stopped { background:#e2e8f0; color:#1f2937; }
+    .worker-grid {
+      display:grid;
+      grid-template-columns:repeat(auto-fill, minmax(220px, 1fr));
+      gap:8px;
+      margin:12px 0;
+    }
+    .worker-card {
+      border:1px solid #e0d8c8;
+      border-radius:10px;
+      padding:10px 12px;
+      background:#fbf8f1;
+      font-size:12px;
+    }
+    .worker-card.active { background:#f1fbe7; border-color:#a9c98f; }
+    .worker-card.failed { background:#fde6e0; border-color:#d9a294; }
+    .worker-card.done { background:#e7f7df; border-color:#86a96b; }
+    .worker-card.idle { background:#f4eee0; }
+    .worker-card h4 { margin:0 0 4px; font-size:13px; font-weight:700; color:#221f1a; }
+    .worker-card .worker-event {
+      font-family:ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size:11px;
+      color:#564a35;
+    }
+    .worker-card .worker-meta {
+      margin-top:4px;
+      font-size:11px;
+      color:#92887b;
+      line-height:1.4;
+    }
     .log {
       min-height:240px;
       max-height:420px;
@@ -149,8 +178,8 @@
             <div class="inline">
               <div class="field">
                 <label for="count">注册数量</label>
-                <input class="input" id="count" name="count" type="number" min="0" value="1" required>
-                <small>不设上限；填 0 表示持续注册，直到手动停止服务或任务失败。</small>
+                <input class="input" id="count" name="count" type="number" min="1" value="1" required>
+                <small>每个 worker 的注册轮数；总注册数 = workers × 此值。无上限，按账号池容量和上游配额自行控制。</small>
               </div>
               <div class="field">
                 <label for="pool">写入账号池</label>
@@ -160,6 +189,12 @@
                   <option value="heavy">heavy</option>
                 </select>
               </div>
+            </div>
+
+            <div class="field">
+              <label for="workers">并发 worker 数</label>
+              <input class="input" id="workers" name="workers" type="number" min="1" value="1" required>
+              <small>同时起多少个浏览器子进程（1 为顺序运行）。workers × 注册数量 = 本次任务总注册数。无上限，但每个 worker 大约要 0.5-1GB 内存 + 1 个 Chromium 进程，请按机器实际容量调；运行后查看「实际并发 worker」状态卡 / orchestrator 日志确认 spawn 数。</small>
             </div>
 
             <div class="field">
@@ -177,8 +212,45 @@
               <input class="input" id="window-size" value="1440,900" placeholder="1440,900">
             </div>
 
+            <div class="field">
+              <label for="turnstile-manual-wait-sec">Turnstile 人工等待秒数</label>
+              <input class="input" id="turnstile-manual-wait-sec" type="number" min="0" value="0">
+              <small>自动未拿到 Turnstile 响应时，等待人工完成验证/提交的最长秒数；0 表示自动：真实图形桌面等 180 秒，Headless/Xvfb/无 DISPLAY 不等待。</small>
+            </div>
+
+            <div class="inline">
+              <div class="field">
+                <label for="turnstile-solver-provider">Turnstile 外部 solver</label>
+                <select class="select" id="turnstile-solver-provider">
+                  <option value="">关闭</option>
+                  <option value="capsolver">CapSolver</option>
+                  <option value="2captcha">2Captcha</option>
+                </select>
+                <small>无图形服务器建议配置外部 solver；关闭时只使用自动点击/Xvfb 路径。</small>
+              </div>
+              <div class="field">
+                <label for="turnstile-solver-timeout-sec">Solver 超时秒数</label>
+                <input class="input" id="turnstile-solver-timeout-sec" type="number" min="1" max="600" value="150">
+              </div>
+            </div>
+
+            <div class="inline">
+              <div class="field">
+                <label for="turnstile-solver-api-key">Solver API Key</label>
+                <input class="input" id="turnstile-solver-api-key" type="password" autocomplete="off" placeholder="关闭时无需填写">
+                <small id="turnstile-solver-key-hint">保存到本机运行时配置；状态接口和日志不会回显。</small>
+              </div>
+              <div class="field">
+                <label for="turnstile-solver-poll-sec">Solver 轮询间隔秒数</label>
+                <input class="input" id="turnstile-solver-poll-sec" type="number" min="1" max="60" value="5">
+              </div>
+            </div>
+
             <div class="actions">
               <button class="btn-main" id="run-btn" type="submit">启动注册</button>
+              <button class="btn-soft" id="pause-btn" type="button" disabled>暂停</button>
+              <button class="btn-soft" id="resume-btn" type="button" disabled hidden>继续</button>
+              <button class="btn-soft" id="stop-btn" type="button" disabled>停止</button>
               <button class="btn-soft" id="save-btn" type="button">保存配置</button>
               <span class="notice" id="available-hint"></span>
             </div>
@@ -202,12 +274,8 @@
               <div class="status-value" id="token-count">0</div>
             </div>
             <div class="status-tile">
-              <div class="status-label">注册进度</div>
-              <div class="status-value" id="progress-count">0/0</div>
-            </div>
-            <div class="status-tile">
-              <div class="status-label">剩余数量</div>
-              <div class="status-value" id="remaining-count">0</div>
+              <div class="status-label">实际并发 worker</div>
+              <div class="status-value" id="spawned-workers">未运行</div>
             </div>
             <div class="status-tile">
               <div class="status-label">输出文件</div>
@@ -218,10 +286,7 @@
               <div class="status-value" id="config-path">-</div>
             </div>
           </div>
-          <div class="progress-meter" aria-label="注册进度">
-            <div class="progress-track"><span class="progress-fill" id="progress-fill"></span></div>
-            <span id="progress-percent">0%</span>
-          </div>
+          <div class="worker-grid" id="worker-grid" hidden></div>
           <pre class="log" id="log-box">暂无日志</pre>
           <div class="notice" id="state-message"></div>
         </div>
@@ -238,20 +303,23 @@
   <script>
 const form = document.getElementById('maintainer-form');
 const runBtn = document.getElementById('run-btn');
+const pauseBtn = document.getElementById('pause-btn');
+const resumeBtn = document.getElementById('resume-btn');
+const stopBtn = document.getElementById('stop-btn');
 const saveBtn = document.getElementById('save-btn');
 const refreshBtn = document.getElementById('refresh-btn');
 const availableHint = document.getElementById('available-hint');
 const passwordHint = document.getElementById('password-hint');
+const solverKeyHint = document.getElementById('turnstile-solver-key-hint');
 const statePill = document.getElementById('state-pill');
 const tokenCount = document.getElementById('token-count');
-const progressCount = document.getElementById('progress-count');
-const remainingCount = document.getElementById('remaining-count');
-const progressFill = document.getElementById('progress-fill');
-const progressPercent = document.getElementById('progress-percent');
+const spawnedWorkersEl = document.getElementById('spawned-workers');
 const outputPath = document.getElementById('output-path');
 const configPath = document.getElementById('config-path');
+const workerGrid = document.getElementById('worker-grid');
 const logBox = document.getElementById('log-box');
 const stateMessage = document.getElementById('state-message');
+const MAINTAINER_ADMIN_API = '/admin/api';
 
 function waitI18n() {
   return new Promise((resolve) => I18n.onReady(resolve));
@@ -259,14 +327,14 @@ function waitI18n() {
 
 async function api(method, path, body) {
   const key = await adminKey.get();
-  const res = await fetch(ADMIN_API + path, {
+  const res = await fetch(MAINTAINER_ADMIN_API + path, {
     method,
     headers: { ...(body != null && { 'Content-Type': 'application/json' }), Authorization: `Bearer ${key}` },
     ...(body != null && { body: JSON.stringify(body) }),
   });
   if (!res.ok) {
     const data = await res.json().catch(() => ({}));
-    const message = data?.error?.message || data?.detail || `HTTP ${res.status}`;
+    const message = (data.error && data.error.message) || data.detail || `HTTP ${res.status}`;
     throw new Error(message);
   }
   return res.json();
@@ -276,42 +344,116 @@ function setText(el, value) {
   el.textContent = value == null || value === '' ? '-' : String(value);
 }
 
-function clampNumber(value, min, max) {
-  const number = Number(value);
-  if (!Number.isFinite(number)) return min;
-  return Math.max(min, Math.min(max, number));
+// Map orchestrator event names → display label + status class for the card.
+const WORKER_EVENT_LABELS = {
+  alive: { text: '已就绪', cls: 'active' },
+  started: { text: '已启动批次', cls: 'active' },
+  browser_started: { text: '浏览器已启动', cls: 'active' },
+  round_start: { text: '注册中…', cls: 'active' },
+  round_done: { text: '完成一轮', cls: 'done' },
+  round_failed: { text: '本轮失败', cls: 'failed' },
+  finished: { text: '已结束', cls: 'done' },
+  worker_failed: { text: '进程异常', cls: 'failed' },
+};
+
+function renderWorkerGrid(perWorker, spawned) {
+  const entries = perWorker && typeof perWorker === 'object' ? Object.entries(perWorker) : [];
+  if (!entries.length) {
+    workerGrid.hidden = true;
+    workerGrid.innerHTML = '';
+    return;
+  }
+  // Sort by worker id (numeric).
+  entries.sort((a, b) => Number(a[0]) - Number(b[0]));
+  workerGrid.hidden = false;
+  workerGrid.innerHTML = entries
+    .map(([id, snap]) => {
+      const evt = (snap && snap.last_event) || '';
+      const label = WORKER_EVENT_LABELS[evt] || { text: evt || '空闲', cls: 'idle' };
+      const lines = [];
+      if (snap && Number.isFinite(snap.last_round)) {
+        lines.push(`第 ${snap.last_round} 轮`);
+      }
+      if (snap && Number.isFinite(snap.rounds_done)) {
+        lines.push(`完成 ${snap.rounds_done} 个`);
+      }
+      if (snap && snap.last_sso_tail) {
+        lines.push(`最近 SSO …${snap.last_sso_tail}`);
+      }
+      if (snap && Number.isFinite(snap.last_elapsed_s)) {
+        lines.push(`上轮耗时 ${snap.last_elapsed_s.toFixed(1)}s`);
+      }
+      if (snap && snap.last_error) {
+        lines.push(`错误: ${escapeHtml(snap.last_error)}`);
+      }
+      const ts = snap && snap.last_event_at
+        ? new Date(snap.last_event_at).toLocaleTimeString()
+        : '';
+      const meta = lines.join(' · ');
+      return `
+        <div class="worker-card ${label.cls}">
+          <h4>Worker #${escapeHtml(id)}</h4>
+          <div class="worker-event">${escapeHtml(label.text)}${ts ? ` · ${escapeHtml(ts)}` : ''}</div>
+          ${meta ? `<div class="worker-meta">${meta}</div>` : ''}
+        </div>`;
+    })
+    .join('');
+}
+
+function escapeHtml(value) {
+  return String(value == null ? '' : value)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
 }
 
 function renderStatus(data) {
   const status = data.status || 'idle';
-  const total = Math.max(0, Number(data.total_count || 0));
-  const completed = clampNumber(data.completed_count || 0, 0, total || Number.MAX_SAFE_INTEGER);
-  const remaining = data.remaining_count == null
-    ? Math.max(0, total - completed)
-    : Math.max(0, Number(data.remaining_count || 0));
-  const current = Math.max(0, Number(data.current_round || 0));
-  const percent = total > 0
-    ? clampNumber(data.progress_percent ?? Math.floor((completed / total) * 100), 0, 100)
-    : 0;
   statePill.textContent = status;
   statePill.className = `status-pill ${status}`;
   tokenCount.textContent = String(data.token_count || 0);
-  progressCount.textContent = total > 0
-    ? `${completed}/${total}${data.running && current ? `（第 ${current} 个）` : ''}`
-    : '0/0';
-  remainingCount.textContent = String(remaining);
-  progressFill.style.width = `${percent}%`;
-  progressPercent.textContent = `${percent}%`;
+  const requested = Number(data.workers);
+  const spawned = Number(data.spawned_workers);
+  const isActive = status === 'running' || status === 'paused' || status === 'stopping';
+  if (Number.isFinite(spawned) && spawned > 0) {
+    const requestedStr = Number.isFinite(requested) && requested > 0 ? String(requested) : '?';
+    spawnedWorkersEl.textContent = `${spawned} / ${requestedStr}`;
+  } else if (isActive) {
+    spawnedWorkersEl.textContent = '启动中…';
+  } else {
+    const formEl = document.getElementById('workers');
+    const formWorkers = Number(formEl ? formEl.value : NaN);
+    const reqStr =
+      Number.isFinite(formWorkers) && formWorkers > 0
+        ? String(formWorkers)
+        : Number.isFinite(requested) && requested > 0
+          ? String(requested)
+          : '1';
+    spawnedWorkersEl.textContent = `未运行 (待启动 ${reqStr})`;
+  }
   setText(outputPath, data.output_path);
   setText(configPath, data.config_path);
   setText(stateMessage, data.message);
+  renderWorkerGrid(data.per_worker_progress, data.spawned_workers);
   logBox.textContent = Array.isArray(data.log_tail) && data.log_tail.length
     ? data.log_tail.join('\n')
     : '暂无日志';
   runBtn.disabled = !!data.running || !data.available;
   saveBtn.disabled = !!data.running;
+
+  const running = !!data.running;
+  const paused = !!data.paused;
+  const stopping = data.status === 'stopping' || data.stop_requested;
+  pauseBtn.hidden = paused;
+  resumeBtn.hidden = !paused;
+  pauseBtn.disabled = !running || paused || stopping;
+  resumeBtn.disabled = !running || !paused || stopping;
+  stopBtn.disabled = !running || stopping;
+
   availableHint.textContent = data.available
-    ? (data.running ? '任务运行中，请等待完成。' : 'Maintainer 依赖可用。')
+    ? (data.running ? '任务运行中，可随时暂停或停止。' : 'Maintainer 依赖可用。')
     : 'Maintainer 依赖未安装：请先执行 uv sync --extra maintainer。';
 }
 
@@ -328,13 +470,40 @@ function renderSavedConfig(data) {
   passwordHint.textContent = data.has_email_admin_password
     ? '已保存 Worker 管理密码；留空会沿用已保存值，输入新密码会覆盖。'
     : '会保存到本机运行时配置文件；不会在状态接口和日志尾部返回。';
-  document.getElementById('count').value = data.count || 1;
+  const savedCount = Number(data.count);
+  if (Number.isFinite(savedCount) && savedCount >= 1) {
+    document.getElementById('count').value = savedCount;
+  }
+  const savedWorkers = Number(data.workers);
+  if (Number.isFinite(savedWorkers) && savedWorkers >= 1) {
+    document.getElementById('workers').value = savedWorkers;
+  }
   document.getElementById('pool').value = data.pool || 'basic';
   document.getElementById('headless').checked = !!data.headless;
   document.getElementById('use-xvfb').checked = !!data.use_xvfb;
   document.getElementById('no-sandbox').checked = !!data.no_sandbox;
   document.getElementById('disable-dev-shm').checked = !!data.disable_dev_shm;
   document.getElementById('window-size').value = data.window_size || '1440,900';
+  const manualWait = Number(data.turnstile_manual_wait_sec);
+  if (Number.isFinite(manualWait) && manualWait >= 0) {
+    document.getElementById('turnstile-manual-wait-sec').value = Math.floor(manualWait);
+  }
+  document.getElementById('turnstile-solver-provider').value = data.turnstile_solver_provider || '';
+  document.getElementById('turnstile-solver-api-key').value = '';
+  document.getElementById('turnstile-solver-api-key').placeholder = data.has_turnstile_solver_api_key
+    ? '已保存，留空沿用'
+    : '关闭时无需填写';
+  solverKeyHint.textContent = data.has_turnstile_solver_api_key
+    ? '已保存 Solver API Key；留空会沿用已保存值，输入新 key 会覆盖。'
+    : '保存到本机运行时配置；状态接口和日志不会回显。';
+  const solverTimeout = Number(data.turnstile_solver_timeout_sec);
+  if (Number.isFinite(solverTimeout) && solverTimeout >= 1) {
+    document.getElementById('turnstile-solver-timeout-sec').value = Math.floor(solverTimeout);
+  }
+  const solverPoll = Number(data.turnstile_solver_poll_sec);
+  if (Number.isFinite(solverPoll) && solverPoll >= 1) {
+    document.getElementById('turnstile-solver-poll-sec').value = Math.floor(solverPoll);
+  }
 }
 
 async function refreshStatus() {
@@ -353,9 +522,36 @@ async function loadSavedConfig() {
   }
 }
 
+function clampPositiveInt(value, fallback) {
+  // No upper bound. Operators are responsible for picking values their
+  // hardware can sustain — the server reports the actual ``spawned_workers``
+  // count back via /maintainer/status, so silently clamping the submission
+  // would just hide the user's intent (the historical bug users described
+  // as "workers 没生效").
+  const num = Number(value);
+  if (!Number.isFinite(num) || num < 1) return fallback;
+  return Math.floor(num);
+}
+
 function readPayload() {
+  const countEl = document.getElementById('count');
+  const workersEl = document.getElementById('workers');
+  const manualWaitEl = document.getElementById('turnstile-manual-wait-sec');
+  const solverTimeoutEl = document.getElementById('turnstile-solver-timeout-sec');
+  const solverPollEl = document.getElementById('turnstile-solver-poll-sec');
+  const count = clampPositiveInt(countEl.value, 1);
+  const workers = clampPositiveInt(workersEl.value, 1);
+  const manualWait = Math.max(0, Math.floor(Number(manualWaitEl.value) || 0));
+  const solverTimeout = Math.min(600, Math.max(1, Math.floor(Number(solverTimeoutEl.value) || 150)));
+  const solverPoll = Math.min(60, Math.max(1, Math.floor(Number(solverPollEl.value) || 5)));
+  countEl.value = count;
+  workersEl.value = workers;
+  manualWaitEl.value = manualWait;
+  solverTimeoutEl.value = solverTimeout;
+  solverPollEl.value = solverPoll;
   return {
-    count: Number(document.getElementById('count').value || 1),
+    count,
+    workers,
     email_worker_domain: document.getElementById('worker-domain').value.trim(),
     email_domains: document.getElementById('email-domains').value.split(',').map((item) => item.trim()).filter(Boolean),
     email_admin_password: document.getElementById('email-admin-password').value,
@@ -365,16 +561,57 @@ function readPayload() {
     no_sandbox: document.getElementById('no-sandbox').checked,
     disable_dev_shm: document.getElementById('disable-dev-shm').checked,
     window_size: document.getElementById('window-size').value.trim() || '1440,900',
+    turnstile_manual_wait_sec: manualWait,
+    turnstile_solver_provider: document.getElementById('turnstile-solver-provider').value,
+    turnstile_solver_api_key: document.getElementById('turnstile-solver-api-key').value,
+    turnstile_solver_timeout_sec: solverTimeout,
+    turnstile_solver_poll_sec: solverPoll,
   };
+}
+
+function preserveIntent(savedConfig, sentPayload) {
+  if (!savedConfig || typeof savedConfig !== 'object') return savedConfig;
+  // Always reflect the user's just-sent count/workers, even if the backend
+  // silently dropped them (e.g. older backend without these fields, where
+  // Pydantic's default `extra="ignore"` strips the keys and the response
+  // falls back to default 1).
+  if (sentPayload && typeof sentPayload.count === 'number') {
+    savedConfig.count = sentPayload.count;
+  }
+  if (sentPayload && typeof sentPayload.workers === 'number') {
+    savedConfig.workers = sentPayload.workers;
+  }
+  if (sentPayload && typeof sentPayload.turnstile_manual_wait_sec === 'number') {
+    savedConfig.turnstile_manual_wait_sec = sentPayload.turnstile_manual_wait_sec;
+  }
+  if (sentPayload && typeof sentPayload.turnstile_solver_provider === 'string') {
+    savedConfig.turnstile_solver_provider = sentPayload.turnstile_solver_provider;
+  }
+  if (sentPayload && typeof sentPayload.turnstile_solver_timeout_sec === 'number') {
+    savedConfig.turnstile_solver_timeout_sec = sentPayload.turnstile_solver_timeout_sec;
+  }
+  if (sentPayload && typeof sentPayload.turnstile_solver_poll_sec === 'number') {
+    savedConfig.turnstile_solver_poll_sec = sentPayload.turnstile_solver_poll_sec;
+  }
+  if (sentPayload && sentPayload.turnstile_solver_api_key) {
+    savedConfig.has_turnstile_solver_api_key = true;
+  }
+  return savedConfig;
 }
 
 form.addEventListener('submit', async (event) => {
   event.preventDefault();
   runBtn.disabled = true;
+  const sentPayload = readPayload();
   try {
-    const data = await api('POST', '/maintainer/run', readPayload());
+    const data = await api('POST', '/maintainer/run', sentPayload);
     renderStatus(data);
-    await loadSavedConfig();
+    try {
+      const savedConfig = await api('GET', '/maintainer/config');
+      renderSavedConfig(preserveIntent(savedConfig, sentPayload));
+    } catch (err) {
+      showToast(err.message || '配置加载失败', 'error');
+    }
     showToast('注册任务已启动', 'success');
   } catch (err) {
     showToast(err.message || '启动失败', 'error');
@@ -385,8 +622,10 @@ form.addEventListener('submit', async (event) => {
 
 saveBtn.addEventListener('click', async () => {
   saveBtn.disabled = true;
+  const sentPayload = readPayload();
   try {
-    renderSavedConfig(await api('POST', '/maintainer/config', readPayload()));
+    const response = await api('POST', '/maintainer/config', sentPayload);
+    renderSavedConfig(preserveIntent(response, sentPayload));
     showToast('注册邮箱配置已保存', 'success');
   } catch (err) {
     showToast(err.message || '保存失败', 'error');
@@ -395,14 +634,41 @@ saveBtn.addEventListener('click', async () => {
   }
 });
 
+async function sendControl(path, successText) {
+  try {
+    renderStatus(await api('POST', path));
+    showToast(successText, 'success');
+  } catch (err) {
+    showToast(err.message || '操作失败', 'error');
+  } finally {
+    await refreshStatus();
+  }
+}
+
+pauseBtn.addEventListener('click', () => sendControl('/maintainer/pause', '已发送暂停信号'));
+resumeBtn.addEventListener('click', () => sendControl('/maintainer/resume', '已发送恢复信号'));
+stopBtn.addEventListener('click', () => sendControl('/maintainer/stop', '已发送停止信号'));
+
 refreshBtn.addEventListener('click', refreshStatus);
+
+// When the user changes the workers input, instantly update the "实际并发 worker" card
+// preview so they don't have to wait for the 3s poll. Only the preview text
+// changes — actual runtime value comes from /status polling.
+document.getElementById('workers').addEventListener('input', () => {
+  const status = statePill.textContent || 'idle';
+  const running = status === 'running' || status === 'paused' || status === 'stopping';
+  if (running) return;
+  const formWorkers = Number(document.getElementById('workers').value);
+  const reqStr = Number.isFinite(formWorkers) && formWorkers > 0 ? String(formWorkers) : '1';
+  spawnedWorkersEl.textContent = `未运行 (待启动 ${reqStr})`;
+});
 
 (async () => {
   await waitI18n();
-  await renderAdminHeader?.();
-  await renderSiteFooter?.();
+  if (typeof renderAdminHeader === 'function') await renderAdminHeader();
+  if (typeof renderSiteFooter === 'function') await renderSiteFooter();
   const key = await adminKey.get();
-  if (!key || !await verifyKey(ADMIN_API + '/verify', key).catch(() => false)) {
+  if (!key || !await verifyKey(MAINTAINER_ADMIN_API + '/verify', key).catch(() => false)) {
     location.href = '/admin/login';
     return;
   }

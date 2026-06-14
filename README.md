@@ -20,7 +20,7 @@
 
 核心特性：
 - OpenAI 兼容接口：`/v1/models`、`/v1/chat/completions`、`/v1/responses`、`/v1/images/generations`、`/v1/images/edits`、`/v1/videos`、`/v1/videos/{video_id}`、`/v1/videos/{video_id}/content`
-- Anthropic 兼容接口：`/v1/messages`
+- Anthropic 兼容接口：`/v1/messages`、`/v1/messages/count_tokens`；`/v1/models` 在收到 `anthropic-version` 请求头时自动返回 Anthropic 格式
 - 支持流式与非流式对话、显式思考输出、函数工具结构透传，以及统一的 token / usage 统计
 - 支持多账号池、层级选号、失败反馈、额度同步与自动维护
 - 支持本地缓存图片、视频与本地代理链接返回
@@ -155,6 +155,52 @@ docker compose up -d --build
 docker compose up -d --build grokmanager
 ```
 
+如果需要参考 `jiujiu532/grok2api` 的防 403 / 防封部署方式，可叠加防封版 Compose：
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.antiban.yml up -d --build
+```
+
+防封版会额外拉起：
+- `warp`：WARP SOCKS5 出口
+- `privoxy`：把 HTTP 代理转发到 WARP SOCKS5
+- `flaresolverr`：通过同一出口刷新 Cloudflare clearance
+
+该 override 会自动给 `grokmanager` 写入：
+- `proxy.egress.mode=single_proxy`
+- `proxy.egress.proxy_url=http://privoxy:8118`
+- `proxy.clearance.mode=flaresolverr`
+- `proxy.clearance.flaresolverr_url=http://flaresolverr:8191`
+
+### 非 Docker 一键防封部署
+
+如果不想使用 Docker，可以使用本机一键脚本。它会写入独立的防封运行环境，尝试把官方 Cloudflare WARP 切到本地代理模式，并尝试启动本机 FlareSolverr：
+
+```bash
+./scripts/deploy-antiban-local.sh
+```
+
+默认端口：
+- WARP 本地代理：`http://127.0.0.1:40000`
+- FlareSolverr：`http://127.0.0.1:8191`
+- grokManager：`http://127.0.0.1:8000`
+
+可自定义：
+
+```bash
+ANTI_BAN_PROXY_URL=socks5h://127.0.0.1:1080 \
+FLARESOLVERR_BIN=/path/to/flaresolverr \
+./scripts/deploy-antiban-local.sh --server-port 8000
+```
+
+脚本会生成可重复使用的启动器：
+
+```bash
+./.antiban/run-grokmanager-antiban.sh
+```
+
+macOS 打包产物的 zip 根目录会额外包含 `Start Anti-Ban.command`，双击即可写入 `~/Library/Application Support/grokManager/.env` 并以防封配置启动 APP。
+
 首次用 Compose 部署时，建议至少先在 `.env` 里设置：
 - `GROK_APP_APP_KEY`
 - `GROK_APP_API_KEY`
@@ -199,7 +245,7 @@ docker compose logs -f maintainer
 ```bash
 cp maintainer.config.example.json maintainer.config.json
 uv sync --extra maintainer
-uv run grokmanager-maintainer --count 5
+uv run grokmanager-maintainer --count 5 --workers 2  # 2 个并发 worker × 每个 5 轮 = 10 个 token
 ```
 
 - 新 CLI 名称：`grokmanager-maintainer`
@@ -208,6 +254,37 @@ uv run grokmanager-maintainer --count 5
 - 默认日志目录：`${LOG_DIR}/maintainer`
 - 默认回写接口：`/v1/admin/tokens`，使用 `app.app_key` 作为 Bearer Token
 - 兼容新后台接口：`/admin/api/tokens` 与 `/admin/api/tokens/add`
+
+### Turnstile 验证
+
+最终注册页如果出现 Turnstile，maintainer 会先尝试现有真人化点击逻辑，并把内置 `turnstilePatch/script.js` 通过 CDP 注入到新页面，避免依赖 Chrome 扩展加载。`web.turnstile_manual_wait_sec` 控制自动点击失败后的人工等待时间：`0` 表示自动模式（只有真实图形桌面默认等待 180 秒；Headless、Xvfb、无 `DISPLAY` 的 Linux 服务器默认不等待），大于 0 表示固定等待秒数；如需完全关闭人工等待，可设置环境变量 `MAINTAINER_TURNSTILE_MANUAL_WAIT_SEC=off`。
+
+### 多进程并发注册
+
+- CLI 新增 `--workers N`（`N≥1`，**无上限**；按机器内存 / CPU / 上游配额自行控制），`N>1` 时以 `multiprocessing.spawn` 拉起 **恰好 `N`** 个子进程并行注册，每个子进程独立跑 `count` 轮迭代
+- **语义：`count` 是「每个 worker 的注册轮数」**，本次任务总注册数 = `workers × count`。这保证选了并发就一定能看到 `N` 个浏览器同时起来（旧语义是「总数 / workers」平摊，在 `count < workers` 时会静默少起 worker）
+- 每个 worker 的 SSO 输出文件以 `.w{idx}` 为后缀避免冲突，例如 `sso_2026-05-20T10-30-00.w0.txt`、`sso_..w1.txt`
+- 每个 worker 的运行日志以 `run_w{id}_{ts}_pid{X}.log` 存放；orchestrator 日志 `run_parallel_{ts}_pid{X}.log` 集中记录「启动/结束”事件（含每个 worker 的 pid 和 exitcode），WebUI 会优先展示该 orchestrator 日志，以便直接核对真实并发数
+- 不传 `--workers` 或 `--workers 1` 时退回原单进程顺序模式，行为完全保持向后兼容
+- 后台 `/maintainer/run` 同样接受 `workers` 字段（默认 1）；`GET /maintainer/status` 返回的 `spawned_workers` 字段是运行时实际启动的 worker 数（以供校验、差异调试），WebUI 表单中增加了并发输入框与「实际并发 worker」状态卡
+
+> 💡 小例：`--count 2 --workers 5` 会同时起 5 个 Chromium 子进程，每个子进程顺序注册 2 个账号 → 总计 10 个 token。资源占用随 workers 明显上升（内存 / 文件句柄 / 上游限流），调优时从 `workers=2-3` 开始逐步加。
+
+每个 worker 子进程会获得**独立的 Chromium 用户数据目录**：`<system_tempdir>/grokmgr-chrome-w{worker_id}-{pid}/`（例如 `/tmp/grokmgr-chrome-w0-24073/`），并通过 Chromium `--user-data-dir=` 参数显式传入。这是避免「workers 看着像串行」的关键 —— Chromium 在同一个 profile 目录下会用 SingletonLock / SingletonCookie 强制序列化，多个 worker 共享 profile 就会要么报 `ProcessSingletonStartup` 失败，要么静默挂到同一个浏览器实例上跑成串行。每个 worker 的 `alive` 事件 payload 含 `user_data_dir=...`，orchestrator 日志里直接能 grep。任务结束（成功或失败）后该目录会被 best-effort 清理。
+
+### 暂停 / 继续 / 停止
+
+注册任务运行期间可通过 Admin API 控制：
+
+| 接口 | 行为 |
+| :-- | :-- |
+| `POST /maintainer/pause` | 设置暂停信号，当前轮结束后不再启动新轮（已在跑的子进程会跑完手头那条），状态切到 `paused` |
+| `POST /maintainer/resume` | 清除暂停信号，恢复 `running` 状态，继续后续轮 |
+| `POST /maintainer/stop` | 设置停止信号，状态切到 `stopping`，当前轮结束后立即退出，任务终止后清理 controller |
+
+- 单/多进程模式都受这三个端点控制：`_MaintainerController` 内部使用 `multiprocessing.Event` 在父子进程间同步暂停 / 停止状态
+- WebUI 注册页（`/admin/account` 中的 Maintainer 区块）同步暴露 **并发 worker 数** 输入框 + **暂停 / 继续 / 停止** 按钮，按钮根据 `running` / `paused` / `stopping` 状态自动 disable
+- `GET /maintainer/status` 返回的 `paused` / `stop_requested` 字段对应上述两个 Event 当前状态
 
 ### Compose 一体化启动
 
@@ -336,10 +413,31 @@ uv run grokmanager-maintainer --count 5
 | `grok-4.20-0309-reasoning-heavy` | `expert` | `heavy` |
 | `grok-4.20-multi-agent-0309` | `heavy` | `heavy` |
 | `grok-4.20-fast` | `fast` | `basic`，优先使用高等级账号池 |
-| `grok-4.20-auto` | `auto` | `basic`，优先使用高等级账号池 |
-| `grok-4.20-expert` | `expert` | `basic`，优先使用高等级账号池 |
+| `grok-4.20-auto` | `auto` | `super`，优先使用 heavy 后回退 super |
+| `grok-4.20-expert` | `expert` | `super`，优先使用 heavy 后回退 super |
 | `grok-4.20-heavy` | `heavy` | `heavy` |
+| `grok-4.3` | `auto` | `basic`（走 xAI Console Responses 上游，命中 `https://console.x.ai`） |
 | `grok-4.3-beta` | `grok-420-computer-use-sa` | `super` |
+
+#### Console 免费账号模型
+
+这些模型走 xAI Console Responses 上游，使用 `basic` 池账号；公开模型名会映射到真实上游模型，并按下表注入 `reasoning.effort`。
+
+| 模型名 | 上游模型 | reasoning effort | 说明 |
+| :-- | :-- | :-- | :-- |
+| `grok-4.3-console` | `grok-4.3` | 用户传入，默认 `medium`；显式 `none` 关闭 | 免费账号 |
+| `grok-4.3-low` | `grok-4.3` | 固定 `low` | 免费账号 |
+| `grok-4.3-medium` | `grok-4.3` | 固定 `medium` | 免费账号 |
+| `grok-4.3-high` | `grok-4.3` | 固定 `high` | 免费账号 |
+| `grok-4.20-0309-console` | `grok-4.20-0309` | 默认 | 免费账号 |
+| `grok-4.20-0309-reasoning-console` | `grok-4.20-0309-reasoning` | 固定 reasoning 模型 | 免费账号 |
+| `grok-4.20-0309-non-reasoning-console` | `grok-4.20-0309-non-reasoning` | 无 reasoning | 免费账号 |
+| `grok-4.20-multi-agent-console` | `grok-4.20-multi-agent` | 用户传入，默认 `medium` | 免费账号，多智能体，agent 数量由 effort 决定 |
+| `grok-4.20-multi-agent-low` | `grok-4.20-multi-agent` | 固定 `low` | 免费账号，多智能体，4 agents |
+| `grok-4.20-multi-agent-medium` | `grok-4.20-multi-agent` | 固定 `medium` | 免费账号，多智能体，4 agents |
+| `grok-4.20-multi-agent-high` | `grok-4.20-multi-agent` | 固定 `high` | 免费账号，多智能体，16 agents |
+| `grok-4.20-multi-agent-xhigh` | `grok-4.20-multi-agent` | 固定 `xhigh` | 免费账号，多智能体，16 agents |
+| `grok-build-console` | `grok-build-0.1` | 默认 | 免费账号，Grok Build 0.1 |
 
 ### Image
 
@@ -372,6 +470,7 @@ uv run grokmanager-maintainer --count 5
 | `POST /v1/chat/completions` | 是 | 对话 / 图像 / 视频统一入口 |
 | `POST /v1/responses` | 是 | OpenAI Responses API 兼容子集 |
 | `POST /v1/messages` | 是 | Anthropic Messages API 兼容接口 |
+| `POST /v1/messages/count_tokens` | 是 | Anthropic Count Message Tokens 兼容接口（预估输入 token） |
 | `POST /v1/images/generations` | 是 | 独立图像生成接口 |
 | `POST /v1/images/edits` | 是 | 独立图像编辑接口 |
 | `POST /v1/videos` | 是 | 异步视频任务创建 |
@@ -581,6 +680,29 @@ curl http://localhost:8000/v1/messages \
 
 <br>
 </details>
+
+<br>
+</details>
+
+<details>
+<summary><code>POST /v1/messages/count_tokens</code></summary>
+<br>
+
+```bash
+curl http://localhost:8000/v1/messages/count_tokens \
+  -H "Content-Type: application/json" \
+  -H "x-api-key: $GROKMANAGER_API_KEY" \
+  -H "anthropic-version: 2023-06-01" \
+  -d '{
+    "model": "grok-4.20-auto",
+    "system": "You are a helpful assistant.",
+    "messages": [
+      {"role": "user", "content": "用三句话解释量子隧穿"}
+    ]
+  }'
+```
+
+请求体与 `/v1/messages` 完全一致（同时支持 `system`、`tools`、`tool_choice` 等可选字段），响应返回 `{"input_tokens": N}`，用于在调用前估算输入 token 用量。
 
 <br>
 </details>

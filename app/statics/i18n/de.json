@@ -1,7 +1,8 @@
 {
   "common": {
     "invalidKey": "Ungültiger Schlüssel",
-    "connectionFailed": "Verbindung fehlgeschlagen"
+    "connectionFailed": "Verbindung fehlgeschlagen",
+    "authStorageFailed": "Verifiziert, aber der Anmeldestatus konnte nicht gespeichert werden; prüfen Sie die Browser-Speicherberechtigungen"
   },
   "login": {
     "adminPageTitle": "grokManager - Admin",
@@ -11,7 +12,8 @@
     "continue": "Weiter",
     "webuiPageTitle": "grokManager - WebUI",
     "webuiTitle": "WebUI",
-    "webuiSubtitle": "Geben Sie den Zugriffsschlüssel ein",
+    "webuiSubtitle": "Geben Sie Benutzername und Zugriffspasswort ein",
+    "webuiUsernamePlaceholder": "Benutzername (im Ein-Passwort-Modus optional)",
     "webuiPlaceholder": "Zugriffsschlüssel",
     "enter": "Öffnen",
     "goToAdmin": "Zum Administrationsbereich"
@@ -42,6 +44,15 @@
       "cancel": "Abbrechen",
       "confirm": "Bestätigen",
       "copySuccess": "Kopiert",
+      "preview": "Ergebnisvorschau",
+      "previewHide": "Vorschau ausblenden",
+      "previewRefresh": "Aktualisieren",
+      "previewOpen": "Öffnen",
+      "previewCopyUrl": "URL kopieren",
+      "previewUrlCopied": "Vorschau-URL kopiert",
+      "previewSaveFailed": "Vorschau-URL konnte nicht gespeichert werden",
+      "previewFrameTitle": "Code-Vorschau",
+      "previewOpenFailed": "Das Vorschau-Popup wurde blockiert",
       "renamePrompt": "Chat umbenennen",
       "deleteConfirm": "Diesen Chat löschen?",
       "modelLabel": "Modell",
@@ -92,7 +103,11 @@
       "errorText": "Die Verbindung konnte nicht hergestellt werden. Prüfen Sie den Mikrofonzugriff und versuchen Sie es erneut.",
       "endedText": "Die Sprachsitzung wurde beendet. Sie können jederzeit neu starten.",
       "livekitLoadFailed": "LiveKit-SDK konnte nicht geladen werden",
-      "invalidToken": "Ungültige Antwort für Sprach-Token"
+      "invalidToken": "Ungültige Antwort für Sprach-Token",
+      "microphoneUnsupported": "Dieser Browser oder diese Nicht-HTTPS-Seite kann das Mikrofon nicht öffnen. Verwenden Sie HTTPS oder localhost.",
+      "microphoneRequired": "Erlauben Sie den Mikrofonzugriff im Browser, bevor Sie die Sprachverbindung starten.",
+      "microphoneUnavailable": "Das Mikrofon konnte nicht geöffnet werden. Prüfen Sie die Browserberechtigung oder ob eine andere App es verwendet.",
+      "webrtcConnectionFailed": "LiveKit hat ein Sprach-Token geliefert, aber der Browser konnte keine WebRTC-Verbindung herstellen. Eine OK-Antwort von livekit.grok.com belegt nur HTTPS-Erreichbarkeit; wss://livekit.grok.com/rtc und WebRTC-ICE/TURN-Datenverkehr müssen ebenfalls erlaubt sein."
     },
     "masonry": {
       "pageTitle": "grokManager - Masonry",
@@ -121,6 +136,8 @@
       "errors": {
         "enterPrompt": "Bitte geben Sie einen Prompt ein",
         "requestFailed": "Anfrage fehlgeschlagen",
+        "imagePoolUnavailable": "Masonry-Bilderzeugung erfordert Super- oder Heavy-Konten. Importieren Sie zuerst Super/Heavy-Konten.",
+        "imageRateLimited": "Die verfügbaren Super/Heavy-Bildkonten sind rate-limitiert. Warten Sie auf das Quota-Reset oder importieren Sie weitere Super/Heavy-Konten.",
         "initFailed": "Initialisierung der Masonry-Seite fehlgeschlagen"
       }
     }
@@ -310,6 +327,15 @@
     "saveBarShort": "Speichern",
     "discardChanges": "Änderungen verwerfen",
     "randomize": "Wert generieren",
+    "webuiUsers": {
+      "add": "Benutzer hinzufügen",
+      "empty": "Keine WebUI-Benutzer konfiguriert. Der Ein-Passwort-Modus bleibt aktiv.",
+      "username": "Benutzername",
+      "password": "Passwort",
+      "displayName": "Anzeigename",
+      "enabled": "Aktiv",
+      "remove": "Entfernen"
+    },
     "loadFailed": "Konfiguration konnte nicht geladen werden: {message}",
     "saving": "Änderungen werden gespeichert...",
     "saveSuccess": "Änderungen gespeichert",
@@ -373,6 +399,7 @@
         "apiKey": { "label": "API-Zugriffsschlüssel" },
         "webuiEnabled": { "label": "WebUI aktivieren" },
         "webuiKey": { "label": "WebUI-Zugriffspasswort" },
+        "webuiUsers": { "label": "WebUI-Benutzer", "desc": "Wenn konfiguriert, verwendet WebUI Benutzername + Passwort und isoliert browserseitige Chats, Sucheinstellungen und MCP-Konfiguration pro Benutzer. Leer lassen, um den Ein-Passwort-Modus beizubehalten." },
         "temporary": { "label": "Temporäre Sitzungen" },
         "memory": { "label": "Konversationsspeicher" },
         "stream": { "label": "Standard-Streaming" },

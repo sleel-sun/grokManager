@@ -42,6 +42,9 @@ class ChatCompletionRequest(BaseModel):
     deepsearch:          Literal["default", "deeper"] | None = Field(
         None, description="深度搜索预设: default/deeper"
     )
+    # WebUI-only MCP orchestration options. The public /v1 endpoint accepts but
+    # ignores this field; /webui/api/chat/completions handles it explicitly.
+    mcp:                 dict[str, Any] | None      = None
 
 
 class ImageGenerationRequest(BaseModel):

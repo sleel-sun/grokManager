@@ -1,6 +1,6 @@
 # Grok Maintainer
 
-浏览器注册器已经并入 `grok2api` 仓库，作为可选子工具维护，不会影响 API 服务默认依赖。
+浏览器注册器已经并入 `grokManager` 仓库，作为可选子工具维护，不会影响 API 服务默认依赖。
 
 ## 安装
 
@@ -16,40 +16,13 @@ uv run grokmanager-maintainer --count 5
 uv run python -m app.maintainer --count 0
 ```
 
-## Compose 一体化运行
-
-`docker-compose.yml` 已内置独立的 `maintainer` 服务。执行：
-
-```bash
-docker compose up -d --build
-```
-
-会同时启动：
-- `grokmanager` API 服务
-- `maintainer` 后台服务
-
-Compose 模式下，maintainer 默认：
-- 等待 `http://grokmanager:8000/health`
-- 从 `.env` 中的 `MAINTAINER_*` 环境变量生成运行时配置
-- 把 token 回写到 `http://grokmanager:8000/v1/admin/tokens`
-- 通过 `MAINTAINER_INTERVAL_SEC` 周期性重复运行
-- 默认把自动生成的配置写到容器内临时路径，不落宿主持久卷
-- 未显式设置 `MAINTAINER_API_TOKEN` 时，会先复用 `GROK_APP_APP_KEY`，两者都为空则回退到默认后台密钥 `grok2api`
-
-必填环境变量：
-- `MAINTAINER_EMAIL_WORKER_DOMAIN`
-- `MAINTAINER_EMAIL_DOMAINS`
-- `MAINTAINER_EMAIL_ADMIN_PASSWORD`
-
-常用可调参数：
-- `MAINTAINER_COUNT`
-- `MAINTAINER_INTERVAL_SEC`
-- `MAINTAINER_HEADLESS`
-- `MAINTAINER_USE_XVFB`
-
 ## 配置文件
 
 默认读取仓库根目录的 `maintainer.config.json`，也可以通过 `--config` 或环境变量 `GROK_MAINTAINER_CONFIG` 指定。
+
+### Turnstile
+
+最终注册页出现 Turnstile 时会先自动点击验证，并通过 CDP 注入内置 `turnstilePatch/script.js`，不再依赖 Chrome 扩展加载。`web.turnstile_manual_wait_sec=0` 表示自动模式：只有真实图形桌面默认等待 180 秒供人工完成验证；Headless、Xvfb、无 `DISPLAY` 的 Linux 服务器默认不等待。设置为正数可固定等待秒数。要完全关闭人工等待，可设置 `MAINTAINER_TURNSTILE_MANUAL_WAIT_SEC=off`。
 
 ### API 回写
 
@@ -71,4 +44,4 @@ Compose 模式下，maintainer 默认：
 - Python 3.13+
 - Chrome 或 Chromium
 - 自建临时邮箱 Worker
-- 可选：本仓库运行中的 `grok2api` 服务，用于自动回写 token
+- 可选：本仓库运行中的 `grokManager` 服务，用于自动回写 token

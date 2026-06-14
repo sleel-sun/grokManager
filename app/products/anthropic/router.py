@@ -3,14 +3,15 @@
 from typing import Any
 
 import orjson
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends
 from fastapi.responses import JSONResponse, StreamingResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
 from app.platform.auth.middleware import verify_api_key
 from app.platform.errors import AppError, ValidationError
-from app.platform.logging.logger import logger
+from app.platform.tokens import estimate_prompt_tokens, estimate_tokens
 from app.control.model import registry as model_registry
+from app.products._upstream_headers import build_upstream_response_headers
 
 
 router = APIRouter(prefix="/v1", dependencies=[Depends(verify_api_key)])
@@ -116,13 +117,69 @@ async def messages_endpoint(req: MessagesRequest):
         tool_choice  = req.tool_choice,
     )
 
+    upstream_headers = build_upstream_response_headers(spec)
     if isinstance(result, dict):
-        return JSONResponse(result)
+        return JSONResponse(result, headers=upstream_headers)
     return StreamingResponse(
         _safe_sse_anthropic(result),
         media_type = "text/event-stream",
-        headers    = _SSE_HEADERS,
+        headers    = {**_SSE_HEADERS, **upstream_headers},
     )
+
+
+# ---------------------------------------------------------------------------
+# /v1/messages/count_tokens
+# ---------------------------------------------------------------------------
+
+class CountTokensRequest(BaseModel):
+    """Subset of Anthropic CountMessageTokens request schema we accept.
+
+    Mirrors the input contract of ``POST /v1/messages``: only ``messages`` is
+    required, everything else is optional and used for a more accurate count.
+    """
+
+    model_config = {"extra": "ignore"}
+
+    model:       str | None = None
+    messages:    list[_Message]
+    system:      Any = None
+    tools:       list[dict] | None = None
+    tool_choice: Any = None
+    thinking:    Any = None
+
+
+@router.post("/messages/count_tokens", tags=[_TAG_MESSAGES])
+async def count_tokens_endpoint(req: CountTokensRequest):
+    """Estimate the input token count for an Anthropic-format request.
+
+    Mirrors `Anthropic's Count Message Tokens endpoint`__ — used by the
+    official SDK and agents (Claude Code, etc.) for pre-flight budgeting.
+
+    Token counting uses the same tiktoken-backed estimator as
+    :func:`app.platform.tokens.estimate_prompt_tokens` so the reported value
+    is consistent with the ``usage.input_tokens`` field returned by
+    ``/v1/messages``.
+
+    __ https://docs.anthropic.com/en/api/messages-count-tokens
+    """
+    if not req.messages:
+        raise ValidationError("messages cannot be empty", param="messages")
+
+    # Lazy import to avoid a top-level dependency on the Messages handler
+    # (which itself imports heavier dataplane modules).
+    from .messages import _parse_anthropic_messages, _convert_tools
+
+    messages_payload = [m.model_dump() for m in req.messages]
+    internal_messages = _parse_anthropic_messages(messages_payload, req.system)
+
+    total = estimate_prompt_tokens(internal_messages)
+
+    if req.tools:
+        # Tool schemas are part of the prompt the model sees, so they count
+        # against ``input_tokens`` in the same way the messages do.
+        total += estimate_tokens(_convert_tools(req.tools))
+
+    return JSONResponse({"input_tokens": total})
 
 
 __all__ = ["router"]

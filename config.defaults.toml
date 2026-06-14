@@ -10,6 +10,9 @@ api_key = ""
 webui_enabled = false
 # WebUI 访问密码
 webui_key = ""
+# WebUI 多用户列表；配置后 WebUI 使用用户名 + 密码登录，并按用户隔离浏览器端会话与 MCP 配置
+# 示例：[{ username = "alice", password = "secret", display_name = "Alice", enabled = true }]
+webui_users = []
 
 
 # ==================== 日志配置 ====================
@@ -128,12 +131,18 @@ max_inflight = 8
 # ==================== 对话配置 ====================
 [chat]
 timeout = 60
+# 聊天遇到账号权限类 403 时的最小换号次数，避免旧账号库里大量账号不支持特定模式时直接失败
+account_retry_min_retries = 20
 
 
 # ==================== 图像配置 ====================
 [image]
 timeout = 60
 stream_timeout = 60
+# 图像生成遇到账号限流/权限失败时的换号重试次数
+max_retries = 5
+# 生图遇到账号权限/配额类失败时的最小换号次数，避免旧账号库里大量已耗尽生图额度的账号导致模型直接不可用
+account_retry_min_retries = 20
 
 
 # ==================== 视频配置 ====================

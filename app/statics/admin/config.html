@@ -285,6 +285,83 @@
     }
     .cfg-rand-btn:hover { background:#f3f3f3; border-color:#dddddd; color:#222 }
 
+    /* WebUI users editor */
+    .cfg-webui-users {
+      width:100%;
+      display:grid;
+      gap:8px;
+    }
+    .cfg-webui-users-list {
+      display:grid;
+      gap:8px;
+    }
+    .cfg-webui-user-row {
+      display:grid;
+      grid-template-columns:minmax(96px, 1fr) minmax(96px, 1fr) minmax(96px, 1fr) auto auto;
+      gap:6px;
+      align-items:center;
+      padding:8px;
+      border:1px solid #f0f0f0;
+      border-radius:10px;
+      background:#fbfbfb;
+    }
+    .cfg-webui-user-row .cfg-text {
+      height:30px;
+      font-size:12px;
+      text-align:left;
+      background:#fff;
+    }
+    .cfg-webui-user-toggle {
+      display:inline-flex;
+      align-items:center;
+      gap:6px;
+      color:#777;
+      font-size:12px;
+      white-space:nowrap;
+    }
+    .cfg-webui-user-toggle input {
+      width:14px;
+      height:14px;
+      accent-color:#111;
+    }
+    .cfg-webui-users-actions {
+      display:flex;
+      justify-content:flex-start;
+    }
+    .cfg-webui-user-btn {
+      height:28px;
+      padding:0 10px;
+      border-radius:999px;
+      border:1px solid #ececec;
+      background:#fff;
+      color:#444;
+      font-size:12px;
+      font-weight:600;
+      cursor:pointer;
+    }
+    .cfg-webui-user-btn:hover {
+      background:#f5f5f5;
+      color:#111;
+    }
+    .cfg-webui-user-remove {
+      width:28px;
+      height:28px;
+      padding:0;
+      display:inline-flex;
+      align-items:center;
+      justify-content:center;
+      color:#999;
+    }
+    .cfg-webui-user-remove:hover { color:#b42318 }
+    .cfg-webui-users-empty {
+      padding:10px 12px;
+      border:1px dashed #e6e6e6;
+      border-radius:10px;
+      color:#999;
+      background:#fbfbfb;
+      font-size:12px;
+    }
+
     /* Save bar */
     .save-bar {
       position:fixed;
@@ -324,6 +401,7 @@
       .cfg-row { grid-template-columns:1fr; gap:8px; align-items:flex-start }
       .cfg-input-col { justify-content:flex-start }
       .cfg-nav { gap:8px }
+      .cfg-webui-user-row { grid-template-columns:1fr }
       .save-bar {
         width:calc(100% - 24px);
         bottom:12px;
@@ -400,6 +478,7 @@ const SCHEMA_DEF = [
           { key: 'api_key', label: 'API 调用密钥', labelKey: 'config.schema.fields.apiKey.label', type: 'text', desc: 'OpenAI 兼容 API 的鉴权密钥。多个值请使用英文逗号分隔；留空则禁用鉴权。', descKey: 'config.schema.fields.apiKey.desc', rand: true },
           { key: 'webui_enabled', label: '启用 WebUI', labelKey: 'config.schema.fields.webuiEnabled.label', type: 'bool', desc: '开放 WebUI 功能入口。关闭后相关路由将返回 404。', descKey: 'config.schema.fields.webuiEnabled.desc' },
           { key: 'webui_key', label: 'WebUI 访问密码', labelKey: 'config.schema.fields.webuiKey.label', type: 'password', desc: 'WebUI 的访问鉴权密码。配置后访问时必须提供。', descKey: 'config.schema.fields.webuiKey.desc', rand: true, showIf: 'app.webui_enabled' },
+          { key: 'webui_users', label: 'WebUI 用户', labelKey: 'config.schema.fields.webuiUsers.label', type: 'webui_users', desc: '配置后 WebUI 使用用户名 + 密码登录，并按用户隔离浏览器端会话、搜索设置与 MCP 配置。留空时继续使用上面的单密码模式。', descKey: 'config.schema.fields.webuiUsers.desc', showIf: 'app.webui_enabled' },
         ]
       },
       {
@@ -514,8 +593,8 @@ const SCHEMA_DEF = [
         title: '批量操作并发', titleKey: 'config.schema.groups.batchConcurrency',
         section: 'batch',
         fields: [
-          { key: 'nsfw_concurrency', label: '开启 NSFW 并发数', labelKey: 'config.schema.fields.nsfwConcurrency.label', type: 'number', desc: '批量开启 NSFW 时的 token 级并发数；每个 token 需经历三步网络请求。', descKey: 'config.schema.fields.nsfwConcurrency.desc' },
-          { key: 'refresh_concurrency', label: '刷新 Usage 并发数', labelKey: 'config.schema.fields.refreshConcurrency.label', type: 'number', desc: '批量刷新账户额度时的 token 级并发数。', descKey: 'config.schema.fields.refreshConcurrency.desc' },
+          { key: 'nsfw_concurrency', label: '开启 NSFW 并发数', labelKey: 'config.schema.fields.nsfwConcurrency.label', type: 'number', min: 1, max: 80, desc: '批量开启 NSFW 时的 token 级并发数；每个 token 需经历三步网络请求。', descKey: 'config.schema.fields.nsfwConcurrency.desc' },
+          { key: 'refresh_concurrency', label: '刷新 Usage 并发数', labelKey: 'config.schema.fields.refreshConcurrency.label', type: 'number', min: 1, max: 80, desc: '批量刷新账户额度时的 token 级并发数。', descKey: 'config.schema.fields.refreshConcurrency.desc' },
           { key: 'asset_upload_concurrency', label: '上传 Asset 并发数', labelKey: 'config.schema.fields.assetUploadConcurrency.label', type: 'number', desc: 'API 接收文件附件后触发的 Asset 上传任务，全局最大并发数，跨所有请求共享。', descKey: 'config.schema.fields.assetUploadConcurrency.desc' },
           { key: 'asset_list_concurrency', label: '查询 Asset 并发数', labelKey: 'config.schema.fields.assetListConcurrency.label', type: 'number', desc: 'list_assets 接口的全局最大并发数，跨所有请求共享。', descKey: 'config.schema.fields.assetListConcurrency.desc' },
           { key: 'asset_delete_concurrency', label: '删除 Asset 并发数', labelKey: 'config.schema.fields.assetDeleteConcurrency.label', type: 'number', desc: 'delete_asset 接口的全局最大并发数，同时作为管理后台批量清理的 token 级默认并发值。', descKey: 'config.schema.fields.assetDeleteConcurrency.desc' },
@@ -684,6 +763,7 @@ const SCHEMA_DEF = [
           { key: 'timeout', section: 'chat', label: '对话请求超时（秒）', labelKey: 'config.schema.fields.chatTimeout.label', type: 'number', desc: '对话与图像编辑请求的 HTTP 连接超时时间。', descKey: 'config.schema.fields.chatTimeout.desc' },
           { key: 'timeout', section: 'image', label: '图像请求超时（秒）', labelKey: 'config.schema.fields.imageTimeout.label', type: 'number', desc: '图像生成 WebSocket 请求的总超时时间。', descKey: 'config.schema.fields.imageTimeout.desc' },
           { key: 'stream_timeout', section: 'image', label: '图像流式空闲超时（秒）', type: 'number', desc: '图像生成 WebSocket 在流式接收阶段允许的最长连续空闲等待时长。' },
+          { key: 'max_retries', section: 'image', label: '图像换号重试上限', type: 'number', desc: '图像生成遇到账号限流或权限失败时，最多额外尝试的账号数量。' },
           { key: 'timeout', section: 'video', label: '视频请求超时（秒）', labelKey: 'config.schema.fields.videoTimeout.label', type: 'number', desc: '视频生成请求的统一超时时间。', descKey: 'config.schema.fields.videoTimeout.desc' },
           { key: 'timeout', section: 'voice', label: '语音请求超时（秒）', labelKey: 'config.schema.fields.voiceTimeout.label', type: 'number', desc: '语音请求的统一超时时间。', descKey: 'config.schema.fields.voiceTimeout.desc' },
           { key: 'timeout', section: 'nsfw', label: 'NSFW 处理超时（秒）', labelKey: 'config.schema.fields.nsfwTimeout.label', type: 'number', desc: 'set_birth_date 与 enable_nsfw 接口调用的超时时间。', descKey: 'config.schema.fields.nsfwTimeout.desc' },
@@ -740,9 +820,9 @@ let _showIfDeps = new Map();
 let _disabledSelectDeps = new Map();
 
 function tr(key, params, fallback) {
-  if (!key) return fallback ?? '';
+  if (!key) return fallback == null ? '' : fallback;
   const value = t(key, params);
-  return value === key ? (fallback ?? key) : value;
+  return value === key ? (fallback == null ? key : fallback) : value;
 }
 
 function waitI18n() {
@@ -808,17 +888,17 @@ function _localizeOption(opt) {
   if (typeof opt !== 'object') return opt;
   return {
     ...opt,
-    label: tr(opt.labelKey, null, opt.label ?? opt.value),
-    ...(opt.disabledTipKey ? { disabledTip: tr(opt.disabledTipKey, null, opt.disabledTip ?? '') } : {}),
+    label: tr(opt.labelKey, null, opt.label == null ? opt.value : opt.label),
+    ...(opt.disabledTipKey ? { disabledTip: tr(opt.disabledTipKey, null, opt.disabledTip == null ? '' : opt.disabledTip) } : {}),
   };
 }
 
 function _localizeField(field) {
   return {
     ...field,
-    label: field.labelKey ? tr(field.labelKey, null, field.label ?? field.key) : (field.label ?? field.key),
-    desc: field.descKey ? tr(field.descKey, null, field.desc ?? '') : (field.desc ?? ''),
-    help: field.helpKey ? tr(field.helpKey, null, field.help ?? '') : (field.help ?? ''),
+    label: field.labelKey ? tr(field.labelKey, null, field.label == null ? field.key : field.label) : (field.label == null ? field.key : field.label),
+    desc: field.descKey ? tr(field.descKey, null, field.desc == null ? '' : field.desc) : (field.desc == null ? '' : field.desc),
+    help: field.helpKey ? tr(field.helpKey, null, field.help == null ? '' : field.help) : (field.help == null ? '' : field.help),
     options: field.options ? field.options.map(_localizeOption) : field.options,
   };
 }
@@ -826,10 +906,10 @@ function _localizeField(field) {
 function buildSchema() {
   return SCHEMA_DEF.map((tab) => ({
     ...tab,
-    label: tr(tab.labelKey, null, tab.label ?? tab.id),
+    label: tr(tab.labelKey, null, tab.label == null ? tab.id : tab.label),
     groups: tab.groups.map((group) => ({
       ...group,
-      title: group.titleKey ? tr(group.titleKey, null, group.title ?? '') : (group.title ?? ''),
+      title: group.titleKey ? tr(group.titleKey, null, group.title == null ? '' : group.title) : (group.title == null ? '' : group.title),
       fields: group.fields.map(_localizeField),
     })),
   }));
@@ -904,6 +984,78 @@ function _getValue(section, key) { return _getByPath(_cfg, _fullPath(section, ke
 function _getCurrentValue(section, key) {
   const fp = _fullPath(section, key);
   return fp in _dirty ? _dirty[fp] : _getValue(section, key);
+}
+
+function _stableJson(value) {
+  if (value === undefined) return 'null';
+  return JSON.stringify(value, (key, child) => {
+    if (!child || typeof child !== 'object' || Array.isArray(child)) return child;
+    return Object.keys(child).sort().reduce((acc, itemKey) => {
+      acc[itemKey] = child[itemKey];
+      return acc;
+    }, {});
+  });
+}
+
+function _valuesEqual(a, b) {
+  if (a === b) return true;
+  if (
+    (a && typeof a === 'object')
+    || (b && typeof b === 'object')
+  ) {
+    return _stableJson(a) === _stableJson(b);
+  }
+  return String(a == null ? '' : a) === String(b == null ? '' : b);
+}
+
+function _normalizeWebuiUserEntry(entry) {
+  if (!entry || typeof entry !== 'object') return null;
+  const username = String(entry.username || entry.name || entry.id || '').trim();
+  const password = String(entry.password || entry.key || entry.token || '').trim();
+  if (!username && !password) return null;
+  const displayName = String(entry.display_name || entry.displayName || username).trim();
+  let enabled = entry.enabled;
+  if (typeof enabled === 'string') {
+    enabled = !['0', 'false', 'no', 'off', 'disabled'].includes(enabled.trim().toLowerCase());
+  }
+  if (enabled == null) enabled = true;
+  return {
+    username,
+    password,
+    display_name: displayName || username,
+    enabled: Boolean(enabled),
+  };
+}
+
+function _normalizeWebuiUsers(value) {
+  let raw = value;
+  if (typeof raw === 'string') {
+    const text = raw.trim();
+    if (!text) return [];
+    try {
+      raw = JSON.parse(text);
+    } catch {
+      raw = text.split(/\r?\n/).map((line) => {
+        const trimmed = line.trim();
+        if (!trimmed || trimmed.startsWith('#')) return null;
+        let index = trimmed.indexOf('=');
+        if (index < 0) index = trimmed.indexOf(':');
+        if (index < 0) return null;
+        return {
+          username: trimmed.slice(0, index).trim(),
+          password: trimmed.slice(index + 1).trim(),
+          enabled: true,
+        };
+      }).filter(Boolean);
+    }
+  }
+  if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
+    if (Array.isArray(raw.users)) raw = raw.users;
+    else if (Array.isArray(raw.webui_users)) raw = raw.webui_users;
+    else raw = Object.entries(raw).map(([username, password]) => ({ username, password }));
+  }
+  if (!Array.isArray(raw)) return [];
+  return raw.map(_normalizeWebuiUserEntry).filter(Boolean);
 }
 
 // ── Render ──────────────────────────────────────────────────────────────────
@@ -988,8 +1140,121 @@ document.addEventListener('keydown', (event) => {
   if (event.key === 'Escape') _hideHelpTip();
 });
 document.addEventListener('click', (event) => {
-  if (!event.target.closest?.('.cfg-help')) _hideHelpTip();
+  const target = event.target;
+  if (!target || typeof target.closest !== 'function' || !target.closest('.cfg-help')) _hideHelpTip();
 });
+
+function _randomSecret() {
+  if (crypto && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID().replace(/-/g, '').slice(0, 24);
+  }
+  return Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2);
+}
+
+function renderWebuiUsersInput(value, onChange) {
+  let users = _normalizeWebuiUsers(value);
+  const wrap = _el('div', { class: 'cfg-webui-users' });
+  const list = _el('div', { class: 'cfg-webui-users-list' });
+  const actions = _el('div', { class: 'cfg-webui-users-actions' });
+  const addBtn = _el('button', {
+    class: 'cfg-webui-user-btn',
+    type: 'button',
+    onclick: () => {
+      const index = users.length + 1;
+      users = users.concat([{
+        username: `user${index}`,
+        password: _randomSecret(),
+        display_name: `User ${index}`,
+        enabled: true,
+      }]);
+      onChange(_normalizeWebuiUsers(users));
+      renderList();
+    },
+  }, tr('config.webuiUsers.add', null, '添加用户'));
+
+  function updateUser(index, patch) {
+    users[index] = { ...users[index], ...patch };
+    onChange(_normalizeWebuiUsers(users));
+  }
+
+  function renderList() {
+    list.replaceChildren();
+    if (!users.length) {
+      list.appendChild(_el('div', { class: 'cfg-webui-users-empty' }, tr(
+        'config.webuiUsers.empty',
+        null,
+        '未配置 WebUI 用户，将继续使用单密码模式。',
+      )));
+      return;
+    }
+    users.forEach((user, index) => {
+      const username = _el('input', {
+        class: 'cfg-text',
+        type: 'text',
+        value: user.username || '',
+        autocomplete: 'off',
+        placeholder: tr('config.webuiUsers.username', null, '用户名'),
+      });
+      username.addEventListener('input', () => updateUser(index, { username: username.value }));
+
+      const password = _el('input', {
+        class: 'cfg-text',
+        type: 'password',
+        value: user.password || '',
+        autocomplete: 'new-password',
+        placeholder: tr('config.webuiUsers.password', null, '密码'),
+      });
+      password.addEventListener('input', () => updateUser(index, { password: password.value }));
+
+      const displayName = _el('input', {
+        class: 'cfg-text',
+        type: 'text',
+        value: user.display_name || '',
+        autocomplete: 'off',
+        placeholder: tr('config.webuiUsers.displayName', null, '显示名'),
+      });
+      displayName.addEventListener('input', () => updateUser(index, { display_name: displayName.value }));
+
+      const enabled = _el('input', { type: 'checkbox' });
+      enabled.checked = user.enabled !== false;
+      enabled.addEventListener('change', () => updateUser(index, { enabled: enabled.checked }));
+      const enabledLabel = _el('label', { class: 'cfg-webui-user-toggle' }, enabled, tr(
+        'config.webuiUsers.enabled',
+        null,
+        '启用',
+      ));
+
+      const removeBtn = _el('button', {
+        class: 'cfg-webui-user-btn cfg-webui-user-remove',
+        type: 'button',
+        title: tr('config.webuiUsers.remove', null, '删除'),
+        'aria-label': tr('config.webuiUsers.remove', null, '删除'),
+        onclick: () => {
+          users = users.filter((_, itemIndex) => itemIndex !== index);
+          onChange(_normalizeWebuiUsers(users));
+          renderList();
+        },
+      });
+      removeBtn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 7h14"/><path d="M9 7V5h6v2"/><path d="M8 7l1 12h6l1-12"/></svg>';
+
+      list.appendChild(_el(
+        'div',
+        { class: 'cfg-webui-user-row' },
+        username,
+        password,
+        displayName,
+        enabledLabel,
+        removeBtn,
+      ));
+    });
+  }
+
+  actions.appendChild(addBtn);
+  wrap.appendChild(list);
+  wrap.appendChild(actions);
+  renderList();
+  return wrap;
+}
 
 function renderInput(field, section, value) {
   const fp = _fullPath(section, field.key);
@@ -997,13 +1262,17 @@ function renderInput(field, section, value) {
   const onChange = (v) => {
     const wasDirty = fp in _dirty;
     const orig = _getValue(section, field.key);
-    const same = String(orig) === String(v) || orig === v;
+    const same = _valuesEqual(orig, v);
     if (same) delete _dirty[fp]; else _dirty[fp] = v;
     const isDirty = fp in _dirty;
     if (wasDirty !== isDirty) _updateDirtyCount(fp, isDirty ? 1 : -1);
     _refreshRow(section, field.key);
     _refreshDirtyState({ changedPaths: [fp] });
   };
+
+  if (field.type === 'webui_users') {
+    return renderWebuiUsersInput(value, onChange);
+  }
 
   if (field.type === 'bool') {
     const chk = document.createElement('input');
@@ -1045,14 +1314,14 @@ function renderInput(field, section, value) {
   if (field.type === 'textarea') {
     const ta = _el('textarea', { class: 'cfg-textarea', id: `field-${section}-${field.key}`,
       rows: '3', placeholder: '' });
-    ta.value = value ?? '';
+    ta.value = value == null ? '' : value;
     ta.addEventListener('input', () => onChange(ta.value));
     return ta;
   }
 
   if (field.type === 'number') {
     const inp = _el('input', { class: 'cfg-number', type: 'number',
-      id: `field-${section}-${field.key}`, value: value ?? '' });
+      id: `field-${section}-${field.key}`, value: value == null ? '' : value });
     inp.addEventListener('input', () => {
       const n = inp.value === '' ? '' : Number(inp.value);
       onChange(n);
@@ -1065,7 +1334,7 @@ function renderInput(field, section, value) {
     class: `cfg-text${field.wide ? ' wide' : ''}`,
     type: field.type === 'password' ? 'password' : 'text',
     id: `field-${section}-${field.key}`,
-    value: value ?? '',
+    value: value == null ? '' : value,
     autocomplete: 'off',
   });
   inp.addEventListener('input', () => onChange(inp.value));
@@ -1318,8 +1587,8 @@ function doReset() {
       console.error('i18n init failed', e);
     });
 
-    await renderAdminHeader?.();
-    await renderSiteFooter?.();
+    if (typeof renderAdminHeader === 'function') await renderAdminHeader();
+    if (typeof renderSiteFooter === 'function') await renderSiteFooter();
     const key = await adminKey.get();
     if (!key || !await verifyKey(ADMIN_API + '/verify', key).catch(() => false))
       return location.href = '/admin/login';

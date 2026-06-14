@@ -1,7 +1,8 @@
 {
   "common": {
     "invalidKey": "密钥无效",
-    "connectionFailed": "连接失败"
+    "connectionFailed": "连接失败",
+    "authStorageFailed": "已验证，但无法保存登录状态；请检查浏览器存储权限"
   },
   "login": {
     "adminPageTitle": "grokManager - Admin",
@@ -11,7 +12,8 @@
     "continue": "继续",
     "webuiPageTitle": "grokManager - WebUI",
     "webuiTitle": "WebUI",
-    "webuiSubtitle": "请输入访问密钥",
+    "webuiSubtitle": "请输入用户名和访问密码",
+    "webuiUsernamePlaceholder": "用户名（单密码模式可留空）",
     "webuiPlaceholder": "访问密钥",
     "enter": "进入",
     "goToAdmin": "进入管理后台"
@@ -62,6 +64,85 @@
       "cancel": "取消",
       "confirm": "确认",
       "copySuccess": "已复制",
+      "close": "关闭",
+      "preview": "预览效果",
+      "previewHide": "收起预览",
+      "previewRefresh": "刷新",
+      "previewOpen": "新窗口打开",
+      "previewCopyUrl": "复制地址",
+      "previewUrlCopied": "预览地址已复制",
+      "previewSaveFailed": "保存预览地址失败",
+      "previewFrameTitle": "代码预览",
+      "previewOpenFailed": "预览窗口被浏览器拦截",
+      "search": {
+        "button": "联网",
+        "onButton": "联网中",
+        "manage": "启用联网搜索",
+        "mode": "搜索深度",
+        "default": "标准",
+        "deeper": "深入",
+        "chatOnly": "联网搜索仅支持聊天模型"
+      },
+      "mcp": {
+        "button": "MCP",
+        "manage": "管理 MCP 插件",
+        "enabledTitle": "MCP 已启用",
+        "title": "MCP 插件",
+        "subtitle": "安装 stdio MCP 插件，并选择 AI 可以调用的工具。",
+        "enable": "聊天中启用 MCP",
+        "auto": "自动使用所有已启用插件",
+        "toolChoice": "调用模式",
+        "choiceAuto": "自动",
+        "choiceRequired": "强制调用一次",
+        "choiceNone": "禁用",
+        "installed": "已安装插件",
+        "refresh": "刷新",
+        "discoverTools": "检测工具",
+        "discoveringTools": "检测中…",
+        "importTitle": "JSON 导入",
+        "importDesc": "粘贴 Claude/Cursor 风格的 mcpServers JSON，可自动导入。",
+        "importReplace": "替换现有 MCP 插件配置",
+        "importButton": "导入",
+        "importEmpty": "请先粘贴 MCP JSON",
+        "importInvalidJson": "JSON 格式无效",
+        "importDone": "已导入 {created} 个，更新 {updated} 个，跳过 {skipped} 个",
+        "addTitle": "添加 MCP 插件",
+        "editTitle": "编辑 MCP 插件",
+        "newConfig": "新建",
+        "name": "名称",
+        "command": "命令",
+        "args": "参数",
+        "env": "环境变量",
+        "cwd": "工作目录",
+        "timeout": "超时时间（秒）",
+        "serverEnabled": "启用插件",
+        "delete": "删除",
+        "save": "保存插件",
+        "empty": "还没有安装 MCP 插件。",
+        "nameRequired": "请输入 MCP 插件名称",
+        "commandRequired": "请输入 MCP 启动命令",
+        "saved": "MCP 插件已保存",
+        "deleted": "MCP 插件已删除",
+        "noEnabled": "没有已启用的 MCP 插件",
+        "disabledHint": "MCP 已配置，但当前聊天未启用",
+        "autoHint": "自动模式会使用全部 {n} 个已启用插件",
+        "noneSelected": "请至少选择一个已启用插件",
+        "selectedCount": "已选择 {n} 个插件",
+        "selectedWithTools": "已选择 {selected} 个插件，检测到 {tools} 个工具",
+        "autoSelectHint": "关闭自动使用后可手动选择插件",
+        "selectPlugin": "选择此插件",
+        "enabledBadge": "启用",
+        "disabledBadge": "停用",
+        "toolsUnknown": "尚未检测工具",
+        "toolsEmpty": "未暴露工具",
+        "toolsError": "工具检测失败：{error}",
+        "toolsSummary": "{n} 个工具：{tools}",
+        "statusReady": "MCP 已就绪：{n} 个工具",
+        "statusRunning": "正在调用 MCP 工具：{tool}",
+        "statusDone": "MCP 工具已完成：{tool}",
+        "statusError": "MCP 工具失败：{tool}",
+        "statusLimit": "已达到 MCP 调用步数上限"
+      },
       "renamePrompt": "修改会话名称",
       "deleteConfirm": "确定删除这个会话吗？",
       "modelLabel": "模型",
@@ -113,7 +194,11 @@
       "errorText": "连接没有建立成功，请检查麦克风权限后重试。",
       "endedText": "语音会话已结束，可以重新开始。",
       "livekitLoadFailed": "LiveKit SDK 加载失败",
-      "invalidToken": "语音 token 返回无效"
+      "invalidToken": "语音 token 返回无效",
+      "microphoneUnsupported": "当前浏览器或非 HTTPS 页面不能打开麦克风，请使用 HTTPS 或 localhost。",
+      "microphoneRequired": "请允许浏览器使用麦克风后再连接语音。",
+      "microphoneUnavailable": "无法打开麦克风，请确认浏览器权限或设备占用情况。",
+      "webrtcConnectionFailed": "LiveKit 已拿到语音 token，但浏览器无法建立 WebRTC 连接。打开 livekit.grok.com 返回 OK 只代表 HTTPS 可达，还需要允许 wss://livekit.grok.com/rtc 以及 WebRTC ICE/TURN 流量。"
     },
     "masonry": {
       "pageTitle": "grokManager - Masonry",
@@ -142,6 +227,8 @@
       "errors": {
         "enterPrompt": "请输入提示词",
         "requestFailed": "请求失败",
+        "imagePoolUnavailable": "瀑布流生图需要 Super 或 Heavy 账号，请先导入 Super/Heavy 账号。",
+        "imageRateLimited": "可用 Super/Heavy 账号的生图额度已耗尽，请等待额度重置或导入更多 Super/Heavy 账号。",
         "initFailed": "瀑布流页面初始化失败"
       }
     }
@@ -243,6 +330,8 @@
     "importDone": "导入完成",
     "importJsonDone": "导入完成，共 {n} 个",
     "importFailed": "导入失败",
+    "autoNsfwOnImport": "导入后自动开启 NSFW",
+    "autoNsfwHint": "需要额外时间检测账户状态",
     "saving": "正在保存修改…",
     "editDone": "保存完成",
     "editFailed": "保存失败",
@@ -287,7 +376,8 @@
       "fast": "Fast",
       "expert": "Expert",
       "heavy": "Heavy",
-      "grok_4_3": "Grok 4.3 Beta"
+      "grok_4_3": "Grok 4.3 Beta",
+      "console": "Console"
     },
     "status": {
       "active": "正常",
@@ -312,6 +402,15 @@
     "saveBarShort": "保存",
     "discardChanges": "放弃更改",
     "randomize": "随机生成",
+    "webuiUsers": {
+      "add": "添加用户",
+      "empty": "未配置 WebUI 用户，将继续使用单密码模式。",
+      "username": "用户名",
+      "password": "密码",
+      "displayName": "显示名",
+      "enabled": "启用",
+      "remove": "删除"
+    },
     "loadFailed": "配置加载失败：{message}",
     "saving": "正在保存更改…",
     "saveSuccess": "更改已保存",
@@ -389,6 +488,10 @@
         "webuiKey": {
           "label": "WebUI 访问密码",
           "desc": "WebUI 的访问鉴权密码。配置后访问时必须提供。"
+        },
+        "webuiUsers": {
+          "label": "WebUI 用户",
+          "desc": "配置后 WebUI 使用用户名 + 密码登录，并按用户隔离浏览器端会话、搜索设置与 MCP 配置。留空时继续使用单密码模式。"
         },
         "temporary": {
           "label": "临时会话",

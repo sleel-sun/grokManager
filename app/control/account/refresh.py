@@ -9,7 +9,7 @@ from app.platform.config.snapshot import get_config
 from app.platform.logging.logger import logger
 from app.platform.runtime.clock import now_ms
 from app.platform.runtime.batch import run_batch
-from app.control.model.enums import ALL_MODES_FULL
+from app.control.model.enums import ALL_MODES_FULL, ModeId
 from .enums import AccountStatus, QuotaSource
 from .models import AccountRecord, QuotaWindow
 from .quota_defaults import (
@@ -50,7 +50,10 @@ _MODE_KEYS = {
     2: "quota_expert",
     3: "quota_heavy",
     4: "quota_grok_4_3",
+    5: "quota_console",
 }
+
+_LOCAL_ONLY_MODE_IDS = frozenset((int(ModeId.CONSOLE),))
 
 
 class AccountRefreshService:
@@ -85,7 +88,12 @@ class AccountRefreshService:
         try:
             from app.dataplane.reverse.protocol.xai_usage import fetch_all_quotas
 
-            return await fetch_all_quotas(token, supported_mode_ids(pool))
+            upstream_mode_ids = tuple(
+                mode_id
+                for mode_id in supported_mode_ids(pool)
+                if mode_id not in _LOCAL_ONLY_MODE_IDS
+            )
+            return await fetch_all_quotas(token, upstream_mode_ids)
         except UpstreamError:
             raise
         except Exception as exc:
@@ -101,6 +109,8 @@ class AccountRefreshService:
         self, token: str, pool: str, mode_id: int
     ) -> QuotaWindow | None:
         """Fetch a single mode quota window."""
+        if mode_id in _LOCAL_ONLY_MODE_IDS:
+            return None
         if not supports_mode(pool, mode_id):
             logger.debug(
                 "account mode quota fetch skipped: token={}... pool={} mode_id={} reason=unsupported_mode",
@@ -452,14 +462,35 @@ class AccountRefreshService:
         else:
             existing = qs.get(mode_id)
             if existing is not None:
-                quota_patch[mode_key] = QuotaWindow(
-                    remaining=max(0, existing.remaining - 1),
-                    total=existing.total,
-                    window_seconds=existing.window_seconds,
-                    reset_at=existing.reset_at,
-                    synced_at=existing.synced_at,
-                    source=QuotaSource.ESTIMATED,
-                ).to_dict()
+                now = now_ms()
+                if mode_id in _LOCAL_ONLY_MODE_IDS and existing.is_window_expired(now):
+                    default = default_quota_window(record.pool, mode_id)
+                    if default is None:
+                        return
+                    quota_patch[mode_key] = QuotaWindow(
+                        remaining=max(0, default.total - 1),
+                        total=default.total,
+                        window_seconds=default.window_seconds,
+                        reset_at=now + default.window_seconds * 1000,
+                        synced_at=now,
+                        source=QuotaSource.ESTIMATED,
+                    ).to_dict()
+                else:
+                    reset_at = existing.reset_at
+                    if (
+                        mode_id in _LOCAL_ONLY_MODE_IDS
+                        and reset_at is None
+                        and existing.window_seconds > 0
+                    ):
+                        reset_at = now + existing.window_seconds * 1000
+                    quota_patch[mode_key] = QuotaWindow(
+                        remaining=max(0, existing.remaining - 1),
+                        total=existing.total,
+                        window_seconds=existing.window_seconds,
+                        reset_at=reset_at,
+                        synced_at=existing.synced_at,
+                        source=QuotaSource.ESTIMATED,
+                    ).to_dict()
             else:
                 logger.debug(
                     "account single-mode quota patch skipped: token={}... pool={} mode_id={} reason=unsupported_mode",

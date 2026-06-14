@@ -29,6 +29,7 @@ if TYPE_CHECKING:
 from . import get_refresh_svc, get_repo
 
 router = APIRouter(prefix="/batch", tags=["Admin - Batch"])
+_MAX_BATCH_CONCURRENCY = 80
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -37,9 +38,13 @@ router = APIRouter(prefix="/batch", tags=["Admin - Batch"])
 def _concurrency(override: int | None, config_key: str, fallback: int = 50) -> int:
     """Resolve effective concurrency: query-param → config → fallback."""
     if override is not None:
-        return max(1, override)
+        return min(max(1, override), _MAX_BATCH_CONCURRENCY)
     v = get_config(config_key, fallback)
-    return max(1, int(v))
+    try:
+        resolved = int(v)
+    except (TypeError, ValueError):
+        resolved = fallback
+    return min(max(1, resolved), _MAX_BATCH_CONCURRENCY)
 
 
 def _mask(token: str) -> str:
@@ -75,20 +80,23 @@ async def _dispatch(
     *,
     use_async: bool,
     concurrency: int = 10,
+    repo: "AccountRepository | None" = None,
 ) -> Response:
     if use_async:
-        return await _dispatch_async(tokens, handler, concurrency)
-    return await _dispatch_sync(tokens, handler, concurrency)
+        return await _dispatch_async(tokens, handler, concurrency, repo=repo)
+    return await _dispatch_sync(tokens, handler, concurrency, repo=repo)
 
 
 async def _dispatch_sync(
     tokens: list[str],
     handler: Callable[[str], Awaitable[dict]],
     concurrency: int,
+    repo: "AccountRepository | None" = None,
 ) -> Response:
     """Concurrent execution, collect all results, return at once."""
     results: dict[str, Any] = {}
     ok_c = fail_c = 0
+    failed_tokens: list[str] = []
 
     async def _wrapped(token: str) -> tuple[str, dict | None, str | None]:
         try:
@@ -105,11 +113,25 @@ async def _dispatch_sync(
             results[key] = data
         else:
             fail_c += 1
+            failed_tokens.append(token)
             results[key] = {"error": err}
+
+    expired_c = 0
+    if repo is not None and failed_tokens:
+        from app.control.account.enums import AccountStatus
+
+        records = await repo.get_accounts(failed_tokens)
+        expired_c = sum(1 for r in records if r.status == AccountStatus.EXPIRED)
 
     return _json({
         "status": "success",
-        "summary": {"total": len(tokens), "ok": ok_c, "fail": fail_c},
+        "summary": {
+            "total": len(tokens),
+            "ok": ok_c,
+            "fail": fail_c,
+            "expired": expired_c,
+            "transient": max(0, fail_c - expired_c),
+        },
         "results": results,
     })
 
@@ -118,6 +140,7 @@ async def _dispatch_async(
     tokens: list[str],
     handler: Callable[[str], Awaitable[dict]],
     concurrency: int,
+    repo: "AccountRepository | None" = None,
 ) -> Response:
     """Background task with per-item progress via AsyncTask SSE."""
     task = create_task(len(tokens))
@@ -127,6 +150,7 @@ async def _dispatch_async(
             sem = asyncio.Semaphore(concurrency)
             results: dict[str, Any] = {}
             ok_c = fail_c = 0
+            failed_tokens: list[str] = []
 
             async def _one(token: str) -> None:
                 nonlocal ok_c, fail_c
@@ -145,17 +169,31 @@ async def _dispatch_async(
                         task.record(True, item=masked, detail=data)
                     except Exception as exc:
                         fail_c += 1
+                        failed_tokens.append(token)
                         results[masked] = {"error": str(exc)}
                         task.record(False, item=masked, error=str(exc))
 
             await asyncio.gather(*[_one(t) for t in tokens])
+
+            expired_c = 0
+            if repo is not None and failed_tokens:
+                from app.control.account.enums import AccountStatus
+
+                records = await repo.get_accounts(failed_tokens)
+                expired_c = sum(1 for r in records if r.status == AccountStatus.EXPIRED)
 
             if task.cancelled:
                 task.finish_cancelled()
             else:
                 task.finish({
                     "status": "success",
-                    "summary": {"total": len(tokens), "ok": ok_c, "fail": fail_c},
+                    "summary": {
+                        "total": len(tokens),
+                        "ok": ok_c,
+                        "fail": fail_c,
+                        "expired": expired_c,
+                        "transient": max(0, fail_c - expired_c),
+                    },
                     "results": results,
                 })
         except Exception as exc:
@@ -238,6 +276,7 @@ async def batch_refresh(
     req: BatchRequest,
     async_mode: bool = Query(False, alias="async"),
     concurrency: int | None = Query(None, ge=1),
+    repo: "AccountRepository" = Depends(get_repo),
     refresh_svc: "AccountRefreshService" = Depends(get_refresh_svc),
 ):
     tokens = [t.strip() for t in req.tokens if t.strip()]
@@ -251,7 +290,7 @@ async def batch_refresh(
         return {"refreshed": result.refreshed}
 
     c = _concurrency(concurrency, "batch.refresh_concurrency")
-    return await _dispatch(tokens, _refresh_one, use_async=async_mode, concurrency=c)
+    return await _dispatch(tokens, _refresh_one, use_async=async_mode, concurrency=c, repo=repo)
 
 
 @router.post("/cache-clear")

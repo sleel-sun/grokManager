@@ -15,14 +15,21 @@ PROMPT_OVERHEAD = 4
 _ENCODING_NAME = "o200k_base"
 
 
+class _ApproximateEncoding:
+    def encode(self, text: str, disallowed_special: tuple[str, ...] = ()) -> list[int]:
+        if not text:
+            return []
+        return [0] * max(1, (len(text.encode("utf-8")) + 3) // 4)
+
+
 @lru_cache(maxsize=1)
-def _get_encoding() -> tiktoken.Encoding | None:
-    for name in (_ENCODING_NAME, "cl100k_base", "p50k_base", "gpt2"):
+def _get_encoding() -> Any:
+    for name in (_ENCODING_NAME, "cl100k_base", "p50k_base"):
         try:
             return tiktoken.get_encoding(name)
-        except ValueError:
+        except Exception:
             continue
-    return None
+    return _ApproximateEncoding()
 
 
 def _coerce_text(value: Any) -> str:
@@ -40,18 +47,7 @@ def estimate_tokens(value: Any) -> int:
     text = _coerce_text(value).strip()
     if not text:
         return 0
-    encoding = _get_encoding()
-    if encoding is None:
-        return _estimate_tokens_without_tiktoken(text)
-    try:
-        return len(encoding.encode(text, disallowed_special=()))
-    except ValueError:
-        return _estimate_tokens_without_tiktoken(text)
-
-
-def _estimate_tokens_without_tiktoken(text: str) -> int:
-    # Rough OpenAI-style fallback: ~4 UTF-8 bytes per token, at least 1.
-    return max(1, (len(text.encode("utf-8")) + 3) // 4)
+    return len(_get_encoding().encode(text, disallowed_special=()))
 
 
 def estimate_prompt_tokens(value: Any, *, overhead: int = PROMPT_OVERHEAD) -> int:

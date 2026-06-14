@@ -2,9 +2,8 @@
 
 Two fully independent strategies:
 
-* ``_quota_select`` — scores candidates by health / quota / inflight / fails.
-  Used when ``account.refresh.enabled=true``. Behaviour is the historical one,
-  kept unchanged.
+* ``_quota_select`` — scores candidates by health / trusted quota / inflight /
+  fails. Used when ``account.refresh.enabled=true``.
 * ``_random_select`` — uniform random choice among non-cooling candidates.
   Used when ``account.refresh.enabled=false``. Ignores quota and health entirely.
 
@@ -18,7 +17,7 @@ import random
 from typing import Literal
 
 from app.platform.config.snapshot import get_config
-from ..shared.enums import PoolId
+from ..shared.enums import ALL_MODE_IDS, ModeId, PoolId
 from .table import AccountRuntimeTable
 
 # Scoring weights used by the quota strategy.
@@ -142,10 +141,17 @@ def _quota_select(
         pool_id, now_s,
     )
 
-    working: set[int] = candidates.copy()
+    working: set[int] = {idx for idx in candidates if int(quota_col[idx]) > 0}
+    if not working:
+        return None
+
+    source_col = table._source_col(mode_id)
+    trusted = {idx for idx in working if int(source_col[idx]) > 0}
+    if trusted:
+        working = trusted
+
     if exclude_idxs:
         working -= exclude_idxs
-    working = {idx for idx in working if int(quota_col[idx]) > 0}
     if not working:
         return None
 
@@ -169,6 +175,10 @@ def _quota_select_any(
         return None
 
     working = candidates.copy()
+    trusted = {idx for idx in working if _has_trusted_quota_source(table, idx)}
+    if trusted:
+        working = trusted
+
     if exclude_idxs:
         working -= exclude_idxs
     if not working:
@@ -192,8 +202,8 @@ def _maybe_reset_windows(
     pool_id: int,
     now_s: int,
 ) -> None:
-    """Reset expired windows for basic-pool accounts inline (no API call needed)."""
-    if pool_id != int(PoolId.BASIC):
+    """Reset expired local windows inline when no usage API call is needed."""
+    if pool_id != int(PoolId.BASIC) and mode_id != int(ModeId.CONSOLE):
         return
 
     for idx in list(candidates):
@@ -334,6 +344,14 @@ def _pool_union(table: AccountRuntimeTable, pool_id: int) -> set[int]:
         if pid == pool_id:
             out |= accounts
     return out
+
+
+def _has_trusted_quota_source(table: AccountRuntimeTable, idx: int) -> bool:
+    """Return True when any selectable quota was synced or locally estimated."""
+    return any(
+        int(table._source_col(mode_id)[idx]) > 0 and int(table._quota_col(mode_id)[idx]) > 0
+        for mode_id in ALL_MODE_IDS
+    )
 
 
 __all__ = ["select", "select_any", "set_strategy", "current_strategy"]

@@ -2,9 +2,27 @@
   const VERIFY_ENDPOINT = '/webui/api/verify';
   const MODELS_ENDPOINT = '/webui/api/models';
   const CHAT_ENDPOINT = '/webui/api/chat/completions';
+  const MCP_SERVERS_ENDPOINT = '/webui/api/mcp/servers';
+  const MCP_IMPORT_ENDPOINT = '/webui/api/mcp/servers/import';
+  const MCP_TOOLS_ENDPOINT = '/webui/api/mcp/tools';
+  const CODE_PREVIEWS_ENDPOINT = '/webui/api/code-previews';
   const PREFERRED_MODEL = 'grok-4.20-0309';
   const STORE_KEY = 'grok2api_webui_chat_sessions_v1';
   const SIDEBAR_STORE_KEY = 'grok2api_webui_sidebar_collapsed_v1';
+  const MCP_SETTINGS_KEY = 'grok2api_webui_mcp_settings_v1';
+  const SEARCH_SETTINGS_KEY = 'grok2api_webui_search_settings_v1';
+  const PREVIEW_IFRAME_SANDBOX = 'allow-scripts allow-forms allow-modals allow-popups';
+  const PREVIEW_CSP = [
+    "default-src 'none'",
+    "img-src data: blob: https: http:",
+    "media-src data: blob: https: http:",
+    "font-src data: https: http:",
+    "style-src 'unsafe-inline' https: http:",
+    "script-src 'unsafe-inline' https: http:",
+    "connect-src https: http:",
+    "frame-src data: blob: https: http:",
+    "form-action 'none'",
+  ].join('; ');
 
   const chatLayout = document.getElementById('chatLayout');
   const modelSelect = document.getElementById('modelSelect');
@@ -20,6 +38,32 @@
   const uploadBtn = document.getElementById('uploadBtn');
   const fileInput = document.getElementById('fileInput');
   const uploadMeta = document.getElementById('uploadMeta');
+  const webSearchBtn = document.getElementById('webSearchBtn');
+  const webSearchPreset = document.getElementById('webSearchPreset');
+  const mcpBtn = document.getElementById('mcpBtn');
+  const mcpModal = document.getElementById('mcpModal');
+  const mcpCloseBtn = document.getElementById('mcpCloseBtn');
+  const mcpEnabled = document.getElementById('mcpEnabled');
+  const mcpAuto = document.getElementById('mcpAuto');
+  const mcpToolChoice = document.getElementById('mcpToolChoice');
+  const mcpRefreshBtn = document.getElementById('mcpRefreshBtn');
+  const mcpDiscoverToolsBtn = document.getElementById('mcpDiscoverToolsBtn');
+  const mcpStatus = document.getElementById('mcpStatus');
+  const mcpServerList = document.getElementById('mcpServerList');
+  const mcpFormTitle = document.getElementById('mcpFormTitle');
+  const mcpResetFormBtn = document.getElementById('mcpResetFormBtn');
+  const mcpNameInput = document.getElementById('mcpNameInput');
+  const mcpCommandInput = document.getElementById('mcpCommandInput');
+  const mcpArgsInput = document.getElementById('mcpArgsInput');
+  const mcpEnvInput = document.getElementById('mcpEnvInput');
+  const mcpCwdInput = document.getElementById('mcpCwdInput');
+  const mcpTimeoutInput = document.getElementById('mcpTimeoutInput');
+  const mcpServerEnabledInput = document.getElementById('mcpServerEnabledInput');
+  const mcpJsonInput = document.getElementById('mcpJsonInput');
+  const mcpJsonReplaceInput = document.getElementById('mcpJsonReplaceInput');
+  const mcpJsonImportBtn = document.getElementById('mcpJsonImportBtn');
+  const mcpDeleteBtn = document.getElementById('mcpDeleteBtn');
+  const mcpSaveBtn = document.getElementById('mcpSaveBtn');
   const sessionModal = document.getElementById('sessionModal');
   const sessionModalTitle = document.getElementById('sessionModalTitle');
   const sessionModalDesc = document.getElementById('sessionModalDesc');
@@ -38,6 +82,18 @@
   let sidebarCollapsed = false;
   let availableModels = [];
   let activeEdit = null;
+  let mcpServers = [];
+  let mcpToolStatusByServerId = {};
+  let mcpToolsLoading = false;
+  let mcpSettings = { enabled: false, auto: true, selectedIds: [], toolChoice: 'auto' };
+  let searchSettings = { enabled: false, preset: 'default' };
+  let editingMcpServerId = '';
+  let storeKey = STORE_KEY;
+  let sidebarStoreKey = SIDEBAR_STORE_KEY;
+  let mcpSettingsKey = MCP_SETTINGS_KEY;
+  let searchSettingsKey = SEARCH_SETTINGS_KEY;
+  let currentStorageScope = 'anonymous';
+  let requireSessionStorageScope = false;
   const PROMPT_MIN_HEIGHT = 36;
   const PROMPT_MAX_HEIGHT = 108;
   let pendingThreadScrollFrame = 0;
@@ -157,6 +213,7 @@
     let listItems = [];
     let inCodeBlock = false;
     let codeLines = [];
+    let codeLanguage = '';
 
     function flushParagraph() {
       if (!paragraph.length) return;
@@ -173,9 +230,12 @@
 
     function flushCodeBlock() {
       if (!inCodeBlock) return;
-      html.push(`<pre><code>${escapeHtml(codeLines.join('\n'))}</code></pre>`);
+      const lang = normalizeCodeLanguage(codeLanguage);
+      const attrs = lang ? ` class="language-${escapeHtml(lang)}" data-lang="${escapeHtml(lang)}"` : '';
+      html.push(`<pre><code${attrs}>${escapeHtml(codeLines.join('\n'))}</code></pre>`);
       inCodeBlock = false;
       codeLines = [];
+      codeLanguage = '';
     }
 
     for (const line of lines) {
@@ -187,6 +247,7 @@
         } else {
           inCodeBlock = true;
           codeLines = [];
+          codeLanguage = line.slice(3).trim();
         }
         continue;
       }
@@ -291,6 +352,403 @@
       return sanitizeRenderedHtml(rendered);
     }
     return renderMarkdown(source);
+  }
+
+  function normalizeCodeLanguage(value) {
+    const raw = String(value || '').trim().toLowerCase();
+    if (!raw) return '';
+    const first = raw.split(/\s+/)[0].replace(/[^a-z0-9_+#.-]/g, '');
+    const aliases = {
+      htm: 'html',
+      xhtml: 'html',
+      xml: 'html',
+      svg: 'svg',
+      javascript: 'js',
+      ecmascript: 'js',
+      mjs: 'js',
+      cjs: 'js',
+      jsx: 'js',
+      css3: 'css',
+    };
+    return aliases[first] || first;
+  }
+
+  function codeLanguageFor(codeEl) {
+    if (!codeEl) return '';
+    const explicit = codeEl.getAttribute('data-lang') || codeEl.getAttribute('lang') || '';
+    if (explicit) return normalizeCodeLanguage(explicit);
+    for (const className of Array.from(codeEl.classList || [])) {
+      const match = className.match(/^(?:language|lang)-(.+)$/i);
+      if (match) return normalizeCodeLanguage(match[1]);
+    }
+    return '';
+  }
+
+  function looksLikeHtmlCode(value) {
+    const trimmed = String(value || '').trim();
+    if (!trimmed) return false;
+    return /^<!doctype\s+html/i.test(trimmed)
+      || /^<html[\s>]/i.test(trimmed)
+      || /^<svg[\s>]/i.test(trimmed)
+      || /<\/(?:html|body|head|style|script|svg)>/i.test(trimmed)
+      || /<(?:div|main|section|article|header|footer|nav|button|form|canvas|video|img|style|script|svg)[\s>]/i.test(trimmed);
+  }
+
+  function isHtmlSnippet(snippet) {
+    return snippet && (snippet.language === 'html' || snippet.language === 'svg' || looksLikeHtmlCode(snippet.code));
+  }
+
+  function isCssSnippet(snippet) {
+    return snippet && snippet.language === 'css';
+  }
+
+  function isJsSnippet(snippet) {
+    return snippet && snippet.language === 'js';
+  }
+
+  function escapeRawTextEndTag(value, tagName) {
+    const pattern = new RegExp(`</${tagName}`, 'gi');
+    return String(value || '').replace(pattern, `<\\/${tagName}`);
+  }
+
+  function buildPreviewMeta() {
+    return [
+      '<meta charset="UTF-8">',
+      '<meta name="viewport" content="width=device-width, initial-scale=1.0">',
+      `<meta http-equiv="Content-Security-Policy" content="${escapeHtml(PREVIEW_CSP)}">`,
+      '<base target="_blank">',
+    ].join('');
+  }
+
+  function buildStyleTags(cssSnippets) {
+    return cssSnippets
+      .map((snippet) => `<style>\n${escapeRawTextEndTag(snippet.code, 'style')}\n</style>`)
+      .join('\n');
+  }
+
+  function buildScriptTags(jsSnippets) {
+    return jsSnippets
+      .map((snippet) => `<script>\n${escapeRawTextEndTag(snippet.code, 'script')}\n</script>`)
+      .join('\n');
+  }
+
+  function injectPreviewAssets(html, cssSnippets, jsSnippets) {
+    const headAssets = `${buildPreviewMeta()}${buildStyleTags(cssSnippets)}`;
+    const scriptAssets = buildScriptTags(jsSnippets);
+    let doc = String(html || '').trim();
+
+    if (!/^<!doctype\s+html/i.test(doc) && !/<html[\s>]/i.test(doc)) {
+      return [
+        '<!doctype html>',
+        '<html>',
+        `<head>${headAssets}</head>`,
+        `<body>${doc}${scriptAssets}</body>`,
+        '</html>',
+      ].join('');
+    }
+
+    if (/<head[\s>]/i.test(doc)) {
+      doc = doc.replace(/<head([^>]*)>/i, `<head$1>${headAssets}`);
+    } else if (/<html[\s>]/i.test(doc)) {
+      doc = doc.replace(/<html([^>]*)>/i, `<html$1><head>${headAssets}</head>`);
+    } else {
+      doc = `${headAssets}${doc}`;
+    }
+
+    if (/<\/body>/i.test(doc)) {
+      doc = doc.replace(/<\/body>/i, `${scriptAssets}</body>`);
+    } else {
+      doc += scriptAssets;
+    }
+
+    return doc;
+  }
+
+  function buildJsOnlyDocument(jsSnippets) {
+    const consoleBootstrap = `
+<script>
+(function () {
+  var output = document.getElementById('__gm_preview_console');
+  var original = { log: console.log, warn: console.warn, error: console.error };
+  function format(value) {
+    if (typeof value === 'string') return value;
+    try { return JSON.stringify(value, null, 2); } catch (_e) { return String(value); }
+  }
+  function write(kind, args) {
+    if (!output) return;
+    var line = document.createElement('div');
+    line.className = 'console-line console-' + kind;
+    line.textContent = Array.prototype.slice.call(args).map(format).join(' ');
+    output.appendChild(line);
+  }
+  ['log', 'warn', 'error'].forEach(function (kind) {
+    console[kind] = function () {
+      write(kind, arguments);
+      original[kind].apply(console, arguments);
+    };
+  });
+  window.addEventListener('error', function (event) {
+    write('error', [event.message || 'Script error']);
+  });
+})();
+</script>`;
+    return [
+      '<!doctype html>',
+      '<html>',
+      '<head>',
+      buildPreviewMeta(),
+      '<style>',
+      'body{margin:0;padding:18px;font:14px/1.55 ui-sans-serif,system-ui,sans-serif;background:#fff;color:#171717}',
+      '.preview-note{margin:0 0 12px;color:#666}',
+      '#__gm_preview_console{display:grid;gap:6px;padding:12px;border:1px solid #e5e5e5;border-radius:12px;background:#fafafa;white-space:pre-wrap;font:12px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace}',
+      '.console-warn{color:#8a5a00}.console-error{color:#b42318}',
+      '</style>',
+      '</head>',
+      '<body>',
+      '<p class="preview-note">JavaScript preview output</p>',
+      '<div id="__gm_preview_console"></div>',
+      consoleBootstrap,
+      buildScriptTags(jsSnippets),
+      '</body>',
+      '</html>',
+    ].join('');
+  }
+
+  function buildCssOnlyDocument(cssSnippets) {
+    return [
+      '<!doctype html>',
+      '<html>',
+      '<head>',
+      buildPreviewMeta(),
+      buildStyleTags(cssSnippets),
+      '</head>',
+      '<body>',
+      '<main class="preview-css-sample">',
+      '<h1>CSS Preview</h1>',
+      '<p>This sample content uses the CSS from the code block.</p>',
+      '<button type="button">Button</button>',
+      '<div class="card"><strong>Sample card</strong><span>Preview surface</span></div>',
+      '</main>',
+      '</body>',
+      '</html>',
+    ].join('');
+  }
+
+  function buildPreviewDocument(snippets, index) {
+    const current = snippets[index];
+    if (!current || !current.code.trim()) return '';
+
+    const cssSnippets = snippets.filter(isCssSnippet);
+    const jsSnippets = snippets.filter(isJsSnippet);
+
+    if (isHtmlSnippet(current)) {
+      return injectPreviewAssets(current.code, cssSnippets, jsSnippets);
+    }
+
+    const htmlSnippet = snippets.find(isHtmlSnippet);
+    if (htmlSnippet && (isCssSnippet(current) || isJsSnippet(current))) {
+      return injectPreviewAssets(htmlSnippet.code, cssSnippets, jsSnippets);
+    }
+
+    if (isCssSnippet(current)) {
+      return buildCssOnlyDocument([current]);
+    }
+
+    if (isJsSnippet(current)) {
+      return buildJsOnlyDocument([current]);
+    }
+
+    return '';
+  }
+
+  function shouldOfferCodePreview(snippets, index) {
+    return Boolean(buildPreviewDocument(snippets, index));
+  }
+
+  function codeLanguageLabel(snippet) {
+    if (!snippet) return 'Code';
+    if (snippet.language) return snippet.language.toUpperCase();
+    if (looksLikeHtmlCode(snippet.code)) return 'HTML';
+    return 'Code';
+  }
+
+  async function savePreviewDocument(srcdoc) {
+    const title = text('webui.chat.previewFrameTitle', 'Code preview');
+    const headers = {
+      'Content-Type': 'application/json',
+      ...(await getAuthHeaders()),
+    };
+    const res = await fetch(CODE_PREVIEWS_ENDPOINT, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ srcdoc, title }),
+    });
+    if (!res.ok) {
+      const detail = await res.text().catch(() => '');
+      throw new Error(detail || `HTTP ${res.status}`);
+    }
+    const data = await res.json().catch(() => null);
+    const rawUrl = data && data.url ? String(data.url) : '';
+    if (rawUrl) {
+      return new URL(rawUrl, window.location.origin).href;
+    }
+    const id = data && data.id ? String(data.id) : '';
+    if (id) {
+      const url = new URL('/webui/code-preview', window.location.origin);
+      url.searchParams.set('id', id);
+      return url.href;
+    }
+    throw new Error(text('webui.chat.previewSaveFailed', 'Failed to save preview URL'));
+  }
+
+  function openPreviewPlaceholder() {
+    const opened = window.open('about:blank', '_blank');
+    if (!opened) {
+      toast(text('webui.chat.previewOpenFailed', 'Preview popup was blocked'), 'error');
+      return null;
+    }
+    try {
+      opened.opener = null;
+    } catch (_e) {}
+    try {
+      opened.document.title = text('webui.chat.previewFrameTitle', 'Code preview');
+      opened.document.body.innerHTML = '<div style="font:14px system-ui;padding:24px;color:#555">Preparing preview...</div>';
+    } catch (_e) {}
+    return opened;
+  }
+
+  async function openPreviewDocument(srcdoc) {
+    const opened = openPreviewPlaceholder();
+    if (!opened) return;
+    try {
+      opened.location.href = await savePreviewDocument(srcdoc);
+    } catch (error) {
+      try {
+        opened.close();
+      } catch (_e) {}
+      toast(error.message || text('webui.chat.previewSaveFailed', 'Failed to save preview URL'), 'error');
+    }
+  }
+
+  function enhanceCodePreviews(root) {
+    if (!root) return;
+    const snippets = Array.from(root.querySelectorAll('pre > code')).map((codeEl) => ({
+      pre: codeEl.closest('pre'),
+      codeEl,
+      code: codeEl.textContent || '',
+      language: codeLanguageFor(codeEl),
+    })).filter((snippet) => snippet.pre);
+
+    snippets.forEach((snippet, index) => {
+      const { pre } = snippet;
+      if (!shouldOfferCodePreview(snippets, index) || pre.dataset.previewEnhanced === 'true') return;
+      pre.dataset.previewEnhanced = 'true';
+
+      const shell = document.createElement('div');
+      shell.className = 'code-preview-shell';
+      const toolbar = document.createElement('div');
+      toolbar.className = 'code-preview-toolbar';
+
+      const label = document.createElement('div');
+      label.className = 'code-preview-label';
+      label.textContent = codeLanguageLabel(snippet);
+
+      const actions = document.createElement('div');
+      actions.className = 'code-preview-actions';
+
+      const previewBtn = document.createElement('button');
+      previewBtn.type = 'button';
+      previewBtn.className = 'code-preview-btn';
+      previewBtn.textContent = text('webui.chat.preview', 'Preview');
+
+      const refreshBtn = document.createElement('button');
+      refreshBtn.type = 'button';
+      refreshBtn.className = 'code-preview-btn';
+      refreshBtn.textContent = text('webui.chat.previewRefresh', 'Refresh');
+      refreshBtn.hidden = true;
+
+      const openBtn = document.createElement('button');
+      openBtn.type = 'button';
+      openBtn.className = 'code-preview-btn';
+      openBtn.textContent = text('webui.chat.previewOpen', 'Open');
+      openBtn.hidden = true;
+
+      const copyUrlBtn = document.createElement('button');
+      copyUrlBtn.type = 'button';
+      copyUrlBtn.className = 'code-preview-btn';
+      copyUrlBtn.textContent = text('webui.chat.previewCopyUrl', 'Copy URL');
+      copyUrlBtn.hidden = true;
+
+      actions.appendChild(previewBtn);
+      actions.appendChild(refreshBtn);
+      actions.appendChild(openBtn);
+      actions.appendChild(copyUrlBtn);
+      toolbar.appendChild(label);
+      toolbar.appendChild(actions);
+
+      pre.parentNode.insertBefore(shell, pre);
+      shell.appendChild(toolbar);
+      shell.appendChild(pre);
+
+      let panel = null;
+      let iframe = null;
+      let lastSrcdoc = '';
+      let lastPreviewUrl = '';
+
+      function renderPreview() {
+        lastSrcdoc = buildPreviewDocument(snippets, index);
+        if (!lastSrcdoc) return;
+        if (!panel) {
+          panel = document.createElement('div');
+          panel.className = 'code-preview-panel';
+          iframe = document.createElement('iframe');
+          iframe.className = 'code-preview-frame';
+          iframe.setAttribute('sandbox', PREVIEW_IFRAME_SANDBOX);
+          iframe.setAttribute('referrerpolicy', 'no-referrer');
+          iframe.title = text('webui.chat.previewFrameTitle', 'Code preview');
+          panel.appendChild(iframe);
+          shell.appendChild(panel);
+        }
+        iframe.srcdoc = lastSrcdoc;
+        lastPreviewUrl = '';
+      }
+
+      async function getPreviewUrl() {
+        const srcdoc = lastSrcdoc || buildPreviewDocument(snippets, index);
+        if (!srcdoc) return '';
+        if (!lastPreviewUrl) {
+          lastPreviewUrl = await savePreviewDocument(srcdoc);
+        }
+        return lastPreviewUrl;
+      }
+
+      previewBtn.addEventListener('click', () => {
+        const open = shell.classList.toggle('is-preview-open');
+        previewBtn.textContent = open
+          ? text('webui.chat.previewHide', 'Hide preview')
+          : text('webui.chat.preview', 'Preview');
+        refreshBtn.hidden = !open;
+        openBtn.hidden = !open;
+        copyUrlBtn.hidden = !open;
+        if (open) renderPreview();
+      });
+
+      refreshBtn.addEventListener('click', renderPreview);
+      openBtn.addEventListener('click', async () => {
+        const srcdoc = lastSrcdoc || buildPreviewDocument(snippets, index);
+        if (srcdoc) await openPreviewDocument(srcdoc);
+      });
+      copyUrlBtn.addEventListener('click', async () => {
+        try {
+          const url = await getPreviewUrl();
+          if (!url) return;
+          await copyToClipboard(url);
+          toast(text('webui.chat.previewUrlCopied', 'Preview URL copied'), 'info');
+        } catch (error) {
+          toast(error.message || String(error), 'error');
+        }
+      });
+    });
   }
 
   function isImageUrl(value) {
@@ -461,6 +919,7 @@
           )).join(''));
         }
         card.innerHTML = parts.join('') || '<p></p>';
+        enhanceCodePreviews(card);
         return;
       }
 
@@ -501,6 +960,7 @@
 
     if (role === 'assistant') {
       card.innerHTML = renderRichMarkdown(content);
+      enhanceCodePreviews(card);
       return;
     }
     card.textContent = content;
@@ -527,13 +987,21 @@
 
   function loadStore() {
     try {
-      const raw = localStorage.getItem(STORE_KEY);
+      const raw = localStorage.getItem(storeKey);
       if (!raw) return { sessions: [], currentSessionId: '' };
       const parsed = JSON.parse(raw);
-      if (Array.isArray(parsed)) return { sessions: parsed, currentSessionId: parsed[0] && parsed[0].id || '' };
+      const rawSessions = Array.isArray(parsed)
+        ? parsed
+        : (Array.isArray(parsed && parsed.sessions) ? parsed.sessions : []);
+      const scopedSessions = rawSessions.filter(sessionMatchesStorageScope);
+      const storedCurrentId = Array.isArray(parsed)
+        ? (scopedSessions[0] && scopedSessions[0].id || '')
+        : (parsed && parsed.currentSessionId ? String(parsed.currentSessionId) : '');
       return {
-        sessions: Array.isArray(parsed && parsed.sessions) ? parsed.sessions : [],
-        currentSessionId: parsed && parsed.currentSessionId ? String(parsed.currentSessionId) : '',
+        sessions: scopedSessions,
+        currentSessionId: scopedSessions.some((item) => item && item.id === storedCurrentId)
+          ? storedCurrentId
+          : (scopedSessions[0] && scopedSessions[0].id || ''),
       };
     } catch {
       return { sessions: [], currentSessionId: '' };
@@ -543,6 +1011,7 @@
   function persistStore() {
     const serializedSessions = sessions.map((session) => ({
       ...session,
+      storageScope: currentStorageScope,
       messages: Array.isArray(session.messages)
         ? session.messages.map((message) => ({
             ...message,
@@ -552,7 +1021,7 @@
           }))
         : [],
     }));
-    localStorage.setItem(STORE_KEY, JSON.stringify({ sessions: serializedSessions, currentSessionId }));
+    localStorage.setItem(storeKey, JSON.stringify({ sessions: serializedSessions, currentSessionId }));
   }
 
   function applySidebarState() {
@@ -563,7 +1032,7 @@
 
   function loadSidebarState() {
     try {
-      sidebarCollapsed = localStorage.getItem(SIDEBAR_STORE_KEY) === 'true';
+      sidebarCollapsed = localStorage.getItem(sidebarStoreKey) === 'true';
     } catch {
       sidebarCollapsed = false;
     }
@@ -574,7 +1043,7 @@
     sidebarCollapsed = !sidebarCollapsed;
     applySidebarState();
     try {
-      localStorage.setItem(SIDEBAR_STORE_KEY, String(sidebarCollapsed));
+      localStorage.setItem(sidebarStoreKey, String(sidebarCollapsed));
     } catch {}
   }
 
@@ -595,6 +1064,7 @@
       titleLocked: false,
       model: modelSelect.value || PREFERRED_MODEL,
       system: '',
+      storageScope: currentStorageScope,
       messages: [],
       updatedAt: Date.now(),
     };
@@ -607,6 +1077,7 @@
       titleLocked: Boolean(item && item.titleLocked),
       model: item && item.model ? String(item.model) : PREFERRED_MODEL,
       system: item && item.system ? String(item.system) : '',
+      storageScope: currentStorageScope,
       messages: Array.isArray(item && item.messages)
         ? item.messages
           .filter((entry) => {
@@ -673,21 +1144,504 @@
   }
 
   async function getAuthHeaders() {
-    const key = await webuiKey.get();
-    return key ? { Authorization: `Bearer ${key}` } : {};
+    return webuiAuthHeaders();
   }
 
   async function ensureAccess() {
-    const stored = await webuiKey.get();
-    if (stored && await verifyKey(VERIFY_ENDPOINT, stored)) return true;
-    if (stored) webuiKey.clear();
-    if (await verifyKey(VERIFY_ENDPOINT, '')) return true;
+    if (await verifyStoredWebuiAccess(VERIFY_ENDPOINT)) return true;
     location.href = '/webui/login';
     return false;
   }
 
+  function migrateLegacyStorageKey(baseKey, scopedKey, shouldMigrate) {
+    if (!shouldMigrate || !baseKey || !scopedKey || baseKey === scopedKey) return;
+    try {
+      if (localStorage.getItem(scopedKey) || !localStorage.getItem(baseKey)) return;
+      localStorage.setItem(scopedKey, localStorage.getItem(baseKey));
+    } catch {}
+  }
+
+  async function initStorageScope() {
+    const auth = await webuiAuth.get();
+    const shouldMigrateLegacy = Boolean(auth.user && (auth.user.legacy || auth.user.anonymous));
+    currentStorageScope = webuiStorageScopeSuffix(await webuiStorageScope());
+    requireSessionStorageScope = !shouldMigrateLegacy;
+    storeKey = await webuiScopedStorageKey(STORE_KEY);
+    sidebarStoreKey = await webuiScopedStorageKey(SIDEBAR_STORE_KEY);
+    mcpSettingsKey = await webuiScopedStorageKey(MCP_SETTINGS_KEY);
+    searchSettingsKey = await webuiScopedStorageKey(SEARCH_SETTINGS_KEY);
+    migrateLegacyStorageKey(STORE_KEY, storeKey, shouldMigrateLegacy);
+    migrateLegacyStorageKey(SIDEBAR_STORE_KEY, sidebarStoreKey, shouldMigrateLegacy);
+    migrateLegacyStorageKey(MCP_SETTINGS_KEY, mcpSettingsKey, shouldMigrateLegacy);
+    migrateLegacyStorageKey(SEARCH_SETTINGS_KEY, searchSettingsKey, shouldMigrateLegacy);
+  }
+
+  function sessionMatchesStorageScope(item) {
+    if (!requireSessionStorageScope) return true;
+    const rawScope = item && (item.storageScope || item.storage_scope || item.userScope || item.ownerScope);
+    if (!rawScope) return false;
+    return webuiStorageScopeSuffix(rawScope) === currentStorageScope;
+  }
+
   function setStatus(textValue) {
     if (statusEl) statusEl.textContent = textValue;
+  }
+
+  function loadMcpSettings() {
+    try {
+      const raw = localStorage.getItem(mcpSettingsKey);
+      const parsed = raw ? JSON.parse(raw) : {};
+      mcpSettings = {
+        enabled: Boolean(parsed && parsed.enabled),
+        auto: parsed && typeof parsed.auto === 'boolean' ? parsed.auto : true,
+        selectedIds: Array.isArray(parsed && parsed.selectedIds)
+          ? parsed.selectedIds.map((id) => String(id))
+          : [],
+        toolChoice: ['auto', 'required', 'none'].includes(parsed && parsed.toolChoice)
+          ? parsed.toolChoice
+          : 'auto',
+      };
+    } catch {
+      mcpSettings = { enabled: false, auto: true, selectedIds: [], toolChoice: 'auto' };
+    }
+  }
+
+  function persistMcpSettings() {
+    try {
+      localStorage.setItem(mcpSettingsKey, JSON.stringify(mcpSettings));
+    } catch {}
+  }
+
+  function loadSearchSettings() {
+    try {
+      const raw = localStorage.getItem(searchSettingsKey);
+      const parsed = raw ? JSON.parse(raw) : {};
+      searchSettings = {
+        enabled: Boolean(parsed && parsed.enabled),
+        preset: ['default', 'deeper'].includes(parsed && parsed.preset)
+          ? parsed.preset
+          : 'default',
+      };
+    } catch {
+      searchSettings = { enabled: false, preset: 'default' };
+    }
+  }
+
+  function persistSearchSettings() {
+    try {
+      localStorage.setItem(searchSettingsKey, JSON.stringify(searchSettings));
+    } catch {}
+  }
+
+  function syncSearchControls() {
+    const isChatModel = currentModelCapability() === 'chat';
+    if (webSearchPreset) {
+      webSearchPreset.value = searchSettings.preset || 'default';
+      webSearchPreset.disabled = Boolean(sending || !isChatModel);
+      webSearchPreset.title = isChatModel
+        ? text('webui.chat.search.mode', 'Search depth')
+        : text('webui.chat.search.chatOnly', 'Web search is only available for chat models');
+    }
+    if (!webSearchBtn) return;
+    const enabled = Boolean(searchSettings.enabled && isChatModel);
+    webSearchBtn.classList.toggle('active', enabled);
+    webSearchBtn.disabled = Boolean(sending || !isChatModel);
+    webSearchBtn.setAttribute('aria-pressed', enabled ? 'true' : 'false');
+    webSearchBtn.textContent = enabled
+      ? text('webui.chat.search.onButton', '联网中')
+      : text('webui.chat.search.button', '联网');
+    webSearchBtn.title = isChatModel
+      ? text('webui.chat.search.manage', 'Enable web search')
+      : text('webui.chat.search.chatOnly', 'Web search is only available for chat models');
+  }
+
+  function formatMcpStatusLine(enabledCount, selectedCount, toolCount) {
+    if (!enabledCount) {
+      return text('webui.chat.mcp.noEnabled', 'No enabled MCP plugins');
+    }
+    if (!mcpSettings.enabled) {
+      return text('webui.chat.mcp.disabledHint', 'MCP is configured but disabled for chat');
+    }
+    if (mcpSettings.auto) {
+      return text('webui.chat.mcp.autoHint', 'Auto mode will use all {n} enabled plugins', { n: enabledCount });
+    }
+    if (!selectedCount) {
+      return text('webui.chat.mcp.noneSelected', 'Select at least one enabled plugin');
+    }
+    if (toolCount) {
+      return text('webui.chat.mcp.selectedWithTools', '{selected} selected, {tools} tools discovered', {
+        selected: selectedCount,
+        tools: toolCount,
+      });
+    }
+    return text('webui.chat.mcp.selectedCount', '{n} selected', { n: selectedCount });
+  }
+
+  function syncMcpControls() {
+    if (mcpEnabled) mcpEnabled.checked = Boolean(mcpSettings.enabled);
+    if (mcpAuto) mcpAuto.checked = Boolean(mcpSettings.auto);
+    if (mcpToolChoice) mcpToolChoice.value = mcpSettings.toolChoice || 'auto';
+    const enabledCount = mcpServers.filter((server) => server && server.enabled).length;
+    const selectedCount = mcpSettings.auto
+      ? enabledCount
+      : mcpSettings.selectedIds.filter((id) => mcpServers.some((server) => server.id === id && server.enabled)).length;
+    const callable = mcpSettings.toolChoice !== 'none';
+    const toolCount = Object.values(mcpToolStatusByServerId).reduce((sum, info) => {
+      if (!info || !Array.isArray(info.tools)) return sum;
+      return sum + info.tools.length;
+    }, 0);
+    if (mcpStatus) {
+      mcpStatus.textContent = formatMcpStatusLine(enabledCount, selectedCount, toolCount);
+      mcpStatus.classList.toggle('is-warning', Boolean(mcpSettings.enabled && callable && enabledCount && !selectedCount));
+    }
+    if (mcpDiscoverToolsBtn) {
+      mcpDiscoverToolsBtn.disabled = Boolean(mcpToolsLoading || sending || !enabledCount);
+      mcpDiscoverToolsBtn.textContent = mcpToolsLoading
+        ? text('webui.chat.mcp.discoveringTools', 'Discovering...')
+        : text('webui.chat.mcp.discoverTools', 'Discover tools');
+    }
+    if (mcpJsonImportBtn) {
+      mcpJsonImportBtn.disabled = Boolean(sending);
+    }
+    if (mcpBtn) {
+      mcpBtn.classList.toggle('active', Boolean(mcpSettings.enabled && callable && selectedCount));
+      mcpBtn.textContent = selectedCount
+        ? `MCP ${selectedCount}`
+        : text('webui.chat.mcp.button', 'MCP');
+      mcpBtn.title = mcpSettings.enabled && callable
+        ? text('webui.chat.mcp.enabledTitle', 'MCP enabled')
+        : text('webui.chat.mcp.manage', 'Manage MCP plugins');
+    }
+  }
+
+  function mcpAuthHeaders(contentType = false) {
+    return getAuthHeaders().then((headers) => ({
+      ...(contentType ? { 'Content-Type': 'application/json' } : {}),
+      ...headers,
+    }));
+  }
+
+  async function loadMcpServers() {
+    const headers = await mcpAuthHeaders();
+    const res = await fetch(MCP_SERVERS_ENDPOINT, { headers, cache: 'no-store' });
+    if (!res.ok) throw new Error(`mcp servers ${res.status}`);
+    const data = await res.json();
+    mcpServers = Array.isArray(data && data.servers) ? data.servers : [];
+    const existingIds = new Set(mcpServers.map((server) => server && server.id).filter(Boolean));
+    mcpSettings.selectedIds = mcpSettings.selectedIds.filter((id) => existingIds.has(id));
+    mcpToolStatusByServerId = Object.fromEntries(
+      Object.entries(mcpToolStatusByServerId).filter(([id]) => existingIds.has(id))
+    );
+    persistMcpSettings();
+    renderMcpServers();
+    syncMcpControls();
+  }
+
+  async function loadMcpTools() {
+    mcpToolsLoading = true;
+    syncMcpControls();
+    try {
+      const headers = await mcpAuthHeaders();
+      const res = await fetch(MCP_TOOLS_ENDPOINT, { headers, cache: 'no-store' });
+      if (!res.ok) throw new Error(`mcp tools ${res.status}`);
+      const data = await res.json();
+      const next = {};
+      (Array.isArray(data && data.servers) ? data.servers : []).forEach((server) => {
+        if (!server || !server.server_id) return;
+        next[String(server.server_id)] = {
+          error: server.error ? String(server.error) : '',
+          tools: Array.isArray(server.tools) ? server.tools : [],
+        };
+      });
+      mcpToolStatusByServerId = next;
+      renderMcpServers();
+    } finally {
+      mcpToolsLoading = false;
+      syncMcpControls();
+    }
+  }
+
+  function openMcpModal() {
+    if (!mcpModal) return;
+    mcpModal.classList.add('open');
+    mcpModal.setAttribute('aria-hidden', 'false');
+    loadMcpServers().catch((error) => {
+      toast(error.message || String(error), 'error');
+    });
+  }
+
+  function closeMcpModal() {
+    if (!mcpModal) return;
+    mcpModal.classList.remove('open');
+    mcpModal.setAttribute('aria-hidden', 'true');
+  }
+
+  function parseLines(value) {
+    return String(value || '')
+      .replace(/\r\n?/g, '\n')
+      .split('\n')
+      .map((line) => line.trim())
+      .filter(Boolean);
+  }
+
+  function parseEnv(value) {
+    const env = {};
+    parseLines(value).forEach((line) => {
+      const index = line.indexOf('=');
+      if (index <= 0) return;
+      const key = line.slice(0, index).trim();
+      if (!key) return;
+      env[key] = line.slice(index + 1);
+    });
+    return env;
+  }
+
+  function formatEnv(env) {
+    if (!env || typeof env !== 'object') return '';
+    return Object.keys(env)
+      .sort()
+      .map((key) => `${key}=${env[key] == null ? '' : env[key]}`)
+      .join('\n');
+  }
+
+  function resetMcpForm(server) {
+    editingMcpServerId = server && server.id ? server.id : '';
+    if (mcpFormTitle) {
+      mcpFormTitle.textContent = editingMcpServerId
+        ? text('webui.chat.mcp.editTitle', 'Edit MCP Plugin')
+        : text('webui.chat.mcp.addTitle', 'Add MCP Plugin');
+    }
+    if (mcpNameInput) mcpNameInput.value = server && server.name ? server.name : '';
+    if (mcpCommandInput) mcpCommandInput.value = server && server.command ? server.command : '';
+    if (mcpArgsInput) mcpArgsInput.value = Array.isArray(server && server.args) ? server.args.join('\n') : '';
+    if (mcpEnvInput) mcpEnvInput.value = formatEnv(server && server.env);
+    if (mcpCwdInput) mcpCwdInput.value = server && server.cwd ? server.cwd : '';
+    if (mcpTimeoutInput) mcpTimeoutInput.value = String(server && server.timeout_s ? server.timeout_s : 30);
+    if (mcpServerEnabledInput) mcpServerEnabledInput.checked = server ? Boolean(server.enabled) : true;
+    if (mcpDeleteBtn) mcpDeleteBtn.hidden = !editingMcpServerId;
+  }
+
+  function formatMcpToolSummary(serverId) {
+    const status = mcpToolStatusByServerId[String(serverId || '')];
+    if (!status) return text('webui.chat.mcp.toolsUnknown', 'Tools not discovered');
+    if (status.error) return text('webui.chat.mcp.toolsError', 'Tool discovery failed: {error}', { error: status.error });
+    const tools = Array.isArray(status.tools) ? status.tools : [];
+    if (!tools.length) return text('webui.chat.mcp.toolsEmpty', 'No tools exposed');
+    const names = tools
+      .map((tool) => String((tool && (tool.name || tool.title)) || '').trim())
+      .filter(Boolean)
+      .slice(0, 4);
+    return text('webui.chat.mcp.toolsSummary', '{n} tools: {tools}', {
+      n: tools.length,
+      tools: names.join(', ') || '-',
+    });
+  }
+
+  function renderMcpServers() {
+    if (!mcpServerList) return;
+    if (!mcpServers.length) {
+      mcpServerList.innerHTML = `<div class="webui-mcp-empty">${escapeHtml(text('webui.chat.mcp.empty', 'No MCP plugins installed yet.'))}</div>`;
+      syncMcpControls();
+      return;
+    }
+
+    const fragment = document.createDocumentFragment();
+    mcpServers.forEach((server) => {
+      if (!server || !server.id) return;
+      const item = document.createElement('div');
+      item.className = `webui-mcp-item${server.enabled ? '' : ' disabled'}`;
+
+      const checkbox = document.createElement('input');
+      checkbox.type = 'checkbox';
+      checkbox.checked = (mcpSettings.auto && server.enabled) || mcpSettings.selectedIds.includes(server.id);
+      checkbox.disabled = Boolean(mcpSettings.auto || !server.enabled);
+      checkbox.title = mcpSettings.auto
+        ? text('webui.chat.mcp.autoSelectHint', 'Turn off auto mode to choose plugins manually')
+        : text('webui.chat.mcp.selectPlugin', 'Select this plugin');
+      checkbox.addEventListener('change', () => {
+        const selected = new Set(mcpSettings.selectedIds);
+        if (checkbox.checked) selected.add(server.id);
+        else selected.delete(server.id);
+        mcpSettings.selectedIds = Array.from(selected);
+        persistMcpSettings();
+        syncMcpControls();
+      });
+
+      const body = document.createElement('button');
+      body.type = 'button';
+      body.className = 'webui-mcp-item-body';
+      body.addEventListener('click', () => resetMcpForm(server));
+
+      const title = document.createElement('span');
+      title.className = 'webui-mcp-item-title';
+      const titleText = document.createElement('span');
+      titleText.textContent = server.name || server.id;
+      const badge = document.createElement('span');
+      badge.className = `webui-mcp-item-badge${server.enabled ? '' : ' disabled'}`;
+      badge.textContent = server.enabled
+        ? text('webui.chat.mcp.enabledBadge', 'Enabled')
+        : text('webui.chat.mcp.disabledBadge', 'Disabled');
+      title.appendChild(titleText);
+      title.appendChild(badge);
+
+      const command = document.createElement('span');
+      command.className = 'webui-mcp-item-command';
+      const args = Array.isArray(server.args) ? server.args.join(' ') : '';
+      command.textContent = [server.command, args].filter(Boolean).join(' ');
+
+      const tools = document.createElement('span');
+      tools.className = `webui-mcp-item-tools${mcpToolStatusByServerId[server.id] && mcpToolStatusByServerId[server.id].error ? ' error' : ''}`;
+      tools.textContent = formatMcpToolSummary(server.id);
+
+      body.appendChild(title);
+      body.appendChild(command);
+      body.appendChild(tools);
+      item.appendChild(checkbox);
+      item.appendChild(body);
+      fragment.appendChild(item);
+    });
+    mcpServerList.replaceChildren(fragment);
+  }
+
+  function parseMcpImportConfig() {
+    const raw = (mcpJsonInput && mcpJsonInput.value || '').trim();
+    if (!raw) throw new Error(text('webui.chat.mcp.importEmpty', 'Paste MCP JSON first'));
+    try {
+      return JSON.parse(raw);
+    } catch (_error) {
+      throw new Error(text('webui.chat.mcp.importInvalidJson', 'Invalid JSON'));
+    }
+  }
+
+  async function importMcpServersFromJson() {
+    try {
+      const config = parseMcpImportConfig();
+      const headers = await mcpAuthHeaders(true);
+      const res = await fetch(MCP_IMPORT_ENDPOINT, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          config,
+          replace: mcpJsonReplaceInput ? Boolean(mcpJsonReplaceInput.checked) : false,
+        }),
+      });
+      if (!res.ok) throw new Error(await res.text().catch(() => `HTTP ${res.status}`));
+      const data = await res.json();
+      mcpServers = Array.isArray(data && data.servers) ? data.servers : mcpServers;
+      const existingIds = new Set(mcpServers.map((server) => server && server.id).filter(Boolean));
+      mcpSettings.selectedIds = mcpSettings.selectedIds.filter((id) => existingIds.has(id));
+      mcpToolStatusByServerId = {};
+      persistMcpSettings();
+      renderMcpServers();
+      syncMcpControls();
+      toast(
+        text('webui.chat.mcp.importDone', 'Imported {created}, updated {updated}, skipped {skipped}', {
+          created: data && data.created ? data.created : 0,
+          updated: data && data.updated ? data.updated : 0,
+          skipped: Array.isArray(data && data.skipped) ? data.skipped.length : 0,
+        }),
+        'info'
+      );
+    } catch (error) {
+      toast(error.message || String(error), 'error');
+    }
+  }
+
+  function buildMcpServerPayload() {
+    const name = (mcpNameInput && mcpNameInput.value || '').trim();
+    const command = (mcpCommandInput && mcpCommandInput.value || '').trim();
+    if (!name) throw new Error(text('webui.chat.mcp.nameRequired', 'MCP plugin name is required'));
+    if (!command) throw new Error(text('webui.chat.mcp.commandRequired', 'MCP command is required'));
+    const timeout = Number(mcpTimeoutInput && mcpTimeoutInput.value || 30);
+    return {
+      name,
+      enabled: mcpServerEnabledInput ? Boolean(mcpServerEnabledInput.checked) : true,
+      transport: 'stdio',
+      command,
+      args: parseLines(mcpArgsInput && mcpArgsInput.value),
+      env: parseEnv(mcpEnvInput && mcpEnvInput.value),
+      cwd: (mcpCwdInput && mcpCwdInput.value || '').trim() || null,
+      timeout_s: Number.isFinite(timeout) ? Math.min(Math.max(timeout, 1), 300) : 30,
+    };
+  }
+
+  async function saveMcpServer() {
+    try {
+      const payload = buildMcpServerPayload();
+      const headers = await mcpAuthHeaders(true);
+      const endpoint = editingMcpServerId
+        ? `${MCP_SERVERS_ENDPOINT}/${encodeURIComponent(editingMcpServerId)}`
+        : MCP_SERVERS_ENDPOINT;
+      const res = await fetch(endpoint, {
+        method: editingMcpServerId ? 'PUT' : 'POST',
+        headers,
+        body: JSON.stringify(payload),
+      });
+      if (!res.ok) throw new Error(await res.text().catch(() => `HTTP ${res.status}`));
+      const data = await res.json();
+      resetMcpForm(data && data.server);
+      await loadMcpServers();
+      toast(text('webui.chat.mcp.saved', 'MCP plugin saved'), 'info');
+    } catch (error) {
+      toast(error.message || String(error), 'error');
+    }
+  }
+
+  async function deleteMcpServer() {
+    if (!editingMcpServerId) return;
+    try {
+      const headers = await mcpAuthHeaders();
+      const res = await fetch(`${MCP_SERVERS_ENDPOINT}/${encodeURIComponent(editingMcpServerId)}`, {
+        method: 'DELETE',
+        headers,
+      });
+      if (!res.ok) throw new Error(await res.text().catch(() => `HTTP ${res.status}`));
+      mcpSettings.selectedIds = mcpSettings.selectedIds.filter((id) => id !== editingMcpServerId);
+      persistMcpSettings();
+      resetMcpForm(null);
+      await loadMcpServers();
+      toast(text('webui.chat.mcp.deleted', 'MCP plugin deleted'), 'info');
+    } catch (error) {
+      toast(error.message || String(error), 'error');
+    }
+  }
+
+  function selectedMcpServerIds() {
+    if (mcpSettings.auto) return [];
+    return mcpSettings.selectedIds.filter((id) => (
+      mcpServers.some((server) => server && server.id === id && server.enabled)
+    ));
+  }
+
+  function buildMcpPayload() {
+    if (!mcpSettings.enabled) return undefined;
+    return {
+      enabled: true,
+      auto: Boolean(mcpSettings.auto),
+      server_ids: selectedMcpServerIds(),
+      tool_choice: mcpSettings.toolChoice || 'auto',
+      max_steps: 2,
+    };
+  }
+
+  function formatMcpStatus(payload) {
+    if (!payload || typeof payload !== 'object') return '';
+    if (payload.status === 'ready') {
+      return text('webui.chat.mcp.statusReady', 'MCP ready: {n} tools', { n: payload.tool_count || 0 });
+    }
+    if (payload.status === 'running') {
+      return text('webui.chat.mcp.statusRunning', 'Calling MCP tool: {tool}', { tool: payload.tool || 'tool' });
+    }
+    if (payload.status === 'done') {
+      return text('webui.chat.mcp.statusDone', 'MCP tool completed: {tool}', { tool: payload.tool || 'tool' });
+    }
+    if (payload.status === 'error') {
+      return text('webui.chat.mcp.statusError', 'MCP tool failed: {tool}', { tool: payload.tool || 'tool' });
+    }
+    if (payload.status === 'limit') {
+      return text('webui.chat.mcp.statusLimit', 'MCP step limit reached');
+    }
+    return payload.message || '';
   }
 
   function resizePromptInput() {
@@ -715,6 +1669,9 @@
     sending = next;
     promptInput.disabled = next;
     modelSelect.disabled = next;
+    if (mcpBtn) mcpBtn.disabled = next;
+    syncSearchControls();
+    syncMcpControls();
     if (systemInput) systemInput.disabled = next;
     renderSendButton();
   }
@@ -1193,6 +2150,17 @@
     scheduleAssistantEntryRender(entry);
   }
 
+  function updateMcpStatus(entry, payload) {
+    if (!entry) return;
+    const label = formatMcpStatus(payload);
+    if (!label) return;
+    setStatus(label);
+    if (hasMessageContent(entry.text)) return;
+    entry.waiting = false;
+    entry.card.innerHTML = `<div class="msg-mcp-status"><span class="msg-loading-spinner" aria-hidden="true"></span><span>${escapeHtml(label)}</span></div>`;
+    scrollThread();
+  }
+
   function updateReasoning(entry, delta) {
     if (entry.waiting) entry.waiting = false;
     entry.reasoningText += delta;
@@ -1369,13 +2337,21 @@
     messages
       .filter((message) => message && (message.role === 'user' || message.role === 'assistant'))
       .forEach((message) => outgoing.push(message));
-    return {
+    const payload = {
       model: modelSelect.value || PREFERRED_MODEL,
       messages: outgoing,
       stream: true,
       temperature: 0.8,
       top_p: 0.95,
     };
+    if (searchSettings.enabled && currentModelCapability() === 'chat') {
+      payload.deepsearch = searchSettings.preset === 'deeper' ? 'deeper' : 'default';
+    }
+    const mcpPayload = buildMcpPayload();
+    if (mcpPayload && currentModelCapability() === 'chat' && mcpPayload.tool_choice !== 'none') {
+      payload.mcp = mcpPayload;
+    }
+    return payload;
   }
 
   async function loadModels() {
@@ -1469,6 +2445,14 @@
         const messageEvent = parseSseEvent(chunk);
         const payload = messageEvent.data.trim();
         if (!payload) return false;
+        if (messageEvent.event === 'mcp') {
+          try {
+            updateMcpStatus(assistantEntry, JSON.parse(payload));
+          } catch {
+            updateMcpStatus(assistantEntry, { message: payload });
+          }
+          return false;
+        }
         if (payload === '[DONE]') {
           const finalReasoning = hasVisibleReasoning(assistantEntry.reasoningText) ? assistantEntry.reasoningText : '';
           messages.push({
@@ -1580,20 +2564,36 @@
   }
 
   async function boot() {
-    await renderWebuiHeader?.();
-    await renderSiteFooter?.();
-    if (window.I18n?.apply) I18n.apply(document);
+    if (typeof renderWebuiHeader === 'function') await renderWebuiHeader();
+    if (typeof renderSiteFooter === 'function') await renderSiteFooter();
+    if (window.I18n && typeof window.I18n.apply === 'function') I18n.apply(document);
     renderSendButton();
-    window.I18n?.onReady?.(renderSendButton);
+    if (window.I18n && typeof window.I18n.onReady === 'function') {
+      window.I18n.onReady(() => {
+        renderSendButton();
+        syncSearchControls();
+        syncMcpControls();
+      });
+    }
     if (!await ensureAccess()) return;
+    await initStorageScope();
+    loadMcpSettings();
+    loadSearchSettings();
     loadSidebarState();
+    syncSearchControls();
+    syncMcpControls();
+    loadMcpServers().catch((error) => {
+      console.warn('webui mcp load failed', error);
+    });
     await loadModels();
+    syncSearchControls();
+    syncMcpControls();
     restoreSessions();
     resizePromptInput();
     promptInput.focus();
   }
 
-  newChatBtn?.addEventListener('click', startNewSession);
+  if (newChatBtn) newChatBtn.addEventListener('click', startNewSession);
   sidebarToggleBtn.addEventListener('click', toggleSidebar);
   sendBtn.addEventListener('click', () => {
     if (sending) {
@@ -1602,9 +2602,70 @@
     }
     sendMessage();
   });
-  modelSelect.addEventListener('change', syncCurrentSession);
-  systemInput?.addEventListener('change', syncCurrentSession);
+  modelSelect.addEventListener('change', () => {
+    syncCurrentSession();
+    syncSearchControls();
+  });
+  if (systemInput) systemInput.addEventListener('change', syncCurrentSession);
   uploadBtn.addEventListener('click', () => fileInput.click());
+  if (webSearchBtn) {
+    webSearchBtn.addEventListener('click', () => {
+      if (currentModelCapability() !== 'chat') return;
+      searchSettings.enabled = !searchSettings.enabled;
+      persistSearchSettings();
+      syncSearchControls();
+    });
+  }
+  if (webSearchPreset) {
+    webSearchPreset.addEventListener('change', () => {
+      searchSettings.preset = webSearchPreset.value === 'deeper' ? 'deeper' : 'default';
+      persistSearchSettings();
+      syncSearchControls();
+    });
+  }
+  if (mcpBtn) mcpBtn.addEventListener('click', openMcpModal);
+  if (mcpCloseBtn) mcpCloseBtn.addEventListener('click', closeMcpModal);
+  if (mcpModal) {
+    mcpModal.addEventListener('click', (event) => {
+      if (event.target === mcpModal) closeMcpModal();
+    });
+  }
+  if (mcpEnabled) {
+    mcpEnabled.addEventListener('change', () => {
+      mcpSettings.enabled = Boolean(mcpEnabled.checked);
+      persistMcpSettings();
+      syncMcpControls();
+    });
+  }
+  if (mcpAuto) {
+    mcpAuto.addEventListener('change', () => {
+      mcpSettings.auto = Boolean(mcpAuto.checked);
+      persistMcpSettings();
+      renderMcpServers();
+      syncMcpControls();
+    });
+  }
+  if (mcpToolChoice) {
+    mcpToolChoice.addEventListener('change', () => {
+      mcpSettings.toolChoice = mcpToolChoice.value || 'auto';
+      persistMcpSettings();
+      syncMcpControls();
+    });
+  }
+  if (mcpRefreshBtn) {
+    mcpRefreshBtn.addEventListener('click', () => {
+      loadMcpServers().catch((error) => toast(error.message || String(error), 'error'));
+    });
+  }
+  if (mcpDiscoverToolsBtn) {
+    mcpDiscoverToolsBtn.addEventListener('click', () => {
+      loadMcpTools().catch((error) => toast(error.message || String(error), 'error'));
+    });
+  }
+  if (mcpJsonImportBtn) mcpJsonImportBtn.addEventListener('click', importMcpServersFromJson);
+  if (mcpResetFormBtn) mcpResetFormBtn.addEventListener('click', () => resetMcpForm(null));
+  if (mcpSaveBtn) mcpSaveBtn.addEventListener('click', saveMcpServer);
+  if (mcpDeleteBtn) mcpDeleteBtn.addEventListener('click', deleteMcpServer);
   fileInput.addEventListener('change', async () => {
     try {
       pendingFiles = await preparePendingFiles(fileInput.files || []);

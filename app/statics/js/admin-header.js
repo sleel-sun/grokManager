@@ -10,8 +10,8 @@ window.renderAdminHeader = async function renderAdminHeader() {
       return 'v1';
     }
   })();
-  const HEADER_HTML_CACHE_KEY = `grokManager.admin_header_html.${scriptVersion}`;
-  const META_VERSION_CACHE_KEY = `grokManager.meta_version.${scriptVersion}`;
+  const HEADER_HTML_CACHE_KEY = `grokmanager.admin_header_html.${scriptVersion}`;
+  const META_VERSION_CACHE_KEY = `grokmanager.meta_version.${scriptVersion}`;
   let appVersion = '';
   let updateInfo = null;
   let updateStatus = 'idle';
@@ -110,45 +110,29 @@ window.renderAdminHeader = async function renderAdminHeader() {
     }
   };
 
+  const removeRepositoryMeta = () => {
+    mount.querySelector('#hd-user')?.remove();
+    mount.querySelector('#hd-version')?.remove();
+
+    const brandLink = mount.querySelector('.admin-brand-link');
+    if (!brandLink) return;
+    const replacement = document.createElement('span');
+    replacement.className = 'admin-brand-link';
+    const brand = document.createElement('span');
+    brand.className = 'admin-brand';
+    brand.textContent = 'grokManager';
+    replacement.appendChild(brand);
+    brandLink.replaceWith(replacement);
+  };
+
   const loadVersion = async () => {
-    const cachedVersion = window.__grok2apiMetaVersion || readSessionCache(META_VERSION_CACHE_KEY);
-    if (cachedVersion) {
-      appVersion = String(cachedVersion).trim();
-      window.__grok2apiMetaVersion = appVersion;
-      return;
-    }
-    try {
-      const res = await fetch('/meta');
-      if (!res.ok) throw new Error('meta unavailable');
-      const data = await res.json();
-      appVersion = String(data?.version || '').trim();
-      window.__grok2apiMetaVersion = appVersion;
-      writeSessionCache(META_VERSION_CACHE_KEY, appVersion);
-    } catch {
-      appVersion = '';
-    }
+    appVersion = '';
   };
 
   const refreshUpdate = async (force = false) => {
-    if (updatePromise) return updatePromise;
-    if (force) updateInfo = null;
-    updateStatus = 'loading';
-    updatePromise = (async () => {
-      try {
-        const path = force ? '/meta/update?force=true' : '/meta/update';
-        const res = await fetch(path, { cache: 'no-store' });
-        if (!res.ok) throw new Error('update unavailable');
-        const data = await res.json();
-        updateInfo = data && typeof data === 'object' ? data : null;
-        updateStatus = 'ready';
-      } catch {
-        updateInfo = null;
-        updateStatus = 'error';
-      }
-    })().finally(() => {
-      updatePromise = null;
-    });
-    return updatePromise;
+    updateInfo = null;
+    updateStatus = 'idle';
+    updatePromise = null;
   };
 
   const text = (key, fallback, params) => {
@@ -530,48 +514,19 @@ window.renderAdminHeader = async function renderAdminHeader() {
   };
 
   const applyVersion = () => {
-    const right = mount.querySelector('.admin-header-right');
-    if (!right) return;
-    let node = mount.querySelector('#hd-version');
-    if (!appVersion) {
-      node?.remove();
-      return;
-    }
-    if (!node) {
-      node = document.createElement('span');
-      node.id = 'hd-version';
-      node.className = 'admin-header-version';
-      right.insertBefore(node, right.firstChild);
-    }
-    const value = `v${appVersion}`;
-    node.textContent = value;
-    node.title = value;
-    node.classList.toggle('has-update', Boolean(updateInfo?.update_available));
-    node.setAttribute('role', 'button');
-    node.setAttribute('tabindex', '0');
-    node.onclick = () => {
-      void openVersionModal();
-    };
-    node.onkeydown = (event) => {
-      if (event.key === 'Enter' || event.key === ' ') {
-        event.preventDefault();
-        void openVersionModal();
-      }
-    };
+    mount.querySelector('#hd-version')?.remove();
   };
 
-  await loadVersion();
-
   try {
-    const cachedHtml = window.__grok2apiAdminHeaderHtml || readSessionCache(HEADER_HTML_CACHE_KEY);
+    const cachedHtml = window.__grokmanagerAdminHeaderHtml || readSessionCache(HEADER_HTML_CACHE_KEY);
     if (cachedHtml) {
       mount.innerHTML = cachedHtml;
     } else {
-      const res = await fetch('/static/admin/header.html');
+      const res = await fetch(`/static/admin/header.html?v=${encodeURIComponent(scriptVersion)}`);
       if (!res.ok) throw new Error('header unavailable');
       const html = await res.text();
       mount.innerHTML = html;
-      window.__grok2apiAdminHeaderHtml = html;
+      window.__grokmanagerAdminHeaderHtml = html;
       writeSessionCache(HEADER_HTML_CACHE_KEY, html);
     }
   } catch {
@@ -579,10 +534,9 @@ window.renderAdminHeader = async function renderAdminHeader() {
       <header class="admin-header">
         <div class="admin-header-inner">
           <div class="admin-brand-wrap">
-            <a href="https://github.com/sleel-sun/grokManager" target="_blank" rel="noopener" class="admin-brand-link">
+            <span class="admin-brand-link">
               <span class="admin-brand">grokManager</span>
-            </a>
-            <a href="https://github.com/sleel-sun/grokManager" target="_blank" rel="noopener" class="admin-username" id="hd-user">sleel-sun/grokManager</a>
+            </span>
           </div>
           <nav class="admin-nav">
             <a href="/admin/account" class="admin-nav-link" data-nav="/admin/account" data-i18n="header.account">账户管理</a>
@@ -636,6 +590,8 @@ window.renderAdminHeader = async function renderAdminHeader() {
       </header>`;
   }
 
+  removeRepositoryMeta();
+
   const active = mount.dataset.active || location.pathname;
   mount.querySelectorAll('[data-nav]').forEach((link) => {
     link.classList.toggle('active', link.dataset.nav === active);
@@ -643,19 +599,5 @@ window.renderAdminHeader = async function renderAdminHeader() {
 
   const syncLanguageMenu = initLanguageMenu();
   applyHeaderI18n();
-  applyVersion();
   syncLanguageMenu?.();
-
-  const versionModal = ensureVersionModal();
-  versionModal.querySelector('#admin-version-modal-refresh')?.addEventListener('click', async () => {
-    renderVersionModal(versionModal);
-    try {
-      await refreshUpdate(true);
-    } finally {
-      applyVersion();
-      if (versionModal.classList.contains('open')) {
-        renderVersionModal(versionModal);
-      }
-    }
-  });
 };

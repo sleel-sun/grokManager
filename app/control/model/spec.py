@@ -22,6 +22,9 @@ class ModelSpec:
                     pools first (hard priority, not soft preference).
     ``upstream_profile`` selects the reverse endpoint/protocol family.
     ``upstream_model`` overrides the model string sent to that upstream.
+    ``console_fixed_effort`` forces ``reasoning.effort`` for Console Responses.
+    ``console_default_effort`` uses caller effort when provided, otherwise
+                    applies this default; explicit ``none`` disables it.
     """
 
     model_name: str
@@ -33,6 +36,8 @@ class ModelSpec:
     prefer_best: bool = False
     upstream_profile: str = "grok_web"
     upstream_model: str | None = None
+    console_fixed_effort: str | None = None
+    console_default_effort: str | None = None
 
     # --- convenience predicates ---
 
@@ -58,6 +63,18 @@ class ModelSpec:
     def uses_console_responses(self) -> bool:
         """Return whether this model should call console.x.ai Responses."""
         return self.upstream_profile == "console_responses"
+
+    def console_reasoning_effort(self, requested: str | None = None) -> str | None:
+        """Resolve the Console Responses reasoning effort for this model."""
+        if self.console_fixed_effort:
+            return self.console_fixed_effort
+        if not self.console_default_effort:
+            return None
+
+        normalized = (requested or "").strip().lower()
+        if normalized == "none":
+            return None
+        return normalized or self.console_default_effort
 
     def pool_name(self) -> str:
         """Return the canonical pool string for this tier."""
@@ -86,12 +103,15 @@ class ModelSpec:
           HEAVY tier  → heavy only
 
         Reversed (prefer_best=True):
-          non-HEAVY   → try heavy first, then super, then basic
+          BASIC tier  → try heavy first, then super, then basic
+          SUPER tier  → try heavy first, then super
           HEAVY tier  → heavy only
         """
         if self.prefer_best:
             if self.tier == Tier.HEAVY:
                 return (2,)  # heavy only
+            if self.tier == Tier.SUPER:
+                return (2, 1)  # heavy, super
             return (2, 1, 0)  # heavy, super, basic
         if self.tier == Tier.BASIC:
             return (0, 1, 2)  # basic, super, heavy

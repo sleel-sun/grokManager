@@ -5,11 +5,12 @@ from __future__ import annotations
 import asyncio
 import importlib.util
 import json
+import multiprocessing as mp
 import os
 import re
 import time
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Callable, Literal
 
 from fastapi import APIRouter, Request
 from pydantic import BaseModel, Field, field_validator
@@ -30,12 +31,32 @@ _ENV_KEYS = (
     "MAINTAINER_NO_SANDBOX",
     "MAINTAINER_DISABLE_DEV_SHM",
     "MAINTAINER_WINDOW_SIZE",
+    "MAINTAINER_CHROME_ARGS",
+    "MAINTAINER_TURNSTILE_MANUAL_WAIT_SEC",
+    "MAINTAINER_TURNSTILE_SOLVER_PROVIDER",
+    "MAINTAINER_TURNSTILE_SOLVER_API_KEY",
+    "MAINTAINER_TURNSTILE_SOLVER_TIMEOUT_SEC",
+    "MAINTAINER_TURNSTILE_SOLVER_POLL_SEC",
 )
-_SECRET_KEYS = {"email_admin_password", "api_token", "admin_password", "token"}
+_SECRET_KEYS = {
+    "email_admin_password",
+    "api_token",
+    "admin_password",
+    "token",
+    "turnstile_solver_api_key",
+}
 
 
 class MaintainerRunRequest(BaseModel):
-    count: int = Field(default=1, ge=0)
+    # ``count`` and ``workers`` deliberately have NO upper bound. The historical
+    # caps (count<=100, workers<=8) silently clamped values that exceeded them,
+    # so a user submitting workers=10 saw only 8 worker windows pop up and read
+    # that as "the parallelism setting did not take effect". Operators are
+    # responsible for picking values their hardware can sustain; the run-time
+    # already reports the actually spawned count via ``spawned_workers`` so
+    # silent clamping is no longer needed as a guardrail.
+    count: int = Field(default=1, ge=1)
+    workers: int = Field(default=1, ge=1)
     email_worker_domain: str = Field(min_length=1, max_length=253)
     email_domains: list[str] = Field(min_length=1, max_length=20)
     email_admin_password: str = Field(default="", max_length=4096)
@@ -45,6 +66,11 @@ class MaintainerRunRequest(BaseModel):
     no_sandbox: bool = False
     disable_dev_shm: bool = False
     window_size: str = Field(default="1440,900", max_length=32)
+    turnstile_manual_wait_sec: int = Field(default=0, ge=0)
+    turnstile_solver_provider: Literal["", "capsolver", "2captcha"] = ""
+    turnstile_solver_api_key: str = Field(default="", max_length=4096)
+    turnstile_solver_timeout_sec: int = Field(default=150, ge=1, le=600)
+    turnstile_solver_poll_sec: int = Field(default=5, ge=1, le=60)
     verify_ssl: bool = True
     extract_numbers: bool = False
 
@@ -84,24 +110,79 @@ class MaintainerRunRequest(BaseModel):
     def _coerce_admin_password(cls, value: Any) -> str:
         return "" if value is None else str(value)
 
+    @field_validator("turnstile_solver_api_key", mode="before")
+    @classmethod
+    def _coerce_turnstile_solver_api_key(cls, value: Any) -> str:
+        return "" if value is None else str(value)
+
 
 _state: dict[str, Any] = {
     "running": False,
+    "paused": False,
     "status": "idle",
     "message": "",
     "started_at": None,
     "finished_at": None,
-    "total_count": 0,
-    "completed_count": 0,
-    "remaining_count": 0,
-    "current_round": 0,
-    "progress_percent": 0,
     "token_count": 0,
     "config_path": "",
     "output_path": "",
+    "workers": 1,
+    "spawned_workers": 0,
+    "per_worker_progress": {},
 }
 _task: asyncio.Task | None = None
 _lock = asyncio.Lock()
+
+
+class _MaintainerController:
+    """Pause/stop signalling shared between request handlers and the worker(s).
+
+    Uses ``multiprocessing.Event`` so the same controller instance can drive
+    both single-thread (``workers=1``) and multi-process (``workers>1``)
+    registration runs. ``pause_event`` is *set* when running and *cleared*
+    when paused — matching :func:`app.maintainer.runner.run_batch_parallel`.
+    """
+
+    def __init__(self) -> None:
+        ctx = mp.get_context("spawn")
+        self._pause_event = ctx.Event()
+        self._pause_event.set()
+        self._stop_event = ctx.Event()
+
+    @property
+    def pause_event(self) -> Any:
+        return self._pause_event
+
+    @property
+    def stop_event(self) -> Any:
+        return self._stop_event
+
+    def is_paused(self) -> bool:
+        return not self._pause_event.is_set()
+
+    def is_stopped(self) -> bool:
+        return self._stop_event.is_set()
+
+    def pause(self) -> None:
+        self._pause_event.clear()
+
+    def resume(self) -> None:
+        self._pause_event.set()
+
+    def stop(self) -> None:
+        self._stop_event.set()
+        # Releasing pause guarantees any worker sleeping in the pause loop
+        # wakes up immediately and observes the stop signal.
+        self._pause_event.set()
+
+    def reset(self) -> None:
+        if not self._pause_event.is_set():
+            self._pause_event.set()
+        if self._stop_event.is_set():
+            self._stop_event.clear()
+
+
+_controller = _MaintainerController()
 
 
 def build_runtime_config(
@@ -125,6 +206,16 @@ def build_runtime_config(
             param="email_admin_password",
         )
 
+    web_conf = (
+        existing_config.get("web", {})
+        if isinstance(existing_config, dict) and isinstance(existing_config.get("web"), dict)
+        else {}
+    )
+    saved_turnstile_solver_api_key = str(web_conf.get("turnstile_solver_api_key") or "")
+    turnstile_solver_api_key = (
+        req.turnstile_solver_api_key or saved_turnstile_solver_api_key
+    )
+
     return {
         "email": {
             "worker_domain": req.email_worker_domain,
@@ -139,15 +230,35 @@ def build_runtime_config(
             "pool": req.pool,
             "verify_ssl": req.verify_ssl,
         },
-        "run": {"count": req.count},
+        "run": {"count": req.count, "workers": req.workers},
         "web": {
             "headless": req.headless,
             "use_xvfb": req.use_xvfb,
             "no_sandbox": req.no_sandbox,
             "disable_dev_shm": req.disable_dev_shm,
             "window_size": req.window_size,
+            "turnstile_manual_wait_sec": req.turnstile_manual_wait_sec,
+            "turnstile_solver_provider": req.turnstile_solver_provider,
+            "turnstile_solver_api_key": turnstile_solver_api_key,
+            "turnstile_solver_timeout_sec": req.turnstile_solver_timeout_sec,
+            "turnstile_solver_poll_sec": req.turnstile_solver_poll_sec,
             "extract_numbers": req.extract_numbers,
         },
+    }
+
+
+def _running_in_container() -> bool:
+    return Path("/.dockerenv").exists()
+
+
+def _default_web_browser_options() -> dict[str, bool]:
+    linux_without_display = os.name == "posix" and not os.getenv("DISPLAY") and Path("/proc").exists()
+    linux_safe = _running_in_container() or linux_without_display
+    return {
+        "headless": os.getenv("MAINTAINER_HEADLESS", "").strip().lower() in {"1", "true", "yes", "on"},
+        "use_xvfb": os.getenv("MAINTAINER_USE_XVFB", "").strip().lower() in {"1", "true", "yes", "on"} or linux_safe,
+        "no_sandbox": os.getenv("MAINTAINER_NO_SANDBOX", "").strip().lower() in {"1", "true", "yes", "on"} or _running_in_container(),
+        "disable_dev_shm": os.getenv("MAINTAINER_DISABLE_DEV_SHM", "").strip().lower() in {"1", "true", "yes", "on"} or _running_in_container(),
     }
 
 
@@ -166,15 +277,46 @@ def build_saved_config_response(payload: dict[str, Any]) -> dict[str, Any]:
     domains = [str(item).strip() for item in domains if str(item or "").strip()]
 
     try:
-        raw_count = run_conf.get("count", 1)
-        count = int(1 if raw_count in (None, "") else raw_count)
+        count = int(run_conf.get("count", 1) or 1)
     except (TypeError, ValueError):
         count = 1
-    count = max(count, 0)
+    count = max(count, 1)
+
+    try:
+        workers = int(run_conf.get("workers", 1) or 1)
+    except (TypeError, ValueError):
+        workers = 1
+    workers = max(workers, 1)
 
     pool = str(api_conf.get("pool", "basic") or "basic").strip().lower()
     if pool not in {"basic", "super", "heavy"}:
         pool = "basic"
+
+    browser_defaults = _default_web_browser_options()
+    try:
+        turnstile_manual_wait_sec = int(web_conf.get("turnstile_manual_wait_sec", 0) or 0)
+    except (TypeError, ValueError):
+        turnstile_manual_wait_sec = 0
+    turnstile_manual_wait_sec = max(turnstile_manual_wait_sec, 0)
+    turnstile_solver_provider = str(
+        web_conf.get("turnstile_solver_provider", "") or ""
+    ).strip().lower()
+    if turnstile_solver_provider not in {"", "capsolver", "2captcha"}:
+        turnstile_solver_provider = ""
+    try:
+        turnstile_solver_timeout_sec = int(
+            web_conf.get("turnstile_solver_timeout_sec", 150) or 150
+        )
+    except (TypeError, ValueError):
+        turnstile_solver_timeout_sec = 150
+    turnstile_solver_timeout_sec = min(max(turnstile_solver_timeout_sec, 1), 600)
+    try:
+        turnstile_solver_poll_sec = int(
+            web_conf.get("turnstile_solver_poll_sec", 5) or 5
+        )
+    except (TypeError, ValueError):
+        turnstile_solver_poll_sec = 5
+    turnstile_solver_poll_sec = min(max(turnstile_solver_poll_sec, 1), 60)
 
     return {
         "email_worker_domain": str(email_conf.get("worker_domain") or ""),
@@ -183,11 +325,17 @@ def build_saved_config_response(payload: dict[str, Any]) -> dict[str, Any]:
         "verify_ssl": bool(email_conf.get("verify_ssl", True)),
         "pool": pool,
         "count": count,
-        "headless": bool(web_conf.get("headless", False)),
-        "use_xvfb": bool(web_conf.get("use_xvfb", False)),
-        "no_sandbox": bool(web_conf.get("no_sandbox", False)),
-        "disable_dev_shm": bool(web_conf.get("disable_dev_shm", False)),
+        "workers": workers,
+        "headless": bool(web_conf.get("headless", browser_defaults["headless"])),
+        "use_xvfb": bool(web_conf.get("use_xvfb", browser_defaults["use_xvfb"])),
+        "no_sandbox": bool(web_conf.get("no_sandbox", browser_defaults["no_sandbox"])),
+        "disable_dev_shm": bool(web_conf.get("disable_dev_shm", browser_defaults["disable_dev_shm"])),
         "window_size": str(web_conf.get("window_size") or "1440,900"),
+        "turnstile_manual_wait_sec": turnstile_manual_wait_sec,
+        "turnstile_solver_provider": turnstile_solver_provider,
+        "has_turnstile_solver_api_key": bool(web_conf.get("turnstile_solver_api_key")),
+        "turnstile_solver_timeout_sec": turnstile_solver_timeout_sec,
+        "turnstile_solver_poll_sec": turnstile_solver_poll_sec,
         "extract_numbers": bool(web_conf.get("extract_numbers", False)),
     }
 
@@ -200,50 +348,27 @@ def redact_state(state: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def build_progress_fields(
+def build_completion_status(
+    tokens: list[str],
     *,
-    total_count: int,
-    completed_count: int = 0,
-    token_count: int = 0,
-    current_round: int = 0,
-) -> dict[str, int]:
-    """Normalize batch progress fields for status responses."""
-    total = max(0, int(total_count or 0))
-    completed = max(0, int(completed_count or 0))
-    if total:
-        completed = min(completed, total)
-    remaining = max(total - completed, 0) if total else 0
-    current = max(0, int(current_round or 0))
-    if total:
-        current = min(current, total)
-    percent = int((completed / total) * 100) if total else 0
-    return {
-        "total_count": total,
-        "completed_count": completed,
-        "remaining_count": remaining,
-        "current_round": current,
-        "progress_percent": percent,
-        "token_count": max(0, int(token_count or 0)),
-    }
+    stopped: bool,
+    progress: dict[str, Any] | None = None,
+) -> tuple[str, str]:
+    """Build the final UI status after a maintainer run exits."""
+    token_count = len(tokens)
+    if stopped:
+        return "stopped", f"注册任务已停止，已采集 {token_count} 个 token"
 
+    if token_count:
+        return "completed", f"注册任务完成，采集 {token_count} 个 token"
 
-def _progress_message(event: dict[str, Any], progress: dict[str, int]) -> str:
-    total = progress["total_count"]
-    completed = progress["completed_count"]
-    remaining = progress["remaining_count"]
-    current = progress["current_round"]
-    token_count = progress["token_count"]
-    name = str(event.get("event") or "")
-    total_label = str(total) if total else "?"
-    if name == "round_started":
-        return f"正在注册第 {current}/{total_label} 个，已完成 {completed} 个，剩余 {remaining} 个"
-    if name == "round_finished":
-        if event.get("success"):
-            return f"第 {current}/{total_label} 个注册完成，已完成 {completed} 个，剩余 {remaining} 个，已采集 {token_count} 个 token"
-        return f"第 {current}/{total_label} 个注册失败，已处理 {completed} 个，剩余 {remaining} 个，已采集 {token_count} 个 token"
-    if name == "batch_finished":
-        return f"注册任务收尾中，已处理 {completed} 个，剩余 {remaining} 个，已采集 {token_count} 个 token"
-    return f"注册任务已启动，共 {total_label} 个"
+    errors = [
+        str(item.get("last_error", "")).strip()
+        for item in (progress or {}).values()
+        if isinstance(item, dict) and str(item.get("last_error", "")).strip()
+    ]
+    detail = f"，最后错误: {errors[-1]}" if errors else "，请查看 maintainer 日志"
+    return "failed", f"注册任务未采集到 token{detail}"
 
 
 def _maintainer_available() -> bool:
@@ -289,10 +414,25 @@ def _output_path() -> Path:
 
 
 def _latest_log_file() -> Path | None:
+    """Pick the most relevant run log for the UI's log tail.
+
+    Prefers the latest parallel-orchestrator log (``run_parallel_*.log``) if
+    one was touched within the last 10 minutes — that file records each
+    worker's spawn pid and completion so operators can immediately confirm
+    true concurrency. Falls back to the most recently modified ``run_*.log``
+    otherwise (single-worker runs).
+    """
     directory = log_path("maintainer")
     if not directory.exists():
         return None
-    files = [path for path in directory.glob("run_*.log") if path.is_file()]
+    files = [path for path in directory.glob("run*.log") if path.is_file()]
+    if not files:
+        return None
+    parallel = [p for p in files if p.name.startswith("run_parallel_")]
+    if parallel:
+        latest_parallel = max(parallel, key=lambda p: p.stat().st_mtime)
+        if time.time() - latest_parallel.stat().st_mtime < 600:
+            return latest_parallel
     return max(files, key=lambda path: path.stat().st_mtime, default=None)
 
 
@@ -307,15 +447,35 @@ def _log_tail(line_count: int = 80) -> list[str]:
 
 
 def _env_for_request(req: MaintainerRunRequest, config_path: Path) -> dict[str, str]:
+    # 无 DISPLAY 且未启用 Xvfb 时自动 headless；启用 Xvfb 时允许有界面浏览器跑在虚拟显示器里。
+    _no_display = not os.environ.get("DISPLAY") and os.name != "nt"
+    _headless = req.headless or (_no_display and not req.use_xvfb)
+    _no_sandbox = req.no_sandbox or (os.name != "nt")
+    _disable_dev_shm = req.disable_dev_shm or (os.name != "nt")
     env = {
         "GROK_MAINTAINER_CONFIG": str(config_path),
-        "MAINTAINER_HEADLESS": "true" if req.headless else "false",
+        "MAINTAINER_HEADLESS": "true" if _headless else "false",
         "MAINTAINER_USE_XVFB": "true" if req.use_xvfb else "false",
-        "MAINTAINER_NO_SANDBOX": "true" if req.no_sandbox else "false",
-        "MAINTAINER_DISABLE_DEV_SHM": "true" if req.disable_dev_shm else "false",
+        "MAINTAINER_NO_SANDBOX": "true" if _no_sandbox else "false",
+        "MAINTAINER_DISABLE_DEV_SHM": "true" if _disable_dev_shm else "false",
     }
     if req.window_size:
         env["MAINTAINER_WINDOW_SIZE"] = req.window_size
+    env["MAINTAINER_TURNSTILE_MANUAL_WAIT_SEC"] = str(req.turnstile_manual_wait_sec)
+    if req.turnstile_solver_provider:
+        env["MAINTAINER_TURNSTILE_SOLVER_PROVIDER"] = req.turnstile_solver_provider
+    if req.turnstile_solver_api_key:
+        env["MAINTAINER_TURNSTILE_SOLVER_API_KEY"] = req.turnstile_solver_api_key
+    else:
+        saved_web = _read_runtime_config().get("web", {})
+        if isinstance(saved_web, dict) and saved_web.get("turnstile_solver_api_key"):
+            env["MAINTAINER_TURNSTILE_SOLVER_API_KEY"] = str(
+                saved_web["turnstile_solver_api_key"]
+            )
+    env["MAINTAINER_TURNSTILE_SOLVER_TIMEOUT_SEC"] = str(
+        req.turnstile_solver_timeout_sec
+    )
+    env["MAINTAINER_TURNSTILE_SOLVER_POLL_SEC"] = str(req.turnstile_solver_poll_sec)
     return env
 
 
@@ -323,20 +483,29 @@ def _run_sync(
     config_path: Path,
     output_path: Path,
     count: int,
+    workers: int,
     extract_numbers: bool,
     env: dict[str, str],
-    progress_callback: Any = None,
+    pause_event: Any,
+    stop_event: Any,
+    spawned_workers_callback: Callable[[int], None] | None = None,
+    progress_callback: Callable[[int, str, dict[str, Any]], None] | None = None,
 ) -> list[str]:
     previous = {key: os.environ.get(key) for key in _ENV_KEYS}
     try:
         os.environ.update(env)
-        from app.maintainer.runner import run_batch
+        from app.maintainer.runner import run_batch_parallel
 
-        return run_batch(
+        return run_batch_parallel(
             config_path=str(config_path),
             count=count,
+            workers=workers,
             output=str(output_path),
             extract_numbers=extract_numbers,
+            pause_event=pause_event,
+            stop_event=stop_event,
+            env_overrides=env if workers > 1 else None,
+            spawned_workers_callback=spawned_workers_callback,
             progress_callback=progress_callback,
         )
     finally:
@@ -352,20 +521,51 @@ async def _run_background(
     config_path: Path,
     output_path: Path,
     env: dict[str, str],
+    controller: _MaintainerController,
 ) -> None:
-    def _on_progress(event: dict[str, Any]) -> None:
-        progress = build_progress_fields(
-            total_count=int(event.get("total_count") or req.count),
-            completed_count=int(event.get("completed_count") or 0),
-            token_count=int(event.get("token_count") or 0),
-            current_round=int(event.get("current_round") or 0),
-        )
-        _state.update(
-            {
-                **progress,
-                "message": _progress_message(event, progress),
-            }
-        )
+    def _record_spawned(n: int) -> None:
+        _state["spawned_workers"] = int(n)
+
+    def _record_progress(worker_id: int, event: str, payload: dict[str, Any]) -> None:
+        """Update per-worker status the UI polls via /maintainer/status.
+
+        Keeps a compact snapshot for each worker:
+
+        - ``last_event``: most recent event name (``round_start``, ``round_done`` …)
+        - ``last_round``: most recent round number observed for that worker
+        - ``rounds_done``: count of successfully completed rounds
+        - ``last_sso_tail``: last 4 chars of the most recent successful SSO
+        - ``last_elapsed_s``: duration of the most recent round
+        - ``last_event_at``: wall-clock ms when the event was observed
+
+        The orchestrator thread invokes this on the worker callback path, so
+        keep the work cheap and side-effect-free.
+        """
+        snap = dict(_state.get("per_worker_progress") or {})
+        worker_key = str(int(worker_id))
+        entry = dict(snap.get(worker_key) or {})
+        entry["last_event"] = event
+        entry["last_event_at"] = int(time.time() * 1000)
+        if "round" in payload:
+            entry["last_round"] = int(payload["round"])
+        if event == "round_done":
+            entry["rounds_done"] = int(entry.get("rounds_done", 0)) + 1
+            if "sso_tail" in payload:
+                entry["last_sso_tail"] = str(payload["sso_tail"])
+            if "elapsed_s" in payload:
+                entry["last_elapsed_s"] = float(payload["elapsed_s"])
+        if event in {"round_failed", "worker_failed"} and "error" in payload:
+            entry["last_error"] = str(payload["error"])[:200]
+            entry["failed_rounds"] = int(entry.get("failed_rounds", 0)) + 1
+        if event == "finished":
+            if "token_count" in payload:
+                entry["finished_token_count"] = int(payload["token_count"])
+            if "failed_rounds" in payload:
+                entry["failed_rounds"] = int(payload["failed_rounds"])
+            if payload.get("last_error"):
+                entry["last_error"] = str(payload["last_error"])[:200]
+        snap[worker_key] = entry
+        _state["per_worker_progress"] = snap
 
     try:
         tokens = await asyncio.to_thread(
@@ -373,23 +573,28 @@ async def _run_background(
             config_path,
             output_path,
             req.count,
+            req.workers,
             req.extract_numbers,
             env,
-            _on_progress,
+            controller.pause_event,
+            controller.stop_event,
+            _record_spawned,
+            _record_progress,
         )
-        progress = build_progress_fields(
-            total_count=req.count,
-            completed_count=req.count,
-            token_count=len(tokens),
-            current_round=req.count,
+        stopped = controller.is_stopped()
+        status, message = build_completion_status(
+            tokens,
+            stopped=stopped,
+            progress=_state.get("per_worker_progress") or {},
         )
         _state.update(
             {
                 "running": False,
-                "status": "completed",
-                "message": f"注册任务完成，采集 {len(tokens)} 个 token",
+                "paused": False,
+                "status": status,
+                "message": message,
                 "finished_at": int(time.time()),
-                **progress,
+                "token_count": len(tokens),
             }
         )
     except Exception as exc:
@@ -397,11 +602,14 @@ async def _run_background(
         _state.update(
             {
                 "running": False,
+                "paused": False,
                 "status": "failed",
                 "message": f"{type(exc).__name__}: {exc}",
                 "finished_at": int(time.time()),
             }
         )
+    finally:
+        controller.reset()
 
 
 @router.get("/status")
@@ -409,6 +617,8 @@ async def maintainer_status():
     state = redact_state(dict(_state))
     state["available"] = _maintainer_available()
     state["log_tail"] = _log_tail()
+    state["paused"] = bool(state.get("paused")) or _controller.is_paused()
+    state["stop_requested"] = _controller.is_stopped()
     return state
 
 
@@ -470,34 +680,80 @@ async def maintainer_run(req: MaintainerRunRequest, request: Request):
         output_path = _output_path()
         env = _env_for_request(req, config_path)
 
+        _controller.reset()
+
         _state.update(
             {
                 "running": True,
+                "paused": False,
                 "status": "running",
                 "message": "注册任务已启动",
                 "started_at": int(time.time()),
                 "finished_at": None,
-                **build_progress_fields(
-                    total_count=req.count,
-                    completed_count=0,
-                    token_count=0,
-                    current_round=0,
-                ),
                 "token_count": 0,
                 "config_path": str(config_path),
                 "output_path": str(output_path),
+                "workers": req.workers,
+                "spawned_workers": 0,
+                "per_worker_progress": {},
             }
         )
-        _task = asyncio.create_task(_run_background(req, config_path, output_path, env))
+        _task = asyncio.create_task(
+            _run_background(req, config_path, output_path, env, _controller)
+        )
 
+    return redact_state(dict(_state))
+
+
+def _require_running() -> None:
+    if _task is None or _task.done():
+        raise AppError(
+            "Maintainer task is not running",
+            kind=ErrorKind.VALIDATION,
+            code="maintainer_not_running",
+            status=409,
+        )
+
+
+@router.post("/pause")
+async def maintainer_pause():
+    async with _lock:
+        _require_running()
+        _controller.pause()
+        _state["paused"] = True
+        _state["status"] = "paused"
+        _state["message"] = "注册任务已暂停，当前轮结束后不会启动新轮"
+    return redact_state(dict(_state))
+
+
+@router.post("/resume")
+async def maintainer_resume():
+    async with _lock:
+        _require_running()
+        _controller.resume()
+        _state["paused"] = False
+        _state["status"] = "running"
+        _state["message"] = "注册任务已恢复"
+    return redact_state(dict(_state))
+
+
+@router.post("/stop")
+async def maintainer_stop():
+    async with _lock:
+        _require_running()
+        _controller.stop()
+        _state["paused"] = False
+        _state["status"] = "stopping"
+        _state["message"] = "已发出停止信号，等待当前轮结束后退出"
     return redact_state(dict(_state))
 
 
 __all__ = [
     "MaintainerRunRequest",
-    "build_progress_fields",
+    "build_completion_status",
     "build_saved_config_response",
     "build_runtime_config",
     "redact_state",
     "router",
+    "_MaintainerController",
 ]

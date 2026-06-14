@@ -7,7 +7,7 @@
   <link rel="icon" href="/favicon.ico?v={{APP_VERSION}}">
   <link href="https://cdn.jsdelivr.net/npm/geist@1.0.0/dist/fonts/geist-sans/style.css" rel="stylesheet">
   <link href="https://cdn.jsdelivr.net/npm/geist@1.0.0/dist/fonts/geist-mono/style.css" rel="stylesheet">
-  <link href="/static/css/app.css?v={{APP_VERSION}}" rel="stylesheet">
+  <link href="/static/css/app.css?v={{APP_VERSION}}-webtools2" rel="stylesheet">
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
 </head>
 <body class="webui-page">
@@ -55,6 +55,14 @@
             <input id="fileInput" type="file" hidden multiple>
             <textarea id="promptInput" class="input webui-textarea" placeholder="输入你的问题，Enter 发送，Shift+Enter 换行" data-i18n-placeholder="webui.chat.promptPlaceholder"></textarea>
             <div class="webui-sendbar">
+              <button id="webSearchBtn" class="webui-search-btn" type="button" data-i18n-title="webui.chat.search.manage" data-i18n-aria-label="webui.chat.search.manage" aria-pressed="false">联网</button>
+              <label class="webui-search-mode" data-i18n-title="webui.chat.search.mode">
+                <select id="webSearchPreset" class="input" data-i18n-aria-label="webui.chat.search.mode">
+                  <option value="default" data-i18n="webui.chat.search.default">标准</option>
+                  <option value="deeper" data-i18n="webui.chat.search.deeper">深入</option>
+                </select>
+              </label>
+              <button id="mcpBtn" class="webui-mcp-btn" type="button" data-i18n-title="webui.chat.mcp.manage" data-i18n-aria-label="webui.chat.mcp.manage">MCP</button>
               <label class="webui-sendbar-model">
                 <select id="modelSelect" class="input" data-i18n-aria-label="webui.chat.modelLabel"></select>
               </label>
@@ -80,13 +88,114 @@
     </div>
   </div>
 
+  <div id="mcpModal" class="modal-overlay" aria-hidden="true">
+    <div class="modal webui-mcp-modal">
+      <div class="webui-mcp-head">
+        <div>
+          <div class="modal-title" data-i18n="webui.chat.mcp.title">MCP Plugins</div>
+          <div class="text-xs text-muted" data-i18n="webui.chat.mcp.subtitle">Install stdio MCP plugins and choose which tools AI may call.</div>
+        </div>
+        <button id="mcpCloseBtn" class="msg-action-btn" type="button" data-i18n-title="webui.chat.close" data-i18n-aria-label="webui.chat.close">
+          <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 7l10 10M17 7 7 17" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+        </button>
+      </div>
+
+      <section class="webui-mcp-switches">
+        <label class="webui-mcp-switch">
+          <input id="mcpEnabled" type="checkbox">
+          <span data-i18n="webui.chat.mcp.enable">Enable MCP for chat</span>
+        </label>
+        <label class="webui-mcp-switch">
+          <input id="mcpAuto" type="checkbox">
+          <span data-i18n="webui.chat.mcp.auto">Auto use all enabled plugins</span>
+        </label>
+        <label class="webui-mcp-choice">
+          <span data-i18n="webui.chat.mcp.toolChoice">Call mode</span>
+          <select id="mcpToolChoice" class="input">
+            <option value="auto" data-i18n="webui.chat.mcp.choiceAuto">Auto</option>
+            <option value="required" data-i18n="webui.chat.mcp.choiceRequired">Required once</option>
+            <option value="none" data-i18n="webui.chat.mcp.choiceNone">Disabled</option>
+          </select>
+        </label>
+      </section>
+
+      <section class="webui-mcp-section">
+        <div class="webui-mcp-section-head">
+          <strong data-i18n="webui.chat.mcp.installed">Installed Plugins</strong>
+          <div class="webui-mcp-section-actions">
+            <button id="mcpDiscoverToolsBtn" class="btn btn-ghost" type="button" data-i18n="webui.chat.mcp.discoverTools">Discover tools</button>
+            <button id="mcpRefreshBtn" class="btn btn-ghost" type="button" data-i18n="webui.chat.mcp.refresh">Refresh</button>
+          </div>
+        </div>
+        <div id="mcpStatus" class="webui-mcp-status"></div>
+        <div id="mcpServerList" class="webui-mcp-list"></div>
+      </section>
+
+      <section class="webui-mcp-section">
+        <div class="webui-mcp-section-head">
+          <div>
+            <strong data-i18n="webui.chat.mcp.importTitle">Import JSON</strong>
+            <div class="text-xs text-muted" data-i18n="webui.chat.mcp.importDesc">Paste Claude/Cursor style mcpServers JSON to import automatically.</div>
+          </div>
+          <button id="mcpJsonImportBtn" class="btn btn-primary" type="button" data-i18n="webui.chat.mcp.importButton">Import</button>
+        </div>
+        <textarea id="mcpJsonInput" class="input webui-mcp-textarea webui-mcp-json-input" spellcheck="false" placeholder='{"mcpServers":{"filesystem":{"command":"npx","args":["-y","@modelcontextprotocol/server-filesystem","/tmp"]}}}'></textarea>
+        <label class="webui-mcp-switch webui-mcp-import-option">
+          <input id="mcpJsonReplaceInput" type="checkbox">
+          <span data-i18n="webui.chat.mcp.importReplace">Replace existing MCP plugin configs</span>
+        </label>
+      </section>
+
+      <section class="webui-mcp-section">
+        <div class="webui-mcp-section-head">
+          <strong id="mcpFormTitle" data-i18n="webui.chat.mcp.addTitle">Add MCP Plugin</strong>
+          <button id="mcpResetFormBtn" class="btn btn-ghost" type="button" data-i18n="webui.chat.mcp.newConfig">New</button>
+        </div>
+        <div class="webui-mcp-form">
+          <label>
+            <span data-i18n="webui.chat.mcp.name">Name</span>
+            <input id="mcpNameInput" class="input" type="text" placeholder="Filesystem">
+          </label>
+          <label>
+            <span data-i18n="webui.chat.mcp.command">Command</span>
+            <input id="mcpCommandInput" class="input" type="text" placeholder="npx">
+          </label>
+          <label>
+            <span data-i18n="webui.chat.mcp.args">Arguments</span>
+            <textarea id="mcpArgsInput" class="input webui-mcp-textarea" placeholder="-y&#10;@modelcontextprotocol/server-filesystem&#10;/tmp"></textarea>
+          </label>
+          <label>
+            <span data-i18n="webui.chat.mcp.env">Environment</span>
+            <textarea id="mcpEnvInput" class="input webui-mcp-textarea" placeholder="KEY=value"></textarea>
+          </label>
+          <label>
+            <span data-i18n="webui.chat.mcp.cwd">Working directory</span>
+            <input id="mcpCwdInput" class="input" type="text" placeholder="/opt/grokManager">
+          </label>
+          <label>
+            <span data-i18n="webui.chat.mcp.timeout">Timeout seconds</span>
+            <input id="mcpTimeoutInput" class="input" type="number" min="1" max="300" step="1" value="30">
+          </label>
+          <label class="webui-mcp-switch">
+            <input id="mcpServerEnabledInput" type="checkbox" checked>
+            <span data-i18n="webui.chat.mcp.serverEnabled">Plugin enabled</span>
+          </label>
+        </div>
+        <div class="modal-footer">
+          <button id="mcpDeleteBtn" type="button" class="btn btn-ghost" data-i18n="webui.chat.mcp.delete" hidden>Delete</button>
+          <button id="mcpSaveBtn" type="button" class="btn btn-primary" data-i18n="webui.chat.mcp.save">Save Plugin</button>
+        </div>
+      </section>
+    </div>
+  </div>
+
   <script src="/static/js/i18n.js?v={{APP_VERSION}}"></script>
-  <script src="/static/js/auth.js?v={{APP_VERSION}}"></script>
+  <script src="/static/js/auth.js?v={{APP_VERSION}}-logoutfix5"></script>
   <script src="/static/js/toast.js?v={{APP_VERSION}}"></script>
   <script src="/static/js/webui-header.js?v={{APP_VERSION}}"></script>
   <script src="/static/js/footer.js?v={{APP_VERSION}}"></script>
   <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>
-  <script src="/static/js/webui/chat.js?v={{APP_VERSION}}"></script>
+  <script src="/static/js/webui/chat.js?v={{APP_VERSION}}-isolate1"></script>
 </body>
 </html>

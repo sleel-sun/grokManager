@@ -11,6 +11,16 @@
   const connectionText = document.getElementById('connectionText');
   const voiceOrb = document.getElementById('voiceOrb');
   const audioRoot = document.getElementById('audioRoot');
+  const audioCaptureDefaults = {
+    autoGainControl: true,
+    echoCancellation: true,
+    noiseSuppression: true,
+  };
+  const roomConnectOptions = {
+    maxRetries: 2,
+    peerConnectionTimeout: 45000,
+    websocketTimeout: 30000,
+  };
 
   let room = null;
   let micEnabled = true;
@@ -305,11 +315,53 @@
     audioElements.clear();
   };
 
+  const stopMediaStream = (stream) => {
+    if (!stream || typeof stream.getTracks !== 'function') return;
+    stream.getTracks().forEach((track) => {
+      try {
+        track.stop();
+      } catch {}
+    });
+  };
+
+  const requestMicrophoneProbe = async () => {
+    if (!navigator.mediaDevices || typeof navigator.mediaDevices.getUserMedia !== 'function') {
+      throw new Error(text(
+        'webui.chatkit.microphoneUnsupported',
+        '当前浏览器或非 HTTPS 页面不能打开麦克风，请使用 HTTPS 或 localhost。',
+      ));
+    }
+    try {
+      return await navigator.mediaDevices.getUserMedia({ audio: audioCaptureDefaults });
+    } catch (error) {
+      const name = error?.name || '';
+      if (name === 'NotAllowedError' || name === 'SecurityError') {
+        throw new Error(text('webui.chatkit.microphoneRequired', '请允许浏览器使用麦克风后再连接语音。'));
+      }
+      throw new Error(text('webui.chatkit.microphoneUnavailable', '无法打开麦克风，请确认浏览器权限或设备占用情况。'));
+    }
+  };
+
+  const readableErrorMessage = (error) => {
+    const message = error && error.message ? error.message : String(error || '');
+    const lower = message.toLowerCase();
+    if (
+      lower.includes('could not establish pc connection')
+      || lower.includes('peerconnection')
+      || lower.includes('ice connection')
+    ) {
+      return text(
+        'webui.chatkit.webrtcConnectionFailed',
+        'LiveKit 已拿到语音 token，但浏览器无法建立 WebRTC 连接。打开 livekit.grok.com 返回 OK 只代表 HTTPS 可达，还需要允许 wss://livekit.grok.com/rtc 以及 WebRTC ICE/TURN 流量。',
+      );
+    }
+    return message || text('webui.chatkit.errorText', '连接没有建立成功，请检查麦克风权限后重试。');
+  };
+
   const getLiveKit = () => window.LiveKitClient || window.LivekitClient || null;
 
   const getAuthHeaders = async () => {
-    const key = await webuiKey.get();
-    return key ? { Authorization: `Bearer ${key}` } : {};
+    return webuiAuthHeaders();
   };
 
   const addRemoteAudioTrack = (track) => {
@@ -348,11 +400,11 @@
     });
 
     currentRoom.on(lk.RoomEvent.Disconnected, () => {
-      teardownSession(false);
+      if (room === currentRoom) void teardownSession(false);
     });
   };
 
-  const teardownSession = async (manual) => {
+  const teardownSession = async (manual, options = {}) => {
     const currentRoom = room;
     room = null;
     try {
@@ -362,7 +414,7 @@
     micEnabled = true;
     outputMuted = false;
     setButtons(false);
-    renderConnectedStatus();
+    if (!options.keepStatus) renderConnectedStatus();
     if (manual && connectionText) {
       connectionText.textContent = text('webui.chatkit.endedText', '语音会话已结束，可以重新开始。');
     }
@@ -383,7 +435,9 @@
       text('webui.chatkit.connectingText', '正在向 Grok Voice 申请会话并连接 LiveKit…'),
     );
 
+    let microphoneProbe = null;
     try {
+      microphoneProbe = await requestMicrophoneProbe();
       const headers = await getAuthHeaders();
       headers['Content-Type'] = 'application/json';
       const res = await fetch(VOICE_ENDPOINT, {
@@ -410,16 +464,12 @@
       const currentRoom = new lk.Room({
         adaptiveStream: true,
         dynacast: true,
-        audioCaptureDefaults: {
-          autoGainControl: true,
-          echoCancellation: true,
-          noiseSuppression: true,
-        },
+        audioCaptureDefaults,
       });
       room = currentRoom;
       bindRoomEvents(lk, currentRoom);
 
-      await currentRoom.connect(payload.url, payload.token);
+      await currentRoom.connect(payload.url, payload.token, roomConnectOptions);
       await currentRoom.localParticipant.setMicrophoneEnabled(true);
 
       micEnabled = true;
@@ -428,15 +478,16 @@
       renderConnectedStatus();
       void syncLocalMicAnalysis(currentRoom);
     } catch (error) {
-      const message = error && error.message ? error.message : String(error);
+      const message = readableErrorMessage(error);
       showToast?.(message, 'error');
       setStatus(
         'is-error',
         text('webui.chatkit.statusError', '连接失败'),
-        text('webui.chatkit.errorText', '连接没有建立成功，请检查麦克风权限后重试。'),
+        message || text('webui.chatkit.errorText', '连接没有建立成功，请检查麦克风权限后重试。'),
       );
-      await teardownSession(false);
+      await teardownSession(false, { keepStatus: true });
     } finally {
+      stopMediaStream(microphoneProbe);
       if (startVoiceBtn && !room) startVoiceBtn.disabled = false;
     }
   };

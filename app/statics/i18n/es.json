@@ -1,7 +1,8 @@
 {
   "common": {
     "invalidKey": "Clave no válida",
-    "connectionFailed": "Error de conexión"
+    "connectionFailed": "Error de conexión",
+    "authStorageFailed": "Verificado, pero no se pudo guardar la sesión; revisa los permisos de almacenamiento del navegador"
   },
   "login": {
     "adminPageTitle": "grokManager - Administración",
@@ -11,7 +12,8 @@
     "continue": "Continuar",
     "webuiPageTitle": "grokManager - WebUI",
     "webuiTitle": "WebUI",
-    "webuiSubtitle": "Introduzca la clave de acceso",
+    "webuiSubtitle": "Introduzca el usuario y la contraseña de acceso",
+    "webuiUsernamePlaceholder": "Usuario (opcional en modo de contraseña única)",
     "webuiPlaceholder": "Clave de acceso",
     "enter": "Entrar",
     "goToAdmin": "Ir al Panel de Administración"
@@ -42,6 +44,15 @@
       "cancel": "Cancelar",
       "confirm": "Confirmar",
       "copySuccess": "Copiado",
+      "preview": "Ver resultado",
+      "previewHide": "Ocultar vista",
+      "previewRefresh": "Actualizar",
+      "previewOpen": "Abrir",
+      "previewCopyUrl": "Copiar URL",
+      "previewUrlCopied": "URL de vista previa copiada",
+      "previewSaveFailed": "No se pudo guardar la URL de vista previa",
+      "previewFrameTitle": "Vista previa del código",
+      "previewOpenFailed": "El navegador bloqueó la ventana de vista previa",
       "renamePrompt": "Renombrar chat",
       "deleteConfirm": "¿Eliminar este chat?",
       "modelLabel": "Modelo",
@@ -92,7 +103,11 @@
       "errorText": "No se pudo completar la conexión. Compruebe el acceso al micrófono e inténtelo de nuevo.",
       "endedText": "La sesión de voz ha finalizado. Puede iniciar otra en cualquier momento.",
       "livekitLoadFailed": "No se pudo cargar el SDK de LiveKit",
-      "invalidToken": "Respuesta de token de voz no válida"
+      "invalidToken": "Respuesta de token de voz no válida",
+      "microphoneUnsupported": "Este navegador o página sin HTTPS no puede abrir el micrófono. Use HTTPS o localhost.",
+      "microphoneRequired": "Permita el acceso al micrófono del navegador antes de conectar la voz.",
+      "microphoneUnavailable": "No se pudo abrir el micrófono. Compruebe el permiso del navegador o si otra aplicación lo está usando.",
+      "webrtcConnectionFailed": "LiveKit devolvió un token de voz, pero el navegador no pudo establecer una conexión WebRTC. Una respuesta OK de livekit.grok.com solo confirma acceso HTTPS; también debe permitirse wss://livekit.grok.com/rtc y el tráfico WebRTC ICE/TURN."
     },
     "masonry": {
       "pageTitle": "grokManager - Masonry",
@@ -121,6 +136,8 @@
       "errors": {
         "enterPrompt": "Introduzca un prompt",
         "requestFailed": "La solicitud falló",
+        "imagePoolUnavailable": "La generación de imágenes Masonry requiere cuentas Super o Heavy. Importe primero cuentas Super/Heavy.",
+        "imageRateLimited": "Las cuentas de imagen Super/Heavy disponibles tienen límite de frecuencia. Espere el restablecimiento de cuota o importe más cuentas Super/Heavy.",
         "initFailed": "La inicialización de la página Masonry falló"
       }
     }
@@ -310,6 +327,15 @@
     "saveBarShort": "Guardar",
     "discardChanges": "Descartar cambios",
     "randomize": "Generar valor",
+    "webuiUsers": {
+      "add": "Agregar usuario",
+      "empty": "No hay usuarios WebUI configurados. El modo de contraseña única sigue activo.",
+      "username": "Usuario",
+      "password": "Contraseña",
+      "displayName": "Nombre visible",
+      "enabled": "Activo",
+      "remove": "Eliminar"
+    },
     "loadFailed": "No se pudo cargar la configuración: {message}",
     "saving": "Guardando cambios...",
     "saveSuccess": "Cambios guardados",
@@ -373,6 +399,7 @@
         "apiKey": { "label": "Clave de acceso API" },
         "webuiEnabled": { "label": "Activar WebUI" },
         "webuiKey": { "label": "Contraseña de acceso WebUI" },
+        "webuiUsers": { "label": "Usuarios WebUI", "desc": "Cuando se configura, WebUI usa usuario + contraseña y aísla por usuario las conversaciones del navegador, la búsqueda y la configuración MCP. Déjelo vacío para mantener el modo de contraseña única." },
         "temporary": { "label": "Sesiones temporales" },
         "memory": { "label": "Memoria de conversación" },
         "stream": { "label": "Streaming predeterminado" },

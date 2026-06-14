@@ -559,6 +559,7 @@
     .q-e { background:#f7f3fb; color:#8d6bbd }
     .q-h { background:#fff4ed; color:#b0632a }
     .q-b { background:#fdf2f7; color:#be3f7f }
+    .q-c { background:#eff8fb; color:#227c91 }
     .q-z { background:#f6f6f6; color:#a0a0a6 }
 
     /* Token monospace */
@@ -625,6 +626,99 @@
       white-space:normal;
       line-height:1.35;
     }
+    #modal-model-permissions {
+      align-items:flex-start;
+      overflow:auto;
+      padding:24px 0;
+    }
+    #modal-model-permissions .modal {
+      width:min(920px,94vw);
+      max-height:min(760px,92dvh);
+      display:grid;
+      grid-template-rows:auto minmax(0,1fr) auto;
+      overflow:hidden;
+    }
+    #modal-model-permissions .dialog-body {
+      min-width:0;
+      min-height:0;
+      overflow:auto;
+      padding-right:2px;
+    }
+    #modal-model-permissions .dialog-label { width:72px }
+    #perm-results {
+      min-width:0;
+      max-width:100%;
+      overflow:hidden;
+    }
+    .model-permission-result {
+      width:100%;
+      max-width:100%;
+      max-height:min(360px,42vh);
+      overflow:auto;
+      border:1px solid var(--border);
+      border-radius:14px;
+      background:#fff;
+      -webkit-overflow-scrolling:touch;
+    }
+    .model-permission-result table {
+      width:100%;
+      min-width:720px;
+      table-layout:fixed;
+      border-collapse:collapse;
+    }
+    .model-permission-result th:nth-child(1),
+    .model-permission-result td:nth-child(1) { width:22% }
+    .model-permission-result th:nth-child(2),
+    .model-permission-result td:nth-child(2) { width:9% }
+    .model-permission-result th:nth-child(3),
+    .model-permission-result td:nth-child(3) { width:14% }
+    .model-permission-result th:nth-child(4),
+    .model-permission-result td:nth-child(4) { width:10% }
+    .model-permission-result th:nth-child(5),
+    .model-permission-result td:nth-child(5) { width:10% }
+    .model-permission-result th:nth-child(6),
+    .model-permission-result td:nth-child(6) { width:14% }
+    .model-permission-result th:nth-child(7),
+    .model-permission-result td:nth-child(7) { width:21% }
+    .model-permission-result th,
+    .model-permission-result td {
+      padding:9px 10px;
+      font-size:12px;
+      white-space:normal;
+      overflow-wrap:anywhere;
+      word-break:break-word;
+      vertical-align:top;
+      border-bottom:1px solid #f1ede7;
+    }
+    .model-permission-result th {
+      white-space:nowrap;
+    }
+    .model-permission-result tr:last-child td { border-bottom:0 }
+    .model-permission-summary {
+      display:flex;
+      align-items:center;
+      gap:6px;
+      flex-wrap:wrap;
+      margin-top:8px;
+    }
+    .perm-badge {
+      display:inline-flex;
+      align-items:center;
+      height:20px;
+      padding:0 8px;
+      border-radius:999px;
+      font-size:11px;
+      font-weight:600;
+      background:#f7f7f7;
+      color:#6d6d6d;
+    }
+    .perm-badge-supported { color:#3e8f69; background:#f2f8f4 }
+    .perm-badge-no-quota,
+    .perm-badge-not-found,
+    .perm-badge-upstream-error { color:#b66a63; background:#fbf3f2 }
+    .perm-badge-no-accounts,
+    .perm-badge-not-routed { color:#b47a3d; background:#fbf5ed }
+    .perm-model-list { min-height:96px }
     .modal { box-shadow:none }
     .dialog-body { display:grid; gap:12px }
     .dialog-help {
@@ -930,6 +1024,9 @@
       <button type="button" onclick="doExport()" id="btn-export" class="toolbar-icon-btn">
         <svg viewBox="0 0 24 24" stroke-width="1.8"><path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M5 21h14"/></svg>
       </button>
+      <button type="button" onclick="openModelPermissionModal()" id="btn-model-permissions" class="toolbar-icon-btn">
+        <svg viewBox="0 0 24 24" stroke-width="1.8"><path d="M12 3 5 6v5c0 4.4 2.8 8.3 7 10 4.2-1.7 7-5.6 7-10V6z"/><path d="M9 12l2 2 4-4"/></svg>
+      </button>
       <button type="button" onclick="batchNSFW()" id="btn-nsfw" class="row-nsfw-btn" style="display:none">
         <svg viewBox="0 0 20 20" aria-hidden="true">
           <circle cx="10" cy="10" r="7.25"/>
@@ -972,6 +1069,7 @@
               <span class="q-pill q-f">F</span>
               <span class="q-pill q-e">E</span>
               <span class="q-pill q-h">H</span>
+              <span class="q-pill q-c">C</span>
             </span>
           </th>
           <th class="table-center" data-i18n="account.colSuccess">成功</th>
@@ -1000,6 +1098,13 @@
         <span class="dialog-label" data-i18n="account.labelType">类型</span>
         <select class="input" id="import-pool" style="flex:1"></select>
       </div>
+      <div class="dialog-field" style="margin-top:12px">
+        <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
+          <input type="checkbox" id="import-auto-nsfw" style="margin:0">
+          <span data-i18n="account.autoNsfwOnImport">导入后自动开启 NSFW</span>
+        </label>
+        <div style="font-size:12px;color:var(--fg-muted);margin-top:4px" data-i18n="account.autoNsfwHint">需要额外时间检测账户状态</div>
+      </div>
     </div>
     <div class="dialog-actions">
       <button onclick="closeModal('modal-import')" class="dialog-btn" data-i18n="account.cancel">取消</button>
@@ -1024,6 +1129,13 @@
       <div class="dialog-field" id="import-file-pool-row">
         <span class="dialog-label" data-i18n="account.labelType">类型</span>
         <select class="input" id="import-file-pool" style="flex:1"></select>
+      </div>
+      <div class="dialog-field" style="margin-top:12px">
+        <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
+          <input type="checkbox" id="import-file-auto-nsfw" style="margin:0">
+          <span data-i18n="account.autoNsfwOnImport">导入后自动开启 NSFW</span>
+        </label>
+        <div style="font-size:12px;color:var(--fg-muted);margin-top:4px" data-i18n="account.autoNsfwHint">需要额外时间检测账户状态</div>
       </div>
     </div>
     <div class="dialog-actions">
@@ -1062,6 +1174,38 @@
     <div class="dialog-body" style="gap:8px">
       <button id="exp-json-btn" class="dialog-btn dialog-btn-primary export-option-btn" data-i18n="account.exportJson">JSON格式（完整导出）</button>
       <button id="exp-txt-btn"  class="dialog-btn export-option-btn" data-i18n="account.exportTxt">TXT格式（仅导出 Token）</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── Model Permission Modal ────────────────────────────────────────────── -->
+<div class="modal-overlay" id="modal-model-permissions">
+  <div class="modal">
+    <div class="modal-title">账号池模型权限检测</div>
+    <div class="dialog-help">按账号池抽样真实请求检测模型权限，会消耗对应模型额度。留空模型列表时检测全部已启用对话模型和生图模型；也可填写模型 ID 精确检测。</div>
+    <div class="dialog-body">
+      <div class="dialog-field">
+        <span class="dialog-label">账号池</span>
+        <select class="input" id="perm-pool" style="flex:1">
+          <option value="">全部账号池</option>
+          <option value="basic">普通池 basic</option>
+          <option value="super">高级池 super</option>
+          <option value="heavy">重型池 heavy</option>
+        </select>
+      </div>
+      <div class="dialog-field">
+        <span class="dialog-label">抽样数量</span>
+        <input class="input" id="perm-sample-size" type="number" min="1" max="20" value="1" style="flex:1">
+      </div>
+      <div>
+        <div class="dialog-help">模型 ID（可选，每行一个）</div>
+        <textarea class="input dialog-textarea perm-model-list" id="perm-models" placeholder="grok-4.3&#10;grok-4.20-0309&#10;grok-imagine-image-lite"></textarea>
+      </div>
+      <div id="perm-results" class="dialog-help">尚未检测。</div>
+    </div>
+    <div class="dialog-actions">
+      <button onclick="closeModal('modal-model-permissions')" class="dialog-btn">关闭</button>
+      <button onclick="runModelPermissionCheck()" id="btn-run-model-permissions" class="dialog-btn dialog-btn-primary">开始检测</button>
     </div>
   </div>
 </div>
@@ -1106,7 +1250,7 @@ function invalidateTokenView() {
 
 function tr(key, params, fallback) {
   const value = t(key, params);
-  return value === key ? (fallback ?? key) : value;
+  return value === key ? (fallback == null ? key : fallback) : value;
 }
 
 function applyAccountI18n() {
@@ -1117,6 +1261,7 @@ function applyAccountI18n() {
   const toolbarTips = [
     ['btn-filter', 'account.filter', '筛选'],
     ['btn-export', 'account.export', '导出数据'],
+    ['btn-model-permissions', 'account.modelPermissions', '模型权限检测'],
     ['btn-nsfw', 'account.batchNsfw', '开启 NSFW'],
     ['btn-refresh', 'account.batchRefresh', '刷新选中'],
     ['btn-delete', 'account.batchDelete', '删除选中'],
@@ -1144,8 +1289,8 @@ function waitI18n() {
 (async () => {
   await waitI18n();
   applyAccountI18n();
-  await renderAdminHeader?.();
-  await renderSiteFooter?.();
+  if (typeof renderAdminHeader === 'function') await renderAdminHeader();
+  if (typeof renderSiteFooter === 'function') await renderSiteFooter();
   initFilterMenu();
   const key = await adminKey.get();
   if (!key || !await verifyKey(ADMIN_API + '/verify', key).catch(() => false))
@@ -1224,6 +1369,7 @@ function getTokenView() {
     qf: 0,
     qe: 0,
     qh: 0,
+    qc: 0,
   };
   const statusCounts = { all: 0, active: 0, cooling: 0, invalid: 0, disabled: 0 };
   const nsfwCounts = { all: 0, enabled: 0, disabled: 0 };
@@ -1248,10 +1394,11 @@ function getTokenView() {
     stats.success += successCount;
     stats.fail += failCount;
     stats.calls += successCount + failCount;
-    stats.qa += quota.auto?.remaining || 0;
-    stats.qf += quota.fast?.remaining || 0;
-    stats.qe += quota.expert?.remaining || 0;
-    stats.qh += quota.heavy?.remaining || 0;
+    stats.qa += (quota.auto && quota.auto.remaining) || 0;
+    stats.qf += (quota.fast && quota.fast.remaining) || 0;
+    stats.qe += (quota.expert && quota.expert.remaining) || 0;
+    stats.qh += (quota.heavy && quota.heavy.remaining) || 0;
+    stats.qc += (quota.console && quota.console.remaining) || 0;
 
     if (token.status === 'active') stats.active += 1;
     if (token.status === 'cooling') stats.cooling += 1;
@@ -1512,6 +1659,7 @@ function qpills(q) {
     ['expert',   'E', 'q-e', true],
     ['heavy',    'H', 'q-h', true],
     ['grok_4_3', 'B', 'q-b', false],
+    ['console',  'C', 'q-c', false],
   ];
   return modes.map(([m,l,c,showEmpty]) => {
     const win = q[m];
@@ -1519,8 +1667,10 @@ function qpills(q) {
       if (!showEmpty) return '';
       return `<span class="q-pill q-z" data-tip="${xe(tr(`account.mode.${m}`, null, m))}: 0">${l}:0</span>`;
     }
-    const r = win.remaining ?? null;
-    return `<span class="q-pill ${r ? c : 'q-z'}" data-tip="${xe(`${tr(`account.mode.${m}`, null, m)}: ${r ?? tr('account.unknown', null, '未知')}/${win.total ?? '?'}`)}">${l}:${r ?? '?'}</span>`;
+    const r = win.remaining == null ? null : win.remaining;
+    const total = win.total == null ? '?' : win.total;
+    const display = r == null ? tr('account.unknown', null, '未知') : r;
+    return `<span class="q-pill ${r ? c : 'q-z'}" data-tip="${xe(`${tr(`account.mode.${m}`, null, m)}: ${display}/${total}`)}">${l}:${r == null ? '?' : r}</span>`;
   }).join('');
 }
 
@@ -1598,6 +1748,14 @@ function fmtRate(success, fail) {
 }
 function mask(t) { return t.length > 20 ? t.slice(0,8) + '…' + t.slice(-8) : t; }
 function xe(s) { return s.replace(/\\/g,'\\\\').replace(/'/g,"\\'").replace(/"/g,'&quot;'); }
+function xh(s) {
+  return String(s == null ? '' : s)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
 function fmtDate(d) {
   if (!d) return tr('account.na', null, '—');
   const dt = new Date(typeof d === 'number' ? d : d);
@@ -1665,11 +1823,14 @@ function openEdit(token) {
 async function doAdd() {
   const raw  = document.getElementById('import-tokens').value;
   const pool = document.getElementById('import-pool').value;
+  const autoNsfwEl = document.getElementById('import-auto-nsfw');
+  const autoNsfw = !!(autoNsfwEl && autoNsfwEl.checked);
   const newToks = raw.split('\n').map(s => s.trim()).filter(Boolean);
   if (!newToks.length) return showToast(tr('account.enterToken', null, '请输入 Token'), 'error');
   return saveTokens(
     pool,
     newToks,
+    autoNsfw,
     'modal-import',
     tr('account.adding', { n: newToks.length }, `正在添加 ${newToks.length} 个账户…`),
     tr('account.addDone', null, '添加完成'),
@@ -1678,9 +1839,12 @@ async function doAdd() {
 }
 
 async function doImport() {
-  const file = document.getElementById('import-file').files?.[0];
+  const fileInput = document.getElementById('import-file');
+  const file = fileInput && fileInput.files ? fileInput.files[0] : null;
   if (!file) return showToast(tr('account.selectFile', null, '请选择文件'), 'error');
   const isJson = file.name.toLowerCase().endsWith('.json');
+  const autoNsfwEl = document.getElementById('import-file-auto-nsfw');
+  const autoNsfw = !!(autoNsfwEl && autoNsfwEl.checked);
   let raw = '';
   try { raw = await file.text(); } catch { return showToast(tr('account.readFileFailed', null, '读取文件失败'), 'error'); }
 
@@ -1693,7 +1857,7 @@ async function doImport() {
     if (!total) return showToast(tr('account.jsonEmpty', null, 'JSON 文件中没有可导入的 Token'), 'error');
     try {
       showToast(tr('account.importing', { n: total }, `正在导入 ${total} 个账户…`), 'info');
-      await _api('POST', '/tokens', parsed);
+      await _api('POST', `/tokens?auto_nsfw=${autoNsfw ? 'true' : 'false'}`, parsed);
       closeModal('modal-import-file');
       showToast(tr('account.importJsonDone', { n: total }, `导入完成，共 ${total} 个`), 'success');
       load();
@@ -1706,6 +1870,7 @@ async function doImport() {
     return saveTokens(
       pool,
       newToks,
+      autoNsfw,
       'modal-import-file',
       tr('account.importing', { n: newToks.length }, `正在导入 ${newToks.length} 个账户…`),
       tr('account.importDone', null, '导入完成'),
@@ -1730,7 +1895,8 @@ async function doEdit() {
 }
 
 function updateImportFileState() {
-  const file = document.getElementById('import-file').files?.[0];
+  const fileInput = document.getElementById('import-file');
+  const file = fileInput && fileInput.files ? fileInput.files[0] : null;
   const el = document.getElementById('import-file-name');
   if (!el) return;
   el.textContent = file ? file.name : tr('account.noFile', null, '未选择文件');
@@ -1744,11 +1910,11 @@ function updateImportFileState() {
     : tr('account.importHintTxt', null, '每行一个 Token，将添加到所选类型');
 }
 
-async function saveTokens(pool, newToks, modalId, pendingMessage, successPrefix, errorPrefix) {
+async function saveTokens(pool, newToks, autoNsfw, modalId, pendingMessage, successPrefix, errorPrefix) {
   const unique = [...new Set(newToks)];
   try {
     showToast(pendingMessage, 'info');
-    const d = await _api('POST', '/tokens/add', { pool, tokens: unique });
+    const d = await _api('POST', `/tokens/add?auto_nsfw=${autoNsfw ? 'true' : 'false'}`, { pool, tokens: unique });
     closeModal(modalId);
     const msg = d.skipped
       ? tr('account.saveResultSkipped', { prefix: successPrefix, count: d.count, skipped: d.skipped }, `${successPrefix}，新增 ${d.count}，已存在跳过 ${d.skipped}`)
@@ -1845,10 +2011,16 @@ async function _runBatch(endpoint, tokens, label, onDone) {
       if (['done', 'error', 'cancelled'].includes(ev.type)) {
         _done(es);
         if (ev.type === 'done') {
-          const s = ev.result?.summary || {};
-          const ok = s.ok ?? 0, fail = s.fail ?? 0;
-          progress.finish(`${label.replace('…','').replace('正在','')} 完成：成功 ${ok}，失败 ${fail}`, fail > 0 ? 'error' : 'success');
-          onDone(ok, fail);
+          const s = ev.result && ev.result.summary ? ev.result.summary : {};
+          const ok = s.ok == null ? 0 : s.ok, fail = s.fail == null ? 0 : s.fail;
+          const expired = s.expired == null ? 0 : s.expired;
+          const transient = s.transient == null ? Math.max(0, fail - expired) : s.transient;
+          let finishMsg = `${label.replace('…','').replace('正在','')} 完成：成功 ${ok}`;
+          if (expired > 0) finishMsg += `，异常 ${expired}`;
+          if (transient > 0) finishMsg += `，临时失败 ${transient}`;
+          if (!expired && !transient && fail > 0) finishMsg += `，失败 ${fail}`;
+          progress.finish(finishMsg, fail > 0 ? 'error' : 'success');
+          onDone(ok, fail, s);
           load();
         } else if (ev.type === 'cancelled') {
           progress.finish('已取消', 'error');
@@ -1887,7 +2059,10 @@ async function refreshOne(token) {
   try {
     showToast(tr('account.refreshing', { n: 1 }, '正在刷新 1 个账户…'), 'info');
     const d = await _api('POST', '/batch/refresh', { tokens:[token] });
-    showToast(tr('account.refreshDone', { ok: d.summary?.ok ?? 0, fail: d.summary?.fail ?? 0 }, `刷新完成：成功 ${d.summary?.ok??0}，失败 ${d.summary?.fail??0}`), 'success');
+    const summary = d.summary || {};
+    const ok = summary.ok == null ? 0 : summary.ok;
+    const fail = summary.fail == null ? 0 : summary.fail;
+    showToast(tr('account.refreshDone', { ok, fail }, `刷新完成：成功 ${ok}，失败 ${fail}`), 'success');
     await load();
   } catch (e) { showToast(`${tr('account.refreshFailed', null, '刷新失败')}: ${e.message}`, 'error'); }
   finally {
@@ -1934,7 +2109,15 @@ async function batchRefreshSel() {
   if (!sel.size) return;
   await _runBatch('/batch/refresh', [...sel],
     tr('account.refreshing', { n: sel.size }, `正在刷新 ${sel.size} 个账户…`),
-    (ok, fail) => showToast(tr('account.refreshDone', { ok, fail }, `刷新完成：成功 ${ok}，失败 ${fail}`), 'success')
+    (ok, fail, s) => {
+      const expired = s && s.expired != null ? s.expired : 0;
+      const transient = s && s.transient != null ? s.transient : Math.max(0, fail - expired);
+      let msg = `刷新完成：成功 ${ok}`;
+      if (expired > 0) msg += `，异常 ${expired}`;
+      if (transient > 0) msg += `，临时失败 ${transient}`;
+      if (!expired && !transient && fail > 0) msg += `，失败 ${fail}`;
+      showToast(msg, fail > 0 ? 'error' : 'success');
+    }
   );
 }
 
@@ -1945,9 +2128,12 @@ async function nsfwOne(token, enabled = true) {
       ? tr('account.nsfwEnablingOne', null, '正在开启 NSFW…')
       : tr('account.nsfwDisablingOne', null, '正在关闭 NSFW…'), 'info');
     const d = await _api('POST', `/batch/nsfw?enabled=${enabled ? 'true' : 'false'}`, { tokens: [token] });
+    const summary = d.summary || {};
+    const ok = summary.ok == null ? 0 : summary.ok;
+    const fail = summary.fail == null ? 0 : summary.fail;
     showToast(enabled
-      ? tr('account.nsfwDone', { ok: d.summary?.ok ?? 0, fail: d.summary?.fail ?? 0 }, `NSFW 已开启：成功 ${d.summary?.ok??0}，失败 ${d.summary?.fail??0}`)
-      : tr('account.nsfwDisableDone', { ok: d.summary?.ok ?? 0, fail: d.summary?.fail ?? 0 }, `NSFW 已关闭：成功 ${d.summary?.ok??0}，失败 ${d.summary?.fail??0}`),
+      ? tr('account.nsfwDone', { ok, fail }, `NSFW 已开启：成功 ${ok}，失败 ${fail}`)
+      : tr('account.nsfwDisableDone', { ok, fail }, `NSFW 已关闭：成功 ${ok}，失败 ${fail}`),
       'success');
     load();
   } catch (e) { showToast(`${tr('account.operationFailed', null, '操作失败')}: ${e.message}`, 'error'); }
@@ -1964,6 +2150,115 @@ function batchNSFW() {
       (ok, fail) => showToast(tr('account.nsfwDone', { ok, fail }, `NSFW 完成：成功 ${ok}，失败 ${fail}`), 'success')
     )
   );
+}
+
+// ── Model Permissions ─────────────────────────────────────────────────────
+function openModelPermissionModal() {
+  const result = document.getElementById('perm-results');
+  if (result && !result.dataset.touched) result.textContent = '尚未检测。';
+  openModal('modal-model-permissions');
+}
+
+function parsePermissionModels() {
+  const el = document.getElementById('perm-models');
+  const raw = el ? el.value : '';
+  const models = raw.split(/\r?\n|,/).map(s => s.trim()).filter(Boolean);
+  return [...new Set(models)];
+}
+
+function permissionStatus(status) {
+  const m = {
+    supported: ['支持', 'perm-badge-supported'],
+    no_accounts: ['账号池无可用账号', 'perm-badge-no-accounts'],
+    pool_not_routed: ['账号池未路由', 'perm-badge-not-routed'],
+    no_quota_or_entitlement: ['无额度或无权限', 'perm-badge-no-quota'],
+    upstream_model_not_found: ['上游无此模型', 'perm-badge-not-found'],
+    invalid_credentials: ['凭证无效', 'perm-badge-no-quota'],
+    cloudflare_challenge: ['Cloudflare 拦截', 'perm-badge-upstream-error'],
+    unsupported_probe_type: ['暂不支持检测', 'perm-badge-not-routed'],
+    upstream_error: ['上游错误', 'perm-badge-upstream-error'],
+  };
+  return m[status] || [status || '未知', ''];
+}
+
+function renderPermissionResults(data) {
+  const box = document.getElementById('perm-results');
+  if (!box) return;
+  box.dataset.touched = '1';
+  const rows = Array.isArray(data.results) ? data.results : [];
+  if (!rows.length) {
+    box.innerHTML = '没有可检测的模型或账号池。';
+    return;
+  }
+  const summary = data.summary && data.summary.by_status ? data.summary.by_status : {};
+  const summaryHtml = Object.entries(summary)
+    .filter(([, count]) => Number(count) > 0)
+    .map(([status, count]) => {
+      const [label, cls] = permissionStatus(status);
+      return `<span class="perm-badge ${cls}">${xh(label)} ${xh(count)}</span>`;
+    }).join('');
+  const checked = data.summary && data.summary.checked != null ? data.summary.checked : rows.length;
+  const body = rows.map(row => {
+    const [label, cls] = permissionStatus(row.status);
+    const accountCount = row.accounts_checked == null ? 0 : row.accounts_checked;
+    const code = row.status_code ? `HTTP ${row.status_code}` : '-';
+    const upstream = row.upstream_model || row.mode_id || '-';
+    return `<tr>
+      <td>${xh(row.model)}</td>
+      <td>${xh(row.pool)}</td>
+      <td><span class="perm-badge ${cls}">${xh(label)}</span></td>
+      <td>${xh(accountCount)}</td>
+      <td>${xh(code)}</td>
+      <td>${xh(upstream)}</td>
+      <td title="${xh(row.message)}">${xh(row.message || '')}</td>
+    </tr>`;
+  }).join('');
+  box.innerHTML = `
+    <div class="model-permission-summary"><span class="perm-badge">检测 ${xh(checked)} 项</span>${summaryHtml || '<span class="perm-badge">无汇总</span>'}</div>
+    <div class="model-permission-result" style="margin-top:10px">
+      <table>
+        <thead>
+          <tr>
+            <th>模型</th>
+            <th>账号池</th>
+            <th>状态</th>
+            <th>检测账号</th>
+            <th>状态码</th>
+            <th>上游模型</th>
+            <th>说明</th>
+          </tr>
+        </thead>
+        <tbody>${body}</tbody>
+      </table>
+    </div>`;
+}
+
+async function runModelPermissionCheck() {
+  const btn = document.getElementById('btn-run-model-permissions');
+  const result = document.getElementById('perm-results');
+  const poolEl = document.getElementById('perm-pool');
+  const sampleEl = document.getElementById('perm-sample-size');
+  const pool = poolEl ? poolEl.value : '';
+  const sampleSize = Math.max(1, Math.min(20, Number(sampleEl ? sampleEl.value : 1)));
+  const models = parsePermissionModels();
+  const payload = { sample_size: sampleSize, timeout_s: 30 };
+  if (pool) payload.pools = [pool];
+  if (models.length) payload.models = models;
+  try {
+    if (btn) btn.disabled = true;
+    if (result) {
+      result.dataset.touched = '1';
+      result.textContent = '正在检测模型权限，请稍候…';
+    }
+    const data = await _api('POST', '/model-permissions/check', payload);
+    renderPermissionResults(data);
+    showToast('模型权限检测完成', 'success');
+  } catch (e) {
+    if (result) result.textContent = `检测失败：${e.message}`;
+    showToast(`检测失败：${e.message}`, 'error');
+  } finally {
+    if (btn) btn.disabled = false;
+  }
 }
 
 // ── Modal ──────────────────────────────────────────────────────────────────
@@ -1995,7 +2290,7 @@ function _placeTooltip(x, y) {
 }
 
 function _showTooltip(target, x, y) {
-  const text = target?.getAttribute('data-tip');
+  const text = target ? target.getAttribute('data-tip') : null;
   if (!text) return;
   _tooltipTarget = target;
   _tooltipEl.textContent = text;

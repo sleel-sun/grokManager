@@ -16,5 +16,12 @@
         "append": true,
         "pool": "basic",
         "verify_ssl": true
+    },
+    "web": {
+        "turnstile_manual_wait_sec": 0,
+        "turnstile_solver_provider": "",
+        "turnstile_solver_api_key": "",
+        "turnstile_solver_timeout_sec": 150,
+        "turnstile_solver_poll_sec": 5
     }
 }
