@@ -330,6 +330,8 @@
     "importDone": "导入完成",
     "importJsonDone": "导入完成，共 {n} 个",
     "importFailed": "导入失败",
+    "autoNsfwOnImport": "导入后自动开启 NSFW",
+    "autoNsfwHint": "需要额外时间检测账户状态",
     "saving": "正在保存修改…",
     "editDone": "保存完成",
     "editFailed": "保存失败",
@@ -374,7 +376,8 @@
       "fast": "Fast",
       "expert": "Expert",
       "heavy": "Heavy",
-      "grok_4_3": "Grok 4.3 Beta"
+      "grok_4_3": "Grok 4.3 Beta",
+      "console": "Console"
     },
     "status": {
       "active": "正常",

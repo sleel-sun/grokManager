@@ -17,7 +17,7 @@ import random
 from typing import Literal
 
 from app.platform.config.snapshot import get_config
-from ..shared.enums import PoolId
+from ..shared.enums import ALL_MODE_IDS, ModeId, PoolId
 from .table import AccountRuntimeTable
 
 # Scoring weights used by the quota strategy.
@@ -202,8 +202,8 @@ def _maybe_reset_windows(
     pool_id: int,
     now_s: int,
 ) -> None:
-    """Reset expired windows for basic-pool accounts inline (no API call needed)."""
-    if pool_id != int(PoolId.BASIC):
+    """Reset expired local windows inline when no usage API call is needed."""
+    if pool_id != int(PoolId.BASIC) and mode_id != int(ModeId.CONSOLE):
         return
 
     for idx in list(candidates):
@@ -350,7 +350,7 @@ def _has_trusted_quota_source(table: AccountRuntimeTable, idx: int) -> bool:
     """Return True when any selectable quota was synced or locally estimated."""
     return any(
         int(table._source_col(mode_id)[idx]) > 0 and int(table._quota_col(mode_id)[idx]) > 0
-        for mode_id in (0, 1, 2, 3, 4)
+        for mode_id in ALL_MODE_IDS
     )
 
 

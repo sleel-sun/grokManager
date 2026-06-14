@@ -29,6 +29,7 @@ def test_cloudflare_403_does_not_spin_through_accounts() -> None:
     )
 
     assert not chat._should_retry_upstream(exc, frozenset())
+    assert chat._should_retry_same_account_upstream(exc)
 
 
 def test_chat_retry_count_has_account_swap_floor() -> None:

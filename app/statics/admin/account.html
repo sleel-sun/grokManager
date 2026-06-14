@@ -559,6 +559,7 @@
     .q-e { background:#f7f3fb; color:#8d6bbd }
     .q-h { background:#fff4ed; color:#b0632a }
     .q-b { background:#fdf2f7; color:#be3f7f }
+    .q-c { background:#eff8fb; color:#227c91 }
     .q-z { background:#f6f6f6; color:#a0a0a6 }
 
     /* Token monospace */
@@ -1068,6 +1069,7 @@
               <span class="q-pill q-f">F</span>
               <span class="q-pill q-e">E</span>
               <span class="q-pill q-h">H</span>
+              <span class="q-pill q-c">C</span>
             </span>
           </th>
           <th class="table-center" data-i18n="account.colSuccess">成功</th>
@@ -1096,6 +1098,13 @@
         <span class="dialog-label" data-i18n="account.labelType">类型</span>
         <select class="input" id="import-pool" style="flex:1"></select>
       </div>
+      <div class="dialog-field" style="margin-top:12px">
+        <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
+          <input type="checkbox" id="import-auto-nsfw" style="margin:0">
+          <span data-i18n="account.autoNsfwOnImport">导入后自动开启 NSFW</span>
+        </label>
+        <div style="font-size:12px;color:var(--fg-muted);margin-top:4px" data-i18n="account.autoNsfwHint">需要额外时间检测账户状态</div>
+      </div>
     </div>
     <div class="dialog-actions">
       <button onclick="closeModal('modal-import')" class="dialog-btn" data-i18n="account.cancel">取消</button>
@@ -1120,6 +1129,13 @@
       <div class="dialog-field" id="import-file-pool-row">
         <span class="dialog-label" data-i18n="account.labelType">类型</span>
         <select class="input" id="import-file-pool" style="flex:1"></select>
+      </div>
+      <div class="dialog-field" style="margin-top:12px">
+        <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
+          <input type="checkbox" id="import-file-auto-nsfw" style="margin:0">
+          <span data-i18n="account.autoNsfwOnImport">导入后自动开启 NSFW</span>
+        </label>
+        <div style="font-size:12px;color:var(--fg-muted);margin-top:4px" data-i18n="account.autoNsfwHint">需要额外时间检测账户状态</div>
       </div>
     </div>
     <div class="dialog-actions">
@@ -1353,6 +1369,7 @@ function getTokenView() {
     qf: 0,
     qe: 0,
     qh: 0,
+    qc: 0,
   };
   const statusCounts = { all: 0, active: 0, cooling: 0, invalid: 0, disabled: 0 };
   const nsfwCounts = { all: 0, enabled: 0, disabled: 0 };
@@ -1381,6 +1398,7 @@ function getTokenView() {
     stats.qf += (quota.fast && quota.fast.remaining) || 0;
     stats.qe += (quota.expert && quota.expert.remaining) || 0;
     stats.qh += (quota.heavy && quota.heavy.remaining) || 0;
+    stats.qc += (quota.console && quota.console.remaining) || 0;
 
     if (token.status === 'active') stats.active += 1;
     if (token.status === 'cooling') stats.cooling += 1;
@@ -1641,6 +1659,7 @@ function qpills(q) {
     ['expert',   'E', 'q-e', true],
     ['heavy',    'H', 'q-h', true],
     ['grok_4_3', 'B', 'q-b', false],
+    ['console',  'C', 'q-c', false],
   ];
   return modes.map(([m,l,c,showEmpty]) => {
     const win = q[m];
@@ -1804,11 +1823,14 @@ function openEdit(token) {
 async function doAdd() {
   const raw  = document.getElementById('import-tokens').value;
   const pool = document.getElementById('import-pool').value;
+  const autoNsfwEl = document.getElementById('import-auto-nsfw');
+  const autoNsfw = !!(autoNsfwEl && autoNsfwEl.checked);
   const newToks = raw.split('\n').map(s => s.trim()).filter(Boolean);
   if (!newToks.length) return showToast(tr('account.enterToken', null, '请输入 Token'), 'error');
   return saveTokens(
     pool,
     newToks,
+    autoNsfw,
     'modal-import',
     tr('account.adding', { n: newToks.length }, `正在添加 ${newToks.length} 个账户…`),
     tr('account.addDone', null, '添加完成'),
@@ -1821,6 +1843,8 @@ async function doImport() {
   const file = fileInput && fileInput.files ? fileInput.files[0] : null;
   if (!file) return showToast(tr('account.selectFile', null, '请选择文件'), 'error');
   const isJson = file.name.toLowerCase().endsWith('.json');
+  const autoNsfwEl = document.getElementById('import-file-auto-nsfw');
+  const autoNsfw = !!(autoNsfwEl && autoNsfwEl.checked);
   let raw = '';
   try { raw = await file.text(); } catch { return showToast(tr('account.readFileFailed', null, '读取文件失败'), 'error'); }
 
@@ -1833,7 +1857,7 @@ async function doImport() {
     if (!total) return showToast(tr('account.jsonEmpty', null, 'JSON 文件中没有可导入的 Token'), 'error');
     try {
       showToast(tr('account.importing', { n: total }, `正在导入 ${total} 个账户…`), 'info');
-      await _api('POST', '/tokens', parsed);
+      await _api('POST', `/tokens?auto_nsfw=${autoNsfw ? 'true' : 'false'}`, parsed);
       closeModal('modal-import-file');
       showToast(tr('account.importJsonDone', { n: total }, `导入完成，共 ${total} 个`), 'success');
       load();
@@ -1846,6 +1870,7 @@ async function doImport() {
     return saveTokens(
       pool,
       newToks,
+      autoNsfw,
       'modal-import-file',
       tr('account.importing', { n: newToks.length }, `正在导入 ${newToks.length} 个账户…`),
       tr('account.importDone', null, '导入完成'),
@@ -1885,11 +1910,11 @@ function updateImportFileState() {
     : tr('account.importHintTxt', null, '每行一个 Token，将添加到所选类型');
 }
 
-async function saveTokens(pool, newToks, modalId, pendingMessage, successPrefix, errorPrefix) {
+async function saveTokens(pool, newToks, autoNsfw, modalId, pendingMessage, successPrefix, errorPrefix) {
   const unique = [...new Set(newToks)];
   try {
     showToast(pendingMessage, 'info');
-    const d = await _api('POST', '/tokens/add', { pool, tokens: unique });
+    const d = await _api('POST', `/tokens/add?auto_nsfw=${autoNsfw ? 'true' : 'false'}`, { pool, tokens: unique });
     closeModal(modalId);
     const msg = d.skipped
       ? tr('account.saveResultSkipped', { prefix: successPrefix, count: d.count, skipped: d.skipped }, `${successPrefix}，新增 ${d.count}，已存在跳过 ${d.skipped}`)
@@ -1988,8 +2013,14 @@ async function _runBatch(endpoint, tokens, label, onDone) {
         if (ev.type === 'done') {
           const s = ev.result && ev.result.summary ? ev.result.summary : {};
           const ok = s.ok == null ? 0 : s.ok, fail = s.fail == null ? 0 : s.fail;
-          progress.finish(`${label.replace('…','').replace('正在','')} 完成：成功 ${ok}，失败 ${fail}`, fail > 0 ? 'error' : 'success');
-          onDone(ok, fail);
+          const expired = s.expired == null ? 0 : s.expired;
+          const transient = s.transient == null ? Math.max(0, fail - expired) : s.transient;
+          let finishMsg = `${label.replace('…','').replace('正在','')} 完成：成功 ${ok}`;
+          if (expired > 0) finishMsg += `，异常 ${expired}`;
+          if (transient > 0) finishMsg += `，临时失败 ${transient}`;
+          if (!expired && !transient && fail > 0) finishMsg += `，失败 ${fail}`;
+          progress.finish(finishMsg, fail > 0 ? 'error' : 'success');
+          onDone(ok, fail, s);
           load();
         } else if (ev.type === 'cancelled') {
           progress.finish('已取消', 'error');
@@ -2078,7 +2109,15 @@ async function batchRefreshSel() {
   if (!sel.size) return;
   await _runBatch('/batch/refresh', [...sel],
     tr('account.refreshing', { n: sel.size }, `正在刷新 ${sel.size} 个账户…`),
-    (ok, fail) => showToast(tr('account.refreshDone', { ok, fail }, `刷新完成：成功 ${ok}，失败 ${fail}`), 'success')
+    (ok, fail, s) => {
+      const expired = s && s.expired != null ? s.expired : 0;
+      const transient = s && s.transient != null ? s.transient : Math.max(0, fail - expired);
+      let msg = `刷新完成：成功 ${ok}`;
+      if (expired > 0) msg += `，异常 ${expired}`;
+      if (transient > 0) msg += `，临时失败 ${transient}`;
+      if (!expired && !transient && fail > 0) msg += `，失败 ${fail}`;
+      showToast(msg, fail > 0 ? 'error' : 'success');
+    }
   );
 }
 

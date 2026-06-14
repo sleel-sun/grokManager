@@ -9,6 +9,7 @@ from app.control.account.models import (
 )
 from app.dataplane.account import selector
 from app.dataplane.account.sync import bootstrap
+from app.dataplane.shared.enums import ModeId as RuntimeModeId
 
 
 class _Repo:
@@ -43,6 +44,28 @@ def _record(token: str, source: QuotaSource, remaining: int) -> AccountRecord:
         status=AccountStatus.ACTIVE,
         quota=qs.to_dict(),
         last_sync_at=1_700_000_000_000 if source != QuotaSource.DEFAULT else None,
+    )
+
+
+def _console_record(token: str, *, remaining: int, reset_at: int | None) -> AccountRecord:
+    qs = AccountQuotaSet(
+        auto=_window(1, QuotaSource.REAL),
+        fast=_window(1, QuotaSource.REAL),
+        expert=_window(1, QuotaSource.REAL),
+        console=QuotaWindow(
+            remaining=remaining,
+            total=30,
+            window_seconds=900,
+            reset_at=reset_at,
+            synced_at=None,
+            source=QuotaSource.DEFAULT,
+        ),
+    )
+    return AccountRecord(
+        token=token,
+        pool="basic",
+        status=AccountStatus.ACTIVE,
+        quota=qs.to_dict(),
     )
 
 
@@ -92,3 +115,28 @@ async def test_quota_select_any_prefers_real_quota_for_media_paths() -> None:
     assert table.get_token(idx) == "real-token"
 
     assert selector.select_any(table, 0, exclude_idxs=frozenset({idx}), now_s=1) is None
+
+
+@pytest.mark.anyio
+async def test_quota_selector_uses_console_quota_bucket() -> None:
+    table = await bootstrap(
+        _Repo([_console_record("console-token", remaining=7, reset_at=None)])
+    )
+
+    idx = selector.select(table, 0, int(RuntimeModeId.CONSOLE), now_s=1)
+
+    assert idx is not None
+    assert table.get_token(idx) == "console-token"
+
+
+@pytest.mark.anyio
+async def test_quota_selector_resets_expired_console_window() -> None:
+    table = await bootstrap(
+        _Repo([_console_record("console-token", remaining=0, reset_at=1_000)])
+    )
+
+    idx = selector.select(table, 0, int(RuntimeModeId.CONSOLE), now_s=2)
+
+    assert idx is not None
+    assert table.get_token(idx) == "console-token"
+    assert table.quota_for(idx, int(RuntimeModeId.CONSOLE)) == 30

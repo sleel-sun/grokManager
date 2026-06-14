@@ -38,7 +38,14 @@ def build_account_feedback(
     if result.category == ResultCategory.RATE_LIMITED:
         # Signal quota exhaustion for the specific mode.
         quota_update: dict[str, dict] = {}
-        mode_key = {0: "quota_auto", 1: "quota_fast", 2: "quota_expert"}.get(mode_id)
+        mode_key = {
+            0: "quota_auto",
+            1: "quota_fast",
+            2: "quota_expert",
+            3: "quota_heavy",
+            4: "quota_grok_4_3",
+            5: "quota_console",
+        }.get(mode_id)
         if mode_key:
             quota_update[mode_key] = {"remaining": 0}
         return AccountPatch(

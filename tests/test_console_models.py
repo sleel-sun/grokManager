@@ -14,7 +14,7 @@ from app.dataplane.reverse.protocol.xai_console import (
     console_tool_choice_override,
     split_console_server_tools,
 )
-from app.dataplane.reverse.runtime.endpoint_table import CONSOLE_RESPONSES
+from app.dataplane.reverse.runtime.endpoint_table import CHAT, CONSOLE_RESPONSES
 from app.products.openai.router import _openai_model_payload
 
 
@@ -58,6 +58,16 @@ class _FakeConsoleResponse:
         yield "data: [DONE]"
 
 
+class _FakeChatResponse:
+    status_code = 200
+    content = b""
+
+    async def aiter_lines(self):
+        yield 'data: {"result":{"response":{"token":"ok","messageTag":"final"}}}'
+        yield 'data: {"result":{"response":{"isSoftStop":true}}}'
+        yield "data: [DONE]"
+
+
 class _CaptureSession:
     def __init__(self, capture: dict[str, object], **_kwargs) -> None:
         self._capture = capture
@@ -74,11 +84,17 @@ class _CaptureSession:
         self._capture["payload"] = orjson.loads(data)
         self._capture["timeout"] = timeout
         self._capture["stream"] = stream
-        return _FakeConsoleResponse()
+        if endpoint == CONSOLE_RESPONSES:
+            return _FakeConsoleResponse()
+        return _FakeChatResponse()
 
 
 async def _noop_quota_sync(*_args, **_kwargs):
     return None
+
+
+async def _fake_prepare_file_attachments(*_args, **_kwargs):
+    return ["uploaded-file-id"]
 
 
 class ConsoleModelRoutingTests(unittest.TestCase):
@@ -156,7 +172,7 @@ class ConsoleModelRoutingTests(unittest.TestCase):
         spec = resolve("grok-4.3")
 
         self.assertEqual(spec.tier, Tier.BASIC)
-        self.assertEqual(spec.mode_id, ModeId.AUTO)
+        self.assertEqual(spec.mode_id, ModeId.CONSOLE)
         self.assertTrue(spec.uses_console_responses())
         self.assertEqual(spec.upstream_model_name(), "grok-4.3")
 
@@ -503,9 +519,37 @@ class ConsoleModelRoutingTests(unittest.TestCase):
         )
         self.assertEqual(capture["payload"]["tool_choice"], {"type": "web_search"})
 
+    def test_chat_completions_image_attachment_falls_back_to_grok_chat(self) -> None:
+        image = "data:image/png;base64,AA=="
+        capture = self._run_console_chat_capture(
+            messages=[
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "describe this image"},
+                        {"type": "image_url", "image_url": {"url": image}},
+                    ],
+                }
+            ],
+            request_overrides={
+                "_reasoning_effort": "xhigh",
+                "tools": [{"type": "web_search"}],
+                "temporary": True,
+            },
+        )
+
+        self.assertEqual(capture["endpoint"], CHAT)
+        self.assertEqual(capture["payload"]["message"], "[user]: describe this image")
+        self.assertEqual(capture["payload"]["modeId"], ModeId.FAST.to_api_str())
+        self.assertEqual(capture["payload"]["fileAttachments"], ["uploaded-file-id"])
+        self.assertTrue(capture["payload"]["temporary"])
+        self.assertNotIn("_reasoning_effort", capture["payload"])
+        self.assertNotIn("tools", capture["payload"])
+
     def _run_console_chat_capture(
         self,
         *,
+        messages: list[dict] | None = None,
         tools: list[dict] | None = None,
         tool_choice=None,
         request_overrides: dict | None = None,
@@ -518,17 +562,18 @@ class ConsoleModelRoutingTests(unittest.TestCase):
             idx=0,
             token="test-sso-token",
             pool_id=int(Tier.BASIC),
-            mode_id=int(ModeId.AUTO),
+            mode_id=int(ModeId.CONSOLE),
             selected_at=0,
         )
 
         async def fake_reserve_account(*_args, **_kwargs):
-            return account, int(ModeId.AUTO)
+            return account, int(ModeId.CONSOLE)
 
         async def run():
             return await chat.completions(
                 model="grok-4.3",
-                messages=[{"role": "user", "content": "search latest xAI news"}],
+                messages=messages
+                or [{"role": "user", "content": "search latest xAI news"}],
                 stream=False,
                 emit_think=False,
                 tools=tools,
@@ -555,6 +600,11 @@ class ConsoleModelRoutingTests(unittest.TestCase):
             ),
             patch.object(chat, "_quota_sync", side_effect=_noop_quota_sync),
             patch.object(chat, "_fail_sync", side_effect=_noop_quota_sync),
+            patch.object(
+                chat,
+                "_prepare_file_attachments",
+                side_effect=_fake_prepare_file_attachments,
+            ),
         ):
             result = asyncio.run(run())
 

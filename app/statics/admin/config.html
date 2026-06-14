@@ -593,8 +593,8 @@ const SCHEMA_DEF = [
         title: '批量操作并发', titleKey: 'config.schema.groups.batchConcurrency',
         section: 'batch',
         fields: [
-          { key: 'nsfw_concurrency', label: '开启 NSFW 并发数', labelKey: 'config.schema.fields.nsfwConcurrency.label', type: 'number', desc: '批量开启 NSFW 时的 token 级并发数；每个 token 需经历三步网络请求。', descKey: 'config.schema.fields.nsfwConcurrency.desc' },
-          { key: 'refresh_concurrency', label: '刷新 Usage 并发数', labelKey: 'config.schema.fields.refreshConcurrency.label', type: 'number', desc: '批量刷新账户额度时的 token 级并发数。', descKey: 'config.schema.fields.refreshConcurrency.desc' },
+          { key: 'nsfw_concurrency', label: '开启 NSFW 并发数', labelKey: 'config.schema.fields.nsfwConcurrency.label', type: 'number', min: 1, max: 80, desc: '批量开启 NSFW 时的 token 级并发数；每个 token 需经历三步网络请求。', descKey: 'config.schema.fields.nsfwConcurrency.desc' },
+          { key: 'refresh_concurrency', label: '刷新 Usage 并发数', labelKey: 'config.schema.fields.refreshConcurrency.label', type: 'number', min: 1, max: 80, desc: '批量刷新账户额度时的 token 级并发数。', descKey: 'config.schema.fields.refreshConcurrency.desc' },
           { key: 'asset_upload_concurrency', label: '上传 Asset 并发数', labelKey: 'config.schema.fields.assetUploadConcurrency.label', type: 'number', desc: 'API 接收文件附件后触发的 Asset 上传任务，全局最大并发数，跨所有请求共享。', descKey: 'config.schema.fields.assetUploadConcurrency.desc' },
           { key: 'asset_list_concurrency', label: '查询 Asset 并发数', labelKey: 'config.schema.fields.assetListConcurrency.label', type: 'number', desc: 'list_assets 接口的全局最大并发数，跨所有请求共享。', descKey: 'config.schema.fields.assetListConcurrency.desc' },
           { key: 'asset_delete_concurrency', label: '删除 Asset 并发数', labelKey: 'config.schema.fields.assetDeleteConcurrency.label', type: 'number', desc: 'delete_asset 接口的全局最大并发数，同时作为管理后台批量清理的 token 级默认并发值。', descKey: 'config.schema.fields.assetDeleteConcurrency.desc' },

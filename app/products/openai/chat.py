@@ -67,6 +67,8 @@ from ._format import (
 from ._tool_sieve import ToolSieve
 from app.products._account_selection import reserve_account, selection_max_retries
 
+_FileInput = str | dict[str, str]
+
 
 def _to_chat_annotations(anns: list[dict]) -> list[dict]:
     """扁平 annotations → Chat Completions 嵌套格式（内层无 type）"""
@@ -252,8 +254,20 @@ def _is_account_scoped_forbidden(exc: UpstreamError) -> bool:
     """Treat empty/non-CF 403 responses as account entitlement failures."""
     if exc.status != 403:
         return False
+    return not _is_cloudflare_challenge(exc)
+
+
+def _is_cloudflare_challenge(exc: UpstreamError) -> bool:
+    """Return whether the upstream error is a proxy/clearance challenge."""
+    if exc.status != 403:
+        return False
     haystack = f"{_upstream_body(exc)} {exc}".lower()
-    return not any(marker in haystack for marker in _CLOUDFLARE_CHALLENGE_MARKERS)
+    return any(marker in haystack for marker in _CLOUDFLARE_CHALLENGE_MARKERS)
+
+
+def _should_retry_same_account_upstream(exc: UpstreamError) -> bool:
+    """Retry transient proxy clearance failures without rotating accounts."""
+    return _is_cloudflare_challenge(exc)
 
 
 def _chat_max_retries(cfg) -> int:
@@ -269,6 +283,38 @@ def _chat_max_retries(cfg) -> int:
 def _feedback_kind(exc: BaseException) -> "FeedbackKind":
     """Map an upstream exception to the appropriate FeedbackKind."""
     return feedback_kind_for_error(exc)
+
+
+_CONSOLE_ONLY_REQUEST_OVERRIDE_KEYS = frozenset(
+    {
+        "_reasoning_effort",
+        "reasoning",
+        "reasoning_effort",
+        "tools",
+        "tool_choice",
+    }
+)
+
+
+def _uses_console_responses_transport(
+    spec: ModelSpec | None,
+    files: list[_FileInput] | None = None,
+) -> bool:
+    """Console Responses currently rejects multimodal input; use app-chat then."""
+    return bool(spec and spec.uses_console_responses() and not files)
+
+
+def _legacy_chat_request_overrides(
+    request_overrides: dict | None,
+) -> dict | None:
+    if not request_overrides:
+        return None
+    cleaned = {
+        key: value
+        for key, value in request_overrides.items()
+        if value is not None and key not in _CONSOLE_ONLY_REQUEST_OVERRIDE_KEYS
+    }
+    return cleaned or None
 
 
 def _chat_exhausted_error(
@@ -444,10 +490,10 @@ def _strip_generated_artifacts(text: str, *, strip_sources: bool = False) -> str
     return _INLINE_BASE64_IMG_RE.sub("[图片]", text)
 
 
-def _extract_message(messages: list[dict]) -> tuple[str, list[str]]:
+def _extract_message(messages: list[dict]) -> tuple[str, list[_FileInput]]:
     """Flatten OpenAI messages into a single prompt string + file attachments."""
     parts: list[str] = []
-    files: list[str] = []
+    files: list[_FileInput] = []
 
     for msg in messages:
         role = msg.get("role", "user")
@@ -506,18 +552,29 @@ def _extract_message(messages: list[dict]) -> tuple[str, list[str]]:
                     inner = block.get(btype) or {}
                     data = inner.get("data") or inner.get("file_data", "")
                     if data:
-                        files.append(data)
+                        filename = str(inner.get("filename") or "").strip()
+                        if filename:
+                            files.append({"data": data, "filename": filename})
+                        else:
+                            files.append(data)
 
     return "\n\n".join(parts), files
 
 
-async def _prepare_file_attachments(token: str, file_inputs: list[str]) -> list[str]:
+async def _prepare_file_attachments(token: str, file_inputs: list[_FileInput]) -> list[str]:
     """Upload OpenAI-style multimodal inputs and return Grok chat attachment IDs."""
     attachments: list[str] = []
     for file_input in file_inputs:
         if not file_input:
             continue
-        file_id, _file_uri = await upload_from_input(token, file_input)
+        if isinstance(file_input, dict):
+            file_id, _file_uri = await upload_from_input(
+                token,
+                file_input.get("data", ""),
+                filename=file_input.get("filename"),
+            )
+        else:
+            file_id, _file_uri = await upload_from_input(token, file_input)
         if file_id:
             attachments.append(file_id)
     return attachments
@@ -527,7 +584,7 @@ async def _stream_chat(
     token: str,
     mode_id: "ModeId",
     message: str,
-    files: list[str],
+    files: list[_FileInput],
     *,
     spec: ModelSpec | None = None,
     tool_overrides: dict | None = None,
@@ -538,14 +595,14 @@ async def _stream_chat(
     """Yield raw SSE lines from the selected upstream chat endpoint."""
     proxy = await get_proxy_runtime()
     lease = await proxy.acquire()
-    plan = build_plan(spec, request_overrides or {}) if spec else None
+    use_console_transport = _uses_console_responses_transport(spec, files)
+    plan = (
+        build_plan(spec, request_overrides or {})
+        if spec and (use_console_transport or not spec.uses_console_responses())
+        else None
+    )
 
-    if spec and spec.uses_console_responses():
-        if files:
-            raise ValidationError(
-                "file attachments are not supported for console Responses-backed models",
-                param="messages",
-            )
+    if use_console_transport:
         endpoint = plan.endpoint if plan else CONSOLE_RESPONSES
         origin = plan.origin if plan else "https://console.x.ai"
         referer = plan.referer if plan else "https://console.x.ai/"
@@ -561,6 +618,7 @@ async def _stream_chat(
         transport_context = "Console Responses transport failed"
         stream_context = "Console Responses stream read failed"
     else:
+        is_console_attachment_fallback = bool(spec and spec.uses_console_responses())
         endpoint = plan.endpoint if plan else CHAT
         origin = plan.origin if plan else "https://grok.com"
         referer = plan.referer if plan else "https://grok.com/"
@@ -568,11 +626,15 @@ async def _stream_chat(
         attachments = await _prepare_file_attachments(token, files)
         payload = build_chat_payload(
             message=message,
-            mode_id=mode_id,
+            mode_id=ModeId.FAST if is_console_attachment_fallback else mode_id,
             file_attachments=attachments,
             tool_overrides=tool_overrides,
             model_config_override=model_config_override,
-            request_overrides=request_overrides,
+            request_overrides=(
+                _legacy_chat_request_overrides(request_overrides)
+                if is_console_attachment_fallback
+                else request_overrides
+            ),
         )
         transport_context = "Chat transport failed"
         stream_context = "Chat stream read failed"
@@ -624,9 +686,10 @@ async def _stream_chat(
 
 def _new_stream_adapter(
     spec: ModelSpec,
+    files: list[_FileInput] | None = None,
 ) -> StreamAdapter | ConsoleResponsesStreamAdapter:
     """Return a stream adapter matching the selected upstream protocol."""
-    if spec.uses_console_responses():
+    if _uses_console_responses_transport(spec, files):
         return ConsoleResponsesStreamAdapter()
     return StreamAdapter()
 
@@ -712,8 +775,9 @@ async def completions(
                 token = acct.token
                 success = False
                 _retry = False
+                _retry_same_account = False
                 fail_exc: BaseException | None = None
-                adapter = _new_stream_adapter(spec)
+                adapter = _new_stream_adapter(spec, files)
                 collected_annotations: list[dict] = []
 
                 try:
@@ -874,6 +938,19 @@ async def completions(
                     except UpstreamError as exc:
                         fail_exc = exc
                         if (
+                            _should_retry_same_account_upstream(exc)
+                            and attempt < max_retries
+                        ):
+                            _retry = True
+                            _retry_same_account = True
+                            logger.warning(
+                                "chat stream same-account retry scheduled: attempt={}/{} status={} token={}...",
+                                attempt + 1,
+                                max_retries,
+                                exc.status,
+                                token[:8],
+                            )
+                        elif (
                             _should_retry_upstream(exc, retry_codes)
                             and attempt < max_retries
                         ):
@@ -923,14 +1000,15 @@ async def completions(
 
                 if success or not _retry:
                     return
-                excluded.append(token)
+                if not _retry_same_account:
+                    excluded.append(token)
 
         return _run_stream()
 
     # ── Non-streaming path ────────────────────────────────────────────────────
     excluded: list[str] = []
     token = ""
-    adapter = _new_stream_adapter(spec)
+    adapter = _new_stream_adapter(spec, files)
     for attempt in range(max_retries + 1):
         acct, selected_mode_id = await reserve_account(
             directory,
@@ -944,8 +1022,9 @@ async def completions(
         token = acct.token
         success = False
         _retry = False
+        _retry_same_account = False
         fail_exc: BaseException | None = None
-        adapter = _new_stream_adapter(spec)  # fresh adapter per attempt
+        adapter = _new_stream_adapter(spec, files)  # fresh adapter per attempt
 
         try:
             try:
@@ -975,7 +1054,20 @@ async def completions(
 
             except UpstreamError as exc:
                 fail_exc = exc
-                if _should_retry_upstream(exc, retry_codes) and attempt < max_retries:
+                if (
+                    _should_retry_same_account_upstream(exc)
+                    and attempt < max_retries
+                ):
+                    _retry = True
+                    _retry_same_account = True
+                    logger.warning(
+                        "chat same-account retry scheduled: attempt={}/{} status={} token={}...",
+                        attempt + 1,
+                        max_retries,
+                        exc.status,
+                        token[:8],
+                    )
+                elif _should_retry_upstream(exc, retry_codes) and attempt < max_retries:
                     _retry = True
                     logger.warning(
                         "chat retry scheduled: attempt={}/{} status={} token={}...",
@@ -1020,7 +1112,8 @@ async def completions(
 
         if success or not _retry:
             break
-        excluded.append(token)
+        if not _retry_same_account:
+            excluded.append(token)
 
     full_text = "".join(adapter.text_buf)
     extract_images = getattr(adapter, "extract_generated_images_from_text", None)

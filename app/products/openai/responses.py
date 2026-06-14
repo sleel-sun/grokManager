@@ -34,7 +34,11 @@ from .chat import (
     _stream_chat,
     _upstream_body_excerpt,
 )
-from .chat import _configured_retry_codes, _should_retry_upstream
+from .chat import (
+    _configured_retry_codes,
+    _should_retry_same_account_upstream,
+    _should_retry_upstream,
+)
 from ._format import build_resp_usage, format_sse, make_resp_id, make_resp_object
 from app.dataplane.reverse.protocol.tool_prompt import (
     build_tool_system_prompt,
@@ -297,8 +301,9 @@ async def create(
             token   = acct.token
             success = False
             _retry  = False
+            _retry_same_account = False
             fail_exc: BaseException | None = None
-            adapter           = _new_stream_adapter(spec)
+            adapter           = _new_stream_adapter(spec, files)
             think_buf:  list[str] = []
             text_buf:   list[str] = []
             reasoning_started   = False
@@ -604,7 +609,15 @@ async def create(
 
                 except UpstreamError as exc:
                     fail_exc = exc
-                    if _should_retry_upstream(exc, retry_codes) and attempt < max_retries:
+                    if (
+                        _should_retry_same_account_upstream(exc)
+                        and attempt < max_retries
+                    ):
+                        _retry = True
+                        _retry_same_account = True
+                        logger.warning("responses stream same-account retry scheduled: attempt={}/{} status={} token={}...",
+                                       attempt + 1, max_retries, exc.status, token[:8])
+                    elif _should_retry_upstream(exc, retry_codes) and attempt < max_retries:
                         _retry = True
                         logger.warning("responses stream retry scheduled: attempt={}/{} status={} token={}...",
                                        attempt + 1, max_retries, exc.status, token[:8])
@@ -630,7 +643,8 @@ async def create(
 
             if success or not _retry:
                 return
-            excluded.append(token)
+            if not _retry_same_account:
+                excluded.append(token)
 
     if stream:
         return _run_stream()
@@ -640,7 +654,7 @@ async def create(
     # -------------------------------------------------------------------------
     excluded: list[str] = []
     token    = ""
-    adapter  = _new_stream_adapter(spec)
+    adapter  = _new_stream_adapter(spec, files)
     for attempt in range(max_retries + 1):
         acct, selected_mode_id = await reserve_account(
             directory,
@@ -654,8 +668,9 @@ async def create(
         token    = acct.token
         success  = False
         _retry   = False
+        _retry_same_account = False
         fail_exc: BaseException | None = None
-        adapter  = _new_stream_adapter(spec)   # fresh adapter per attempt
+        adapter  = _new_stream_adapter(spec, files)   # fresh adapter per attempt
 
         try:
             try:
@@ -684,7 +699,15 @@ async def create(
 
             except UpstreamError as exc:
                 fail_exc = exc
-                if _should_retry_upstream(exc, retry_codes) and attempt < max_retries:
+                if (
+                    _should_retry_same_account_upstream(exc)
+                    and attempt < max_retries
+                ):
+                    _retry = True
+                    _retry_same_account = True
+                    logger.warning("responses same-account retry scheduled: attempt={}/{} status={} token={}...",
+                                   attempt + 1, max_retries, exc.status, token[:8])
+                elif _should_retry_upstream(exc, retry_codes) and attempt < max_retries:
                     _retry = True
                     logger.warning("responses retry scheduled: attempt={}/{} status={} token={}...",
                                    attempt + 1, max_retries, exc.status, token[:8])
@@ -710,7 +733,8 @@ async def create(
 
         if success or not _retry:
             break
-        excluded.append(token)
+        if not _retry_same_account:
+            excluded.append(token)
 
     full_text = "".join(adapter.text_buf)
     extract_images = getattr(adapter, "extract_generated_images_from_text", None)
