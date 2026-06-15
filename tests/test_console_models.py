@@ -19,20 +19,23 @@ from app.products.openai.router import _openai_model_payload
 
 
 class _FakeConfig:
+    def __init__(self, values: dict[str, object] | None = None) -> None:
+        self._values = values or {}
+
     def get(self, _key, default=None):
-        return default
+        return self._values.get(_key, default)
 
     def get_bool(self, _key, default=False):
-        return bool(default)
+        return bool(self._values.get(_key, default))
 
     def get_float(self, _key, default=0.0):
-        return float(default)
+        return float(self._values.get(_key, default))
 
     def get_int(self, _key, default=0):
-        return int(default)
+        return int(self._values.get(_key, default))
 
     def get_list(self, _key, default=None):
-        return list(default or [])
+        return list(self._values.get(_key, default or []))
 
 
 class _FakeAccountDirectory:
@@ -464,6 +467,43 @@ class ConsoleModelRoutingTests(unittest.TestCase):
         self.assertEqual(capture["payload"]["tool_choice"], "auto")
         self.assertNotIn("deepsearchPreset", capture["payload"])
 
+    def test_chat_completions_console_default_search_disabled_by_default(self) -> None:
+        capture = self._run_console_chat_capture(
+            messages=[{"role": "user", "content": "latest xAI news"}],
+        )
+
+        self.assertEqual(capture["endpoint"], CONSOLE_RESPONSES)
+        self.assertNotIn("tools", capture["payload"])
+        self.assertNotIn("tool_choice", capture["payload"])
+
+    def test_chat_completions_console_default_search_config_adds_tools(self) -> None:
+        capture = self._run_console_chat_capture(
+            messages=[{"role": "user", "content": "latest xAI news"}],
+            config_values={"features.console_default_search": True},
+        )
+
+        self.assertEqual(capture["endpoint"], CONSOLE_RESPONSES)
+        self.assertEqual(
+            capture["payload"]["tools"],
+            [{"type": "web_search"}, {"type": "x_search"}],
+        )
+        self.assertEqual(capture["payload"]["tool_choice"], "auto")
+
+    def test_console_default_search_preserves_explicit_search_tool_options(self) -> None:
+        capture = self._run_console_chat_capture(
+            tools=[{"type": "web_search", "search_context_size": "high"}],
+            config_values={"features.console_default_search": True},
+        )
+
+        self.assertEqual(
+            capture["payload"]["tools"],
+            [
+                {"type": "web_search", "search_context_size": "high"},
+                {"type": "x_search"},
+            ],
+        )
+        self.assertEqual(capture["payload"]["tool_choice"], "auto")
+
     def test_chat_completions_explicit_search_tools_reach_console_payload(self) -> None:
         capture = self._run_console_chat_capture(
             tools=[
@@ -553,6 +593,7 @@ class ConsoleModelRoutingTests(unittest.TestCase):
         tools: list[dict] | None = None,
         tool_choice=None,
         request_overrides: dict | None = None,
+        config_values: dict[str, object] | None = None,
     ) -> dict[str, object]:
         from app.products.openai import chat
 
@@ -583,7 +624,7 @@ class ConsoleModelRoutingTests(unittest.TestCase):
 
         with (
             patch("app.dataplane.account._directory", _FakeAccountDirectory()),
-            patch.object(chat, "get_config", return_value=_FakeConfig()),
+            patch.object(chat, "get_config", return_value=_FakeConfig(config_values)),
             patch.object(chat, "selection_max_retries", return_value=0),
             patch.object(chat, "reserve_account", side_effect=fake_reserve_account),
             patch.object(chat, "get_proxy_runtime", return_value=_FakeProxyRuntime()),

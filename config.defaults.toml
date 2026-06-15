@@ -44,6 +44,8 @@ enable_nsfw = true
 # 搜索信源始终以 search_sources 结构化字段输出（无需此开关）。
 # 此选项仅控制是否同时在响应正文末尾追加 ## Sources 纯文本段落（兼容文本解析客户端）。
 show_search_sources = false
+# Console Responses 模型默认携带 web_search / x_search 工具；上游仍按 auto 决定是否实际搜索
+console_default_search = false
 # 全局附加指令
 custom_instruction = ""
 

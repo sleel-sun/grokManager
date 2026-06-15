@@ -409,6 +409,7 @@
         "dynamicStatsig": { "label": "Dynamisches Statsig" },
         "enableNsfw": { "label": "NSFW-Erzeugung zulassen" },
         "showSearchSources": { "label": "Quellen an Inhalt anhängen", "desc": "Suchquellen werden immer im Feld search_sources ausgegeben. Diese Option steuert, ob zusätzlich ein ## Sources-Abschnitt an den Inhalt angehängt wird (für Abwärtskompatibilität mit textbasierten Clients)." },
+        "consoleDefaultSearch": { "label": "Console-Standardsuche", "desc": "Wenn aktiviert, enthalten Console Responses-Modelle standardmäßig web_search und x_search, während upstream mit tool_choice auto entscheidet, ob tatsächlich gesucht wird." },
         "customInstruction": { "label": "Globale Zusatzanweisung" },
         "imageFormat": { "label": "Bildausgabeformat" },
         "videoFormat": { "label": "Videoausgabeformat" },

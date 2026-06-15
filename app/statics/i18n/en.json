@@ -529,6 +529,10 @@
           "label": "Append Sources to Content",
           "desc": "Search sources are always output in the search_sources field. This option controls whether to also append a ## Sources section to the response content (for backward compatibility with text-parsing clients)."
         },
+        "consoleDefaultSearch": {
+          "label": "Console Default Search",
+          "desc": "When enabled, Console Responses models include web_search and x_search tools by default, while upstream still decides whether to search with tool_choice auto."
+        },
         "customInstruction": {
           "label": "Global Supplemental Instruction",
           "desc": "Injects a consistent system message into every request to enforce model behavior or establish a fixed role."

@@ -529,6 +529,10 @@
           "label": "正文追加信源",
           "desc": "搜索信源始终以 search_sources 字段输出。此选项控制是否同时在正文末尾追加 ## Sources 段落（兼容文本解析客户端）。"
         },
+        "consoleDefaultSearch": {
+          "label": "Console 默认搜索",
+          "desc": "开启后 Console Responses 模型默认携带 web_search 与 x_search 工具，并由上游以 auto 策略决定是否实际搜索。"
+        },
         "customInstruction": {
           "label": "全局附加指令",
           "desc": "为每次请求注入统一的 system 消息，用于约束模型行为或固定角色设定。"

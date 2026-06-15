@@ -120,6 +120,13 @@ def _merge_console_search_tools(value: Any) -> list[dict[str, Any]]:
     return merged
 
 
+def ensure_console_search_tools(
+    tools: list[dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
+    """Return Console server-side search tools with missing defaults added."""
+    return _merge_console_search_tools(tools)
+
+
 def split_console_server_tools(
     tools: list[Any] | None,
     spec: ModelSpec | None,
@@ -654,5 +661,6 @@ __all__ = [
     "ConsoleResponsesStreamAdapter",
     "build_console_responses_payload",
     "console_tool_choice_override",
+    "ensure_console_search_tools",
     "split_console_server_tools",
 ]

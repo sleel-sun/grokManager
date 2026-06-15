@@ -409,6 +409,7 @@
         "dynamicStatsig": { "label": "動的 Statsig" },
         "enableNsfw": { "label": "NSFW 生成を許可" },
         "showSearchSources": { "label": "コンテンツにソースを追加", "desc": "検索ソースは常に search_sources フィールドに出力されます。このオプションは、テキスト解析クライアントとの互換性のために ## Sources セクションをコンテンツに追加するかどうかを制御します。" },
+        "consoleDefaultSearch": { "label": "Console デフォルト検索", "desc": "有効にすると、Console Responses モデルは web_search と x_search ツールをデフォルトで含め、実際に検索するかは upstream が tool_choice auto で判断します。" },
         "customInstruction": { "label": "グローバル補助指示" },
         "imageFormat": { "label": "画像出力形式" },
         "videoFormat": { "label": "動画出力形式" },

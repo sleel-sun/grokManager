@@ -41,6 +41,7 @@ from app.dataplane.reverse.protocol.xai_console import (
     ConsoleResponsesStreamAdapter,
     build_console_responses_payload,
     console_tool_choice_override,
+    ensure_console_search_tools,
     split_console_server_tools,
 )
 from app.dataplane.reverse.protocol.xai_usage import is_invalid_credentials_error
@@ -315,6 +316,32 @@ def _legacy_chat_request_overrides(
         if value is not None and key not in _CONSOLE_ONLY_REQUEST_OVERRIDE_KEYS
     }
     return cleaned or None
+
+
+def _prepare_console_request_tools(
+    *,
+    tools: list[Any] | None,
+    tool_choice: Any,
+    spec: ModelSpec,
+    cfg: Any,
+    request_overrides: dict | None,
+) -> tuple[list[dict[str, Any]] | None, dict | None]:
+    local_tools, console_tools = split_console_server_tools(tools, spec)
+    if spec.uses_console_responses() and cfg.get_bool(
+        "features.console_default_search",
+        False,
+    ):
+        console_tools = ensure_console_search_tools(console_tools)
+
+    if console_tools:
+        request_overrides = request_overrides or {}
+        request_overrides["tools"] = console_tools
+        console_choice = console_tool_choice_override(
+            tool_choice, local_tools=local_tools
+        )
+        if console_choice is not None:
+            request_overrides["tool_choice"] = console_choice
+    return local_tools, request_overrides
 
 
 def _chat_exhausted_error(
@@ -742,15 +769,13 @@ async def completions(
 
     # ── Tool call setup ───────────────────────────────────────────────────────
     tool_names: list[str] = []
-    local_tools, console_tools = split_console_server_tools(tools, spec)
-    if console_tools:
-        request_overrides = request_overrides or {}
-        request_overrides["tools"] = console_tools
-        console_choice = console_tool_choice_override(
-            tool_choice, local_tools=local_tools
-        )
-        if console_choice is not None:
-            request_overrides["tool_choice"] = console_choice
+    local_tools, request_overrides = _prepare_console_request_tools(
+        tools=tools,
+        tool_choice=tool_choice,
+        spec=spec,
+        cfg=cfg,
+        request_overrides=request_overrides,
+    )
     if local_tools:
         tool_names = extract_tool_names(local_tools)
         tool_prompt = build_tool_system_prompt(local_tools, tool_choice)

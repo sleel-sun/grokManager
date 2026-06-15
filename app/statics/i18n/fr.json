@@ -409,6 +409,7 @@
         "dynamicStatsig": { "label": "Statsig dynamique" },
         "enableNsfw": { "label": "Autoriser la génération NSFW" },
         "showSearchSources": { "label": "Ajouter les sources au contenu", "desc": "Les sources de recherche sont toujours présentes dans le champ search_sources. Cette option contrôle si une section ## Sources est également ajoutée au contenu (pour la compatibilité avec les clients analysant le texte)." },
+        "consoleDefaultSearch": { "label": "Recherche Console par défaut", "desc": "Lorsqu'il est activé, les modèles Console Responses incluent web_search et x_search par défaut, tandis que upstream décide s'il faut rechercher avec tool_choice auto." },
         "customInstruction": { "label": "Instruction globale supplémentaire" },
         "imageFormat": { "label": "Format de sortie image" },
         "videoFormat": { "label": "Format de sortie vidéo" },
