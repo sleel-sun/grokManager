@@ -2,7 +2,7 @@
 
 [![Python](https://img.shields.io/badge/python-3.13%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.119%2B-009688?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
-[![Version](https://img.shields.io/badge/version-2.0.4.rc2-111827)](pyproject.toml)
+[![Version](https://img.shields.io/badge/version-2.0.4.rc3-111827)](pyproject.toml)
 [![License](https://img.shields.io/badge/license-MIT-16a34a)](LICENSE)
 [![English](https://img.shields.io/badge/English-2563EB?logo=bookstack&logoColor=white)](docs/README.en.md)
 
@@ -14,19 +14,22 @@
 
 <br>
 
-`grokManager` 是把原 `grok2api` 网关能力和 `grok-maintainer` 浏览器养号/注册能力合并后的统一仓库。它同时覆盖两种工作模式：
-- API Gateway：基于 **FastAPI** 的 Grok 网关，对外提供 OpenAI / Anthropic 兼容接口
-- Account Maintainer：基于浏览器自动化的账号注册与 token 回写工具，直接并入同一代码库
+`grokManager` 是面向 Grok Web 能力的一体化接入、账号与运维平台。项目在原 `grok2api` 网关能力基础上，合并了 `grok-maintainer` 浏览器注册/养号流程，并补齐 Admin、Web Chat、媒体缓存、代理防封和批量维护能力，适合自建统一的 Grok API 与账号池管理服务。
+
+它同时覆盖两种工作模式：
+- API Gateway：基于 **FastAPI** 的 Grok 网关，对外提供 OpenAI / Anthropic 兼容接口、媒体生成接口和 WebUI
+- Account Maintainer：基于浏览器自动化的账号注册、token 提取、批量回写与账号池维护工具，直接并入同一代码库
 
 核心特性：
 - OpenAI 兼容接口：`/v1/models`、`/v1/chat/completions`、`/v1/responses`、`/v1/images/generations`、`/v1/images/edits`、`/v1/videos`、`/v1/videos/{video_id}`、`/v1/videos/{video_id}/content`
 - Anthropic 兼容接口：`/v1/messages`、`/v1/messages/count_tokens`；`/v1/models` 在收到 `anthropic-version` 请求头时自动返回 Anthropic 格式
-- 支持流式与非流式对话、显式思考输出、函数工具结构透传，以及统一的 token / usage 统计
-- 支持多账号池、层级选号、失败反馈、额度同步与自动维护
-- 支持本地缓存图片、视频与本地代理链接返回
+- 支持流式与非流式对话、显式思考输出、函数工具结构透传、Web Search 控制，以及统一的 token / usage 统计
+- 支持多账号池、层级选号、失败反馈、额度同步、批量刷新、批量 NSFW 开启与自动维护
+- 支持本地缓存图片、视频、附件下载代理与本地代理链接返回
 - 支持文生图、图像编辑、文生视频、图生视频
-- 内置 Admin 后台管理、Web Chat、Masonry 生图、ChatKit 语音页面
+- 内置 Admin 后台管理、Web Chat、MCP 工具管理、代码预览、Masonry 生图、ChatKit 语音页面
 - 内置 `app/maintainer/` 子模块，支持批量注册 Grok 账号并自动导入 token 池
+- 内置代理运行时、Cloudflare clearance 刷新、防 403 Compose override 与本机防封启动脚本
 - 兼容旧版 token 写入方式 `/v1/admin/tokens`，同时支持新版 `/admin/api/tokens` 与 `/admin/api/tokens/add`
 
 <br>

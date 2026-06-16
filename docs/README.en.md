@@ -1,8 +1,8 @@
-<img alt="Grok2API" src="https://github.com/user-attachments/assets/037a0a6e-7986-41cc-b4af-04df612ee886" />
+<img alt="grokManager" src="https://github.com/user-attachments/assets/037a0a6e-7986-41cc-b4af-04df612ee886" />
 
 [![Python](https://img.shields.io/badge/python-3.13%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.119%2B-009688?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
-[![Version](https://img.shields.io/badge/version-2.0.4.rc2-111827)](../pyproject.toml)
+[![Version](https://img.shields.io/badge/version-2.0.4.rc3-111827)](../pyproject.toml)
 [![License](https://img.shields.io/badge/license-MIT-16a34a)](../LICENSE)
 [![中文](https://img.shields.io/badge/中文-2563EB?logo=bookstack&logoColor=white)](../README.md)
 [![DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/chenyme/grok2api)
@@ -13,14 +13,21 @@
 
 <br>
 
-Grok2API is a **FastAPI**-based Grok gateway that exposes Grok Web capabilities through OpenAI-compatible APIs. Core features:
+`grokManager` is an integrated Grok Web gateway, account, and operations platform. It extends the original `grok2api` gateway with the browser-based `grok-maintainer` registration flow, Admin tooling, Web Chat, media caching, proxy / anti-403 runtime, and bulk account maintenance.
+
+It covers two operating modes:
+- API Gateway: a **FastAPI** Grok gateway that exposes OpenAI / Anthropic-compatible APIs, media generation endpoints, and WebUI pages
+- Account Maintainer: browser automation for Grok account registration, token extraction, token write-back, and account-pool maintenance
+
+Core features:
 - OpenAI-compatible endpoints: `/v1/models`, `/v1/chat/completions`, `/v1/responses`, `/v1/images/generations`, `/v1/images/edits`, `/v1/videos`, `/v1/videos/{video_id}`, `/v1/videos/{video_id}/content`
-- Anthropic-compatible endpoint: `/v1/messages`
-- Streaming and non-streaming chat, explicit reasoning output, function-tool structure passthrough, and unified token / usage accounting
-- Multi-account pools, tier-aware selection, failure feedback, quota synchronization, and automatic maintenance
-- Local image/video caching and locally proxied media URLs
+- Anthropic-compatible endpoints: `/v1/messages`, `/v1/messages/count_tokens`; `/v1/models` returns Anthropic-shaped models when `anthropic-version` is present
+- Streaming and non-streaming chat, explicit reasoning output, function-tool structure passthrough, Web Search controls, and unified token / usage accounting
+- Multi-account pools, tier-aware selection, failure feedback, quota synchronization, bulk refresh, bulk NSFW enablement, and automatic maintenance
+- Local image/video caching, attachment download proxying, and locally proxied media URLs
 - Text-to-image, image editing, text-to-video, and image-to-video support
-- Built-in Admin dashboard, Web Chat, Masonry image generation, and ChatKit voice page
+- Built-in Admin dashboard, Web Chat, MCP tool management, code previews, Masonry image generation, and ChatKit voice page
+- Built-in proxy runtime, Cloudflare clearance refresh, anti-403 Compose override, and local anti-ban launcher
 
 <br>
 

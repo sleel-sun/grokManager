@@ -1,7 +1,7 @@
 [project]
 name = "grok2api"
 version = "2.0.4.rc3"
-description = "Grok2API rebuilt with FastAPI, fully aligned with the latest web call format. Supports streaming and non-streaming chat, image generation/editing, deep thinking, token pool concurrency, and automatic load balancing."
+description = "grokManager is an integrated FastAPI Grok gateway, WebUI, account-pool manager, and browser maintainer with OpenAI/Anthropic-compatible APIs, media generation, proxy runtime, and bulk account operations."
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
