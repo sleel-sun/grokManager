@@ -4,6 +4,7 @@ Each public function handles proxy acquisition, the upstream call, and
 proxy feedback, returning a simple result or raising ``UpstreamError``.
 """
 
+import asyncio
 import datetime
 import random
 from typing import TYPE_CHECKING
@@ -15,6 +16,7 @@ from app.platform.net.grpc import GrpcClient, GrpcStatus
 from app.control.proxy.models import ProxyFeedback, ProxyFeedbackKind, ProxyScope, RequestKind
 from app.dataplane.proxy import get_proxy_runtime
 from app.dataplane.proxy.adapters.session import ResettableSession, build_session_kwargs
+from app.dataplane.reverse.transport._proxy_feedback import upstream_feedback
 from app.dataplane.reverse.runtime.endpoint_table import (
     ACCEPT_TOS as ACCEPT_TOS_URL,
     BASE as GROK_ORIGIN,
@@ -36,6 +38,62 @@ ACCOUNTS_ORIGIN = "https://accounts.x.ai"
 # ------------------------------------------------------------------
 # Payload builders
 # ------------------------------------------------------------------
+
+_TRANSIENT_HTTP_STATUSES = {
+    408,
+    409,
+    425,
+    429,
+    500,
+    502,
+    503,
+    504,
+    520,
+    521,
+    522,
+    523,
+    524,
+}
+_TRANSIENT_RETRY_ATTEMPTS = 3
+_NSFW_SEQUENCE_RETRY_ATTEMPTS = 2
+_NSFW_SEQUENCE_RETRY_HTTP_STATUSES = _TRANSIENT_HTTP_STATUSES | {403}
+
+
+def _is_transient_upstream_error(exc: UpstreamError) -> bool:
+    return (exc.status or 0) in _TRANSIENT_HTTP_STATUSES
+
+
+def _is_retryable_nsfw_sequence_error(exc: UpstreamError) -> bool:
+    return (exc.status or 0) in _NSFW_SEQUENCE_RETRY_HTTP_STATUSES
+
+
+async def _with_transient_retries(label: str, call):
+    for attempt in range(1, _TRANSIENT_RETRY_ATTEMPTS + 1):
+        try:
+            return await call()
+        except UpstreamError as exc:
+            if not _is_transient_upstream_error(exc) or attempt >= _TRANSIENT_RETRY_ATTEMPTS:
+                raise
+            delay_s = min(6.0, 0.8 * (2 ** (attempt - 1))) + random.uniform(0.0, 0.4)
+            logger.warning(
+                "auth upstream transient error, retrying: label={} status={} attempt={}/{} delay_s={:.2f}",
+                label,
+                exc.status,
+                attempt,
+                _TRANSIENT_RETRY_ATTEMPTS,
+                delay_s,
+            )
+            await asyncio.sleep(delay_s)
+
+    raise RuntimeError("unreachable")
+
+
+def _grpc_status_error(label: str, status: GrpcStatus) -> UpstreamError:
+    return UpstreamError(
+        f"{label}: gRPC error code={status.code} message={status.message!r}",
+        status=status.http_equiv,
+    )
+
 
 def build_accept_tos_payload() -> bytes:
     """gRPC-Web payload for SetTosAcceptedVersion (proto field 2 = true)."""
@@ -104,39 +162,59 @@ async def _grpc_call(
             clearance_origin=origin,
         )
 
-    try:
+    async def _post_and_status() -> GrpcStatus:
         _, trailers = await post_grpc_web(
             url, token, payload,
             lease=lease, timeout_s=timeout_s, origin=origin, referer=referer,
             session=session,
         )
+        status = GrpcClient.get_status(trailers)
+        if status.ok or status.code == -1:
+            return status
+        raise _grpc_status_error(label, status)
+
+    try:
+        status = await _with_transient_retries(label, _post_and_status)
     except UpstreamError as exc:
         if not shared:
-            await proxy.feedback(lease, ProxyFeedback(
-                kind=ProxyFeedbackKind.UPSTREAM_5XX if (exc.status or 0) >= 500
-                     else ProxyFeedbackKind.FORBIDDEN,
-                status_code=exc.status or 502,
-            ))
+            await proxy.feedback(lease, upstream_feedback(exc))
         raise
     except Exception as exc:
         if not shared:
             await proxy.feedback(lease, ProxyFeedback(kind=ProxyFeedbackKind.TRANSPORT_ERROR))
         raise UpstreamError(f"{label}: transport error: {exc}") from exc
 
-    status = GrpcClient.get_status(trailers)
-    if status.ok or status.code == -1:
-        if not shared:
-            await proxy.feedback(lease, ProxyFeedback(kind=ProxyFeedbackKind.SUCCESS, status_code=200))
-        logger.debug("auth grpc call completed: label={} grpc_code={}", label, status.code)
-    else:
-        if not shared:
-            await proxy.feedback(lease, ProxyFeedback(kind=ProxyFeedbackKind.UPSTREAM_5XX, status_code=status.http_equiv))
-        raise UpstreamError(
-            f"{label}: gRPC error code={status.code} message={status.message!r}",
-            status=status.http_equiv,
-        )
-
+    if not shared:
+        await proxy.feedback(lease, ProxyFeedback(kind=ProxyFeedbackKind.SUCCESS, status_code=200))
+    logger.debug("auth grpc call completed: label={} grpc_code={}", label, status.code)
     return status
+
+
+async def _nsfw_grok_sequence_once(token: str) -> None:
+    proxy = await get_proxy_runtime()
+    lease = await proxy.acquire(
+        scope=ProxyScope.APP,
+        kind=RequestKind.HTTP,
+        clearance_origin=GROK_ORIGIN,
+    )
+
+    kwargs = build_session_kwargs(lease=lease)
+    try:
+        async with ResettableSession(**kwargs) as session:
+            await set_birth_date(token, session=session, lease=lease)
+            await _grpc_call(
+                NSFW_MGMT_URL, token, build_nsfw_mgmt_payload(),
+                label="enable_nsfw", origin=GROK_ORIGIN, referer=f"{GROK_ORIGIN}/?_s=data",
+                session=session, lease=lease,
+            )
+        await proxy.feedback(lease, ProxyFeedback(kind=ProxyFeedbackKind.SUCCESS, status_code=200))
+        logger.debug("auth nsfw sequence completed: token={}...", token[:8])
+    except UpstreamError as exc:
+        await proxy.feedback(lease, upstream_feedback(exc))
+        raise
+    except Exception as exc:
+        await proxy.feedback(lease, ProxyFeedback(kind=ProxyFeedbackKind.TRANSPORT_ERROR))
+        raise UpstreamError(f"nsfw_sequence: transport error: {exc}") from exc
 
 
 # ------------------------------------------------------------------
@@ -202,19 +280,18 @@ async def set_birth_date(
 
     payload = orjson.dumps(build_set_birth_payload())
     try:
-        result = await post_json(
-            SET_BIRTH_URL, token, payload,
-            lease=lease, timeout_s=timeout_s,
-            origin=GROK_ORIGIN, referer=f"{GROK_ORIGIN}/?_s=data",
-            session=session,
+        result = await _with_transient_retries(
+            "set_birth_date",
+            lambda: post_json(
+                SET_BIRTH_URL, token, payload,
+                lease=lease, timeout_s=timeout_s,
+                origin=GROK_ORIGIN, referer=f"{GROK_ORIGIN}/?_s=data",
+                session=session,
+            ),
         )
     except UpstreamError as exc:
         if not shared:
-            await proxy.feedback(lease, ProxyFeedback(
-                kind=ProxyFeedbackKind.UPSTREAM_5XX if (exc.status or 0) >= 500
-                     else ProxyFeedbackKind.FORBIDDEN,
-                status_code=exc.status or 502,
-            ))
+            await proxy.feedback(lease, upstream_feedback(exc))
         raise
     except Exception as exc:
         if not shared:
@@ -234,36 +311,36 @@ async def nsfw_sequence(token: str) -> None:
     clearance. The grok.com birth-date and NSFW update steps still share one
     session + lease to avoid an extra handshake per token.
     """
-    await accept_tos(token)
-
-    proxy = await get_proxy_runtime()
-    lease = await proxy.acquire(
-        scope=ProxyScope.APP,
-        kind=RequestKind.HTTP,
-        clearance_origin=GROK_ORIGIN,
-    )
-
-    kwargs = build_session_kwargs(lease=lease)
     try:
-        async with ResettableSession(**kwargs) as session:
-            await set_birth_date(token, session=session, lease=lease)
-            await _grpc_call(
-                NSFW_MGMT_URL, token, build_nsfw_mgmt_payload(),
-                label="enable_nsfw", origin=GROK_ORIGIN, referer=f"{GROK_ORIGIN}/?_s=data",
-                session=session, lease=lease,
-            )
-        await proxy.feedback(lease, ProxyFeedback(kind=ProxyFeedbackKind.SUCCESS, status_code=200))
-        logger.debug("auth nsfw sequence completed: token={}...", token[:8])
+        await accept_tos(token)
     except UpstreamError as exc:
-        await proxy.feedback(lease, ProxyFeedback(
-            kind=ProxyFeedbackKind.UPSTREAM_5XX if (exc.status or 0) >= 500
-                 else ProxyFeedbackKind.FORBIDDEN,
-            status_code=exc.status or 502,
-        ))
-        raise
-    except Exception as exc:
-        await proxy.feedback(lease, ProxyFeedback(kind=ProxyFeedbackKind.TRANSPORT_ERROR))
-        raise UpstreamError(f"nsfw_sequence: transport error: {exc}") from exc
+        logger.warning(
+            "auth accept_tos failed, continuing nsfw sequence: status={} error={}",
+            exc.status,
+            exc,
+        )
+
+    for attempt in range(1, _NSFW_SEQUENCE_RETRY_ATTEMPTS + 1):
+        try:
+            await _nsfw_grok_sequence_once(token)
+            return
+        except UpstreamError as exc:
+            if (
+                not _is_retryable_nsfw_sequence_error(exc)
+                or attempt >= _NSFW_SEQUENCE_RETRY_ATTEMPTS
+            ):
+                raise
+            delay_s = min(6.0, 1.0 * (2 ** (attempt - 1))) + random.uniform(0.0, 0.5)
+            logger.warning(
+                "auth nsfw sequence retrying with fresh lease: status={} attempt={}/{} delay_s={:.2f}",
+                exc.status,
+                attempt,
+                _NSFW_SEQUENCE_RETRY_ATTEMPTS,
+                delay_s,
+            )
+            await asyncio.sleep(delay_s)
+
+    raise RuntimeError("unreachable")
 
 
 __all__ = [

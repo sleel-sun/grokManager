@@ -584,7 +584,7 @@
         },
         "nsfwConcurrency": {
           "label": "NSFW Enablement Concurrency",
-          "desc": "Token-level concurrency for bulk NSFW enablement. Each token requires three network calls."
+          "desc": "Token-level concurrency for bulk NSFW enablement. Each token requires three network calls; the server uses at most 8."
         },
         "refreshConcurrency": {
           "label": "Usage Refresh Concurrency",

@@ -560,6 +560,22 @@ button{cursor:pointer}
   display:block;max-width:100%;max-height:240px;height:auto;border-radius:14px;object-fit:cover
 }
 .msg-inline-media{margin:0 0 12px}
+.msg-download-attachment{
+  display:flex;align-items:center;gap:10px;width:min(100%,420px);margin:10px 0;padding:10px 12px;
+  border:1px solid #e5e1d8;border-radius:14px;background:#fbfaf7;color:#171511;text-decoration:none;
+  box-shadow:0 1px 0 rgba(20,18,15,.03)
+}
+.msg-download-attachment:hover{border-color:#d6d0c3;background:#f6f3ed;text-decoration:none}
+.msg-download-icon{
+  flex:0 0 auto;display:inline-flex;align-items:center;justify-content:center;width:34px;height:34px;border-radius:10px;
+  background:#171511;color:#fff;font-size:10px;font-weight:800;letter-spacing:.04em
+}
+.msg-download-name{
+  min-width:0;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:650;color:#171511
+}
+.msg-download-action{
+  flex:0 0 auto;color:#756f64;font-size:12px;font-weight:650
+}
 .msg-card-assistant img{
   display:block;max-width:min(100%,400px);max-height:280px;height:auto;border-radius:14px
 }

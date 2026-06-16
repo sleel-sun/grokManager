@@ -6,6 +6,7 @@
   const MCP_IMPORT_ENDPOINT = '/webui/api/mcp/servers/import';
   const MCP_TOOLS_ENDPOINT = '/webui/api/mcp/tools';
   const CODE_PREVIEWS_ENDPOINT = '/webui/api/code-previews';
+  const ATTACHMENT_DOWNLOAD_ENDPOINT = '/webui/api/attachments/download';
   const PREFERRED_MODEL = 'grok-4.20-0309';
   const STORE_KEY = 'grok2api_webui_chat_sessions_v1';
   const SIDEBAR_STORE_KEY = 'grok2api_webui_sidebar_collapsed_v1';
@@ -190,6 +191,97 @@
     return template.innerHTML;
   }
 
+  const DOCUMENT_EXTENSION_RE = /\.(pdf|docx?|xlsx?|pptx?|csv|tsv|txt|md|rtf|json|jsonl|xml|html?|zip|gz|tgz|tar|7z|rar|epub)(?:[?#]|$)/i;
+  const PROXIED_DOWNLOAD_HOSTS = new Set([
+    'assets.grok.com',
+    'grok.x.ai',
+    'imgen.x.ai',
+    'imagine-public.x.ai',
+  ]);
+
+  function isDocumentFilename(value) {
+    return DOCUMENT_EXTENSION_RE.test(String(value || '').trim());
+  }
+
+  function isDocumentUrl(value) {
+    const raw = String(value || '').trim();
+    if (!raw || raw.startsWith('data:')) return false;
+    if (isImageUrl(raw) || isVideoUrl(raw)) return false;
+    try {
+      const url = new URL(raw, window.location.origin);
+      return isDocumentFilename(url.pathname) || isDocumentFilename(url.search);
+    } catch {
+      return isDocumentFilename(raw);
+    }
+  }
+
+  function filenameFromDownloadLink(href, label) {
+    const cleanLabel = String(label || '').trim();
+    if (isDocumentFilename(cleanLabel) && !/^https?:\/\//i.test(cleanLabel)) {
+      return cleanLabel.replace(/[\\/:*?"<>|]+/g, '_').slice(0, 120) || 'attachment';
+    }
+    try {
+      const url = new URL(href, window.location.origin);
+      const pathName = decodeURIComponent(url.pathname.split('/').filter(Boolean).pop() || '');
+      if (pathName && pathName !== 'content') return pathName.replace(/[\\/:*?"<>|]+/g, '_').slice(0, 120);
+    } catch {}
+    return (cleanLabel || 'attachment').replace(/[\\/:*?"<>|]+/g, '_').slice(0, 120) || 'attachment';
+  }
+
+  function shouldProxyDownloadUrl(href) {
+    try {
+      const url = new URL(href, window.location.origin);
+      return PROXIED_DOWNLOAD_HOSTS.has(url.hostname);
+    } catch {
+      return false;
+    }
+  }
+
+  function proxiedDownloadHref(href, filename) {
+    if (!shouldProxyDownloadUrl(href)) return href;
+    const url = new URL(ATTACHMENT_DOWNLOAD_ENDPOINT, window.location.origin);
+    url.searchParams.set('url', href);
+    if (filename) url.searchParams.set('filename', filename);
+    return url.href;
+  }
+
+  function normalizeAttachmentContent(source) {
+    return String(source || '').replace(/^(https?:\/\/\S+|\/[^\s]+)$/gm, (match) => {
+      const url = match.trim();
+      if (!isDocumentUrl(url)) return match;
+      return `[${filenameFromDownloadLink(url, '')}](${url})`;
+    });
+  }
+
+  function enhanceAttachmentDownloads(root) {
+    if (!root || typeof root.querySelectorAll !== 'function') return;
+    root.querySelectorAll('a[href]').forEach((link) => {
+      if (link.closest('pre, code, .msg-download-attachment')) return;
+      const originalHref = link.getAttribute('href') || '';
+      const label = (link.textContent || '').trim();
+      if (!isDocumentUrl(originalHref) && !isDocumentFilename(label)) return;
+
+      const filename = filenameFromDownloadLink(originalHref, label);
+      const href = proxiedDownloadHref(originalHref, filename);
+      const name = document.createElement('span');
+      name.className = 'msg-download-name';
+      name.textContent = filename;
+      const action = document.createElement('span');
+      action.className = 'msg-download-action';
+      action.textContent = text('webui.chat.downloadAttachment', 'Download');
+      const icon = document.createElement('span');
+      icon.className = 'msg-download-icon';
+      icon.textContent = 'DOC';
+
+      link.classList.add('msg-download-attachment');
+      link.href = href;
+      link.setAttribute('download', filename);
+      link.setAttribute('rel', 'noreferrer');
+      link.removeAttribute('target');
+      link.replaceChildren(icon, name, action);
+    });
+  }
+
   function renderInlineMarkdown(source) {
     let html = escapeHtml(source);
     html = html.replace(/`([^`]+)`/g, (_, code) => `<code>${code}</code>`);
@@ -323,7 +415,7 @@
 
   function renderRichMarkdown(source) {
     if (window.marked && typeof window.marked.parse === 'function') {
-      let toRender = normalizeMediaContent(source);
+      let toRender = normalizeAttachmentContent(normalizeMediaContent(source));
       let placeholders = [];
 
       if (window.katex) {
@@ -919,6 +1011,7 @@
           )).join(''));
         }
         card.innerHTML = parts.join('') || '<p></p>';
+        enhanceAttachmentDownloads(card);
         enhanceCodePreviews(card);
         return;
       }
@@ -960,6 +1053,7 @@
 
     if (role === 'assistant') {
       card.innerHTML = renderRichMarkdown(content);
+      enhanceAttachmentDownloads(card);
       enhanceCodePreviews(card);
       return;
     }

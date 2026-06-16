@@ -584,7 +584,7 @@
         },
         "nsfwConcurrency": {
           "label": "开启 NSFW 并发数",
-          "desc": "批量开启 NSFW 时的 token 级并发数；每个 token 需经历三步网络请求。"
+          "desc": "批量开启 NSFW 时的 token 级并发数；每个 token 需经历三步网络请求，服务端最多使用 8。"
         },
         "refreshConcurrency": {
           "label": "刷新 Usage 并发数",

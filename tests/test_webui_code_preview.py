@@ -9,6 +9,7 @@ import pytest
 from fastapi import HTTPException
 
 from app.platform.auth import middleware as auth_middleware
+from app.products.web.webui import attachments as attachments_module
 from app.products.web.webui import code_preview as code_preview_module
 
 
@@ -82,8 +83,8 @@ def test_code_preview_styles_are_present() -> None:
 def test_chat_page_busts_cached_preview_assets() -> None:
     html = CHAT_HTML.read_text(encoding="utf-8")
 
-    assert "/static/css/app.css?v={{APP_VERSION}}-webtools2" in html
-    assert "/static/js/webui/chat.js?v={{APP_VERSION}}-isolate1" in html
+    assert "/static/css/app.css?v={{APP_VERSION}}-downloads1" in html
+    assert "/static/js/webui/chat.js?v={{APP_VERSION}}-downloads1" in html
 
 
 def test_code_preview_page_and_route_exist() -> None:
@@ -242,3 +243,38 @@ def test_webui_chat_mcp_management_exposes_tool_discovery() -> None:
     assert ".webui-mcp-item-badge" in css
     assert ".webui-mcp-item-tools" in css
     assert ".webui-mcp-json-input" in css
+
+
+def test_webui_chat_renders_document_links_as_downloads() -> None:
+    js = _chat_js()
+    css = APP_CSS.read_text(encoding="utf-8")
+    package = (ROOT / "app" / "products" / "web" / "webui" / "__init__.py").read_text(
+        encoding="utf-8"
+    )
+
+    assert "ATTACHMENT_DOWNLOAD_ENDPOINT = '/webui/api/attachments/download'" in js
+    assert "function enhanceAttachmentDownloads(root)" in js
+    assert "normalizeAttachmentContent(normalizeMediaContent(source))" in js
+    assert "link.setAttribute('download', filename)" in js
+    assert "proxiedDownloadHref(originalHref, filename)" in js
+    assert "assets.grok.com" in js
+    assert ".msg-download-attachment" in css
+    assert "from .attachments import router as attachments_router" in package
+    assert "router.include_router(attachments_router)" in package
+
+
+def test_webui_attachment_download_helpers_are_restricted_to_asset_hosts() -> None:
+    assert (
+        attachments_module._validate_download_reference(
+            "https://assets.grok.com/users/u/report.pdf"
+        )
+        == "https://assets.grok.com/users/u/report.pdf"
+    )
+    assert attachments_module._validate_download_reference("/users/u/report.pdf") == "/users/u/report.pdf"
+    assert attachments_module._safe_filename("../report final.pdf", "/x") == "report final.pdf"
+    assert "filename*=UTF-8''report%20final.pdf" in attachments_module._content_disposition(
+        "report final.pdf"
+    )
+
+    with pytest.raises(Exception):
+        attachments_module._validate_download_reference("https://example.invalid/report.pdf")

@@ -3,7 +3,7 @@ import pytest
 
 from app.control.account.enums import AccountStatus
 from app.control.account.models import AccountRecord
-from app.products.web.admin.batch import _concurrency, _dispatch_sync
+from app.products.web.admin.batch import _concurrency, _dispatch_sync, _nsfw_concurrency
 
 
 class _Repo:
@@ -41,3 +41,8 @@ async def test_dispatch_sync_reports_expired_and_transient_failures() -> None:
 
 def test_batch_concurrency_is_capped_at_80() -> None:
     assert _concurrency(999, "batch.refresh_concurrency") == 80
+
+
+def test_nsfw_enable_concurrency_is_capped_more_aggressively() -> None:
+    assert _nsfw_concurrency(50, True) == 8
+    assert _nsfw_concurrency(50, False) == 50

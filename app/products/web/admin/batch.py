@@ -30,6 +30,7 @@ from . import get_refresh_svc, get_repo
 
 router = APIRouter(prefix="/batch", tags=["Admin - Batch"])
 _MAX_BATCH_CONCURRENCY = 80
+_MAX_NSFW_ENABLE_CONCURRENCY = 8
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -45,6 +46,13 @@ def _concurrency(override: int | None, config_key: str, fallback: int = 50) -> i
     except (TypeError, ValueError):
         resolved = fallback
     return min(max(1, resolved), _MAX_BATCH_CONCURRENCY)
+
+
+def _nsfw_concurrency(override: int | None, enabled: bool) -> int:
+    resolved = _concurrency(override, "batch.nsfw_concurrency", fallback=_MAX_NSFW_ENABLE_CONCURRENCY)
+    if not enabled:
+        return resolved
+    return min(resolved, _MAX_NSFW_ENABLE_CONCURRENCY)
 
 
 def _mask(token: str) -> str:
@@ -267,7 +275,7 @@ async def batch_nsfw(
     async def _nsfw_and_tag(token: str) -> dict:
         return await _nsfw_one(repo, token, enabled)
 
-    c = _concurrency(concurrency, "batch.nsfw_concurrency")
+    c = _nsfw_concurrency(concurrency, enabled)
     return await _dispatch(tokens, _nsfw_and_tag, use_async=async_mode, concurrency=c)
 
 

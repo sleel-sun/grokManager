@@ -172,8 +172,8 @@ timeout = 60
 
 # ==================== 批量操作 ====================
 [batch]
-# 开启 NSFW 并发数（token 级，每个 token 需三步网络请求）
-nsfw_concurrency         = 50
+# 开启 NSFW 并发数（token 级，每个 token 需三步网络请求；服务端最多使用 8）
+nsfw_concurrency         = 8
 # 刷新 Usage 并发数（token 级）
 refresh_concurrency      = 50
 # 上传 Asset 并发数（全局，API 收到附件时触发，跨所有并发请求共享）
