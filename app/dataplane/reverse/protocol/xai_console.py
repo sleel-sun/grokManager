@@ -47,6 +47,20 @@ def _identity_instructions(model: str) -> str:
     )
 
 
+def _apply_console_input_prefix(message: str, spec: ModelSpec | None) -> str:
+    prefix = (getattr(spec, "console_input_prefix", None) or "").strip()
+    if not prefix:
+        return message
+
+    trigger = f"[user]: {prefix}"
+    body = (message or "").strip()
+    if not body:
+        return trigger
+    if body.startswith(trigger):
+        return body
+    return f"{trigger}\n\n{body}"
+
+
 def build_console_responses_payload(
     *,
     model: str,
@@ -84,7 +98,7 @@ def build_console_responses_payload(
         else identity
     )
     payload["model"] = model
-    payload["input"] = message
+    payload["input"] = _apply_console_input_prefix(message, spec)
     payload["stream"] = stream
     return payload
 

@@ -65,6 +65,14 @@ image_format = "grok_url"
 video_format = "grok_url"
 
 
+# ==================== 模型别名配置 ====================
+[models]
+# grok-composer-2.5-fast 的实际 Console Responses 底层模型。
+# 上游不直接暴露 grok-composer-2.5-fast 模型 ID，因此默认通过 grok-4.20-multi-agent
+# 加输入触发词实现；可改为 grok-4.3、grok-4.20-0309 等当前账号可用的 Console 模型。
+composer_fast_upstream_model = "grok-4.20-multi-agent"
+
+
 # ==================== 本地缓存 ====================
 [cache.local]
 # 图片缓存上限（MB），0 = 不限制；超限后按最旧文件优先清理，并回落到上限的 60%
