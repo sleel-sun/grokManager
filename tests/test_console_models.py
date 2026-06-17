@@ -131,6 +131,7 @@ class ConsoleModelRoutingTests(unittest.TestCase):
         "grok-4.3-medium",
         "grok-4.3-low",
         "grok-build-console",
+        "grok-composer-2.5-fast",
         "grok-4.3-beta",
     )
     AVAILABLE_MEDIA_MODELS = (
@@ -222,6 +223,7 @@ class ConsoleModelRoutingTests(unittest.TestCase):
             "grok-4.3-medium": "grok-4.3",
             "grok-4.3-low": "grok-4.3",
             "grok-build-console": "grok-build-0.1",
+            "grok-composer-2.5-fast": "grok-4.20-multi-agent",
         }
 
         for public_model, upstream_model in expected.items():
@@ -230,6 +232,47 @@ class ConsoleModelRoutingTests(unittest.TestCase):
 
                 self.assertTrue(spec.uses_console_responses())
                 self.assertEqual(spec.upstream_model_name(), upstream_model)
+
+    def test_composer_fast_uses_text_trigger_alias(self) -> None:
+        spec = resolve("grok-composer-2.5-fast")
+
+        payload = build_console_responses_payload(
+            model=spec.upstream_model_name(),
+            public_model=spec.model_name,
+            spec=spec,
+            message="[user]: write a short note",
+            stream=True,
+        )
+
+        self.assertEqual(payload["model"], "grok-4.20-multi-agent")
+        self.assertEqual(
+            payload["input"],
+            "[user]: grok-composer-2.5-fast\n\n[user]: write a short note",
+        )
+        self.assertIn("grok-composer-2.5-fast", payload["instructions"])
+
+    def test_composer_fast_upstream_model_can_be_configured(self) -> None:
+        spec = resolve("grok-composer-2.5-fast")
+
+        def fake_get_config(key: str, default=None):
+            if key == "models.composer_fast_upstream_model":
+                return "grok-4.3"
+            return default
+
+        with patch("app.platform.config.snapshot.get_config", side_effect=fake_get_config):
+            payload = build_console_responses_payload(
+                model=spec.upstream_model_name(),
+                public_model=spec.model_name,
+                spec=spec,
+                message="[user]: hi",
+                stream=True,
+            )
+
+        self.assertEqual(payload["model"], "grok-4.3")
+        self.assertEqual(
+            payload["input"],
+            "[user]: grok-composer-2.5-fast\n\n[user]: hi",
+        )
 
     def test_console_reasoning_effort_payload_policy(self) -> None:
         cases = (
@@ -249,6 +292,7 @@ class ConsoleModelRoutingTests(unittest.TestCase):
             ("grok-4.20-0309-reasoning-console", None, None),
             ("grok-4.20-0309-non-reasoning-console", None, None),
             ("grok-build-console", "high", None),
+            ("grok-composer-2.5-fast", "high", None),
         )
 
         for model, requested_effort, expected_effort in cases:

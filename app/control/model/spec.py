@@ -22,9 +22,13 @@ class ModelSpec:
                     pools first (hard priority, not soft preference).
     ``upstream_profile`` selects the reverse endpoint/protocol family.
     ``upstream_model`` overrides the model string sent to that upstream.
+    ``upstream_model_config_key`` optionally lets runtime config override the
+                    upstream model string while keeping this value as default.
     ``console_fixed_effort`` forces ``reasoning.effort`` for Console Responses.
     ``console_default_effort`` uses caller effort when provided, otherwise
                     applies this default; explicit ``none`` disables it.
+    ``console_input_prefix`` prepends a trigger line for Console modes that are
+                    exposed by upstream chat text rather than as model IDs.
     """
 
     model_name: str
@@ -36,8 +40,10 @@ class ModelSpec:
     prefer_best: bool = False
     upstream_profile: str = "grok_web"
     upstream_model: str | None = None
+    upstream_model_config_key: str | None = None
     console_fixed_effort: str | None = None
     console_default_effort: str | None = None
+    console_input_prefix: str | None = None
 
     # --- convenience predicates ---
 
@@ -58,7 +64,15 @@ class ModelSpec:
 
     def upstream_model_name(self) -> str:
         """Return the model identifier to send to the selected upstream."""
-        return self.upstream_model or self.model_name
+        default = self.upstream_model or self.model_name
+        key = (self.upstream_model_config_key or "").strip()
+        if not key:
+            return default
+
+        from app.platform.config.snapshot import get_config
+
+        configured = str(get_config(key, default) or "").strip()
+        return configured or default
 
     def uses_console_responses(self) -> bool:
         """Return whether this model should call console.x.ai Responses."""
