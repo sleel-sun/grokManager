@@ -24,6 +24,7 @@ Core features:
 - Anthropic-compatible endpoints: `/v1/messages`, `/v1/messages/count_tokens`; `/v1/models` returns Anthropic-shaped models when `anthropic-version` is present
 - Streaming and non-streaming chat, explicit reasoning output, function-tool structure passthrough, Web Search controls, and unified token / usage accounting
 - Multi-account pools, tier-aware selection, failure feedback, quota synchronization, bulk refresh, bulk NSFW enablement, and automatic maintenance
+- Console 429 tracking with a sliding-window threshold, expired quota auto-reset, and healthy-account auto-recovery
 - Local image/video caching, attachment download proxying, and locally proxied media URLs
 - Text-to-image, image editing, text-to-video, and image-to-video support
 - Built-in Admin dashboard, Web Chat, MCP tool management, code previews, Masonry image generation, and ChatKit voice page
@@ -418,6 +419,73 @@ These models route through xAI Console Responses with `basic` pool accounts. Pub
 ## API Examples
 
 > The examples below use `http://localhost:8000`.
+
+### Cloudflare / WAF and the OpenAI Python SDK
+
+If your public domain is protected by Cloudflare or another WAF, the same API
+key may work with `curl` but fail from the OpenAI Python SDK or Python `urllib`
+with `HTTP 403`, `error code: 1010`, or `Your request was blocked`. These
+responses are usually blocked by the WAF before the request reaches
+grokManager, so there may be no matching application log entry.
+
+Common triggering headers include:
+
+```text
+User-Agent: OpenAI/Python ...
+User-Agent: Python-urllib/...
+```
+
+Override the SDK request headers when needed:
+
+```python
+import os
+from openai import OpenAI
+
+client = OpenAI(
+    api_key=os.environ["GROKMANAGER_API_KEY"],
+    base_url="https://your-domain.example/v1",
+    default_headers={
+        "User-Agent": "curl/8.5.0",
+        "Accept": "*/*",
+    },
+)
+
+response = client.chat.completions.create(
+    model="grok-4.20-auto",
+    messages=[{"role": "user", "content": "Hello"}],
+)
+print(response.choices[0].message.content)
+```
+
+`urllib` also needs explicit headers:
+
+```python
+import json
+import os
+from urllib import request
+
+req = request.Request(
+    "https://your-domain.example/v1/models",
+    headers={
+        "Authorization": f"Bearer {os.environ['GROKMANAGER_API_KEY']}",
+        "User-Agent": "curl/8.5.0",
+        "Accept": "*/*",
+    },
+)
+
+with request.urlopen(req, timeout=30) as resp:
+    print(json.loads(resp.read()))
+```
+
+The more reliable deployment-side fix is to skip WAF / Bot rules only for the
+API path, while keeping authentication and rate limiting enabled:
+
+```text
+(http.host eq "your-domain.example" and starts_with(http.request.uri.path, "/v1/"))
+```
+
+Do not disable protection for the whole site; scope the bypass to the
+OpenAI / Anthropic compatible API paths.
 
 <details>
 <summary><code>GET /v1/models</code></summary>

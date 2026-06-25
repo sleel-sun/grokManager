@@ -20,6 +20,7 @@ from app.control.model.enums import ModeId
 from app.control.model.registry import resolve as resolve_model
 from app.control.account.enums import FeedbackKind
 from app.dataplane.reverse.protocol.xai_chat import classify_line
+from app.dataplane.reverse.protocol.xai_console import client_function_tool_names
 from app.products._account_selection import reserve_account
 
 from .chat import (
@@ -259,6 +260,7 @@ async def create(
         cfg=cfg,
         request_overrides=request_overrides,
     )
+    native_tool_names = client_function_tool_names(tools) if spec.uses_console_responses() else set()
     if local_tools:
         chat_tools = _to_chat_tools(local_tools)
         tool_names = extract_tool_names(chat_tools)
@@ -298,9 +300,10 @@ async def create(
             _retry  = False
             _retry_same_account = False
             fail_exc: BaseException | None = None
-            adapter           = _new_stream_adapter(spec, files)
+            adapter           = _new_stream_adapter(spec, files, native_tool_names)
             think_buf:  list[str] = []
             text_buf:   list[str] = []
+            native_text_buffer: list[str] = []
             reasoning_started   = False
             reasoning_closed    = False
             message_started     = False
@@ -324,6 +327,7 @@ async def create(
                         files     = files,
                         spec      = spec,
                         request_overrides=request_overrides,
+                        messages  = messages if native_tool_names else None,
                         timeout_s = timeout_s,
                     ):
                         if tool_calls_emitted:
@@ -365,6 +369,9 @@ async def create(
                                 })
 
                             elif ev.kind == "text":
+                                if native_tool_names:
+                                    native_text_buffer.append(ev.content)
+                                    continue
                                 if reasoning_started and not reasoning_closed:
                                     reasoning_closed = True
                                     full_think = "".join(think_buf)
@@ -451,6 +458,16 @@ async def create(
                                         "annotation":       ev.annotation_data,
                                     })
 
+                            elif ev.kind == "tool_calls" and ev.tool_calls:
+                                fc_items = _build_fc_items(ev.tool_calls)
+                                detected_fc_items = fc_items
+                                base_idx = 1 if reasoning_started else 0
+                                async for evt in _emit_fc_events(fc_items, base_idx):
+                                    yield evt
+                                tool_calls_emitted = True
+                                ended = True
+                                break
+
                             elif ev.kind == "soft_stop":
                                 ended = True
                                 break
@@ -498,6 +515,33 @@ async def create(
                     else:
                         # Normal text path
                         msg_idx = 1 if reasoning_started else 0
+                        if native_text_buffer:
+                            full_native_text = "".join(native_text_buffer)
+                            if not message_started:
+                                message_started = True
+                                yield format_sse("response.output_item.added", {
+                                    "type":         "response.output_item.added",
+                                    "output_index": msg_idx,
+                                    "item":         {
+                                        "id": message_id, "type": "message",
+                                        "role": "assistant", "content": [], "status": "in_progress",
+                                    },
+                                })
+                                yield format_sse("response.content_part.added", {
+                                    "type":          "response.content_part.added",
+                                    "item_id":       message_id,
+                                    "output_index":  msg_idx,
+                                    "content_index": 0,
+                                    "part":          {"type": "output_text", "text": "", "annotations": []},
+                                })
+                            text_buf.append(full_native_text)
+                            yield format_sse("response.output_text.delta", {
+                                "type":          "response.output_text.delta",
+                                "item_id":       message_id,
+                                "output_index":  msg_idx,
+                                "content_index": 0,
+                                "delta":         full_native_text,
+                            })
                         extract_images = getattr(
                             adapter, "extract_generated_images_from_text", None
                         )
@@ -649,7 +693,7 @@ async def create(
     # -------------------------------------------------------------------------
     excluded: list[str] = []
     token    = ""
-    adapter  = _new_stream_adapter(spec, files)
+    adapter  = _new_stream_adapter(spec, files, native_tool_names)
     for attempt in range(max_retries + 1):
         acct, selected_mode_id = await reserve_account(
             directory,
@@ -665,7 +709,7 @@ async def create(
         _retry   = False
         _retry_same_account = False
         fail_exc: BaseException | None = None
-        adapter  = _new_stream_adapter(spec, files)   # fresh adapter per attempt
+        adapter  = _new_stream_adapter(spec, files, native_tool_names)   # fresh adapter per attempt
 
         try:
             try:
@@ -676,6 +720,7 @@ async def create(
                     files     = files,
                     spec      = spec,
                     request_overrides=request_overrides,
+                    messages  = messages if native_tool_names else None,
                     timeout_s = timeout_s,
                 ):
                     event_type, data = classify_line(line)
@@ -756,6 +801,26 @@ async def create(
     full_think = ("".join(adapter.thinking_buf) or "") if emit_think else ""
 
     # Check for tool calls in the accumulated text
+    if native_tool_names and getattr(adapter, "function_calls", None):
+        calls = list(adapter.function_calls)
+        output: list[dict] = []
+        if full_think:
+            output.append({
+                "id":      reasoning_id,
+                "type":    "reasoning",
+                "summary": [{"type": "summary_text", "text": full_think}],
+                "status":  "completed",
+            })
+        output.extend(_build_fc_items(calls))
+        pt = estimate_prompt_tokens(message)
+        ct = estimate_tool_call_tokens(calls)
+        rt = estimate_tokens(full_think) if full_think else 0
+        logger.info("responses native tool_calls: model={} calls={}", model, len(calls))
+        return make_resp_object(
+            response_id, model, "completed", output,
+            build_resp_usage(pt, ct + rt, rt),
+        )
+
     if tool_names:
         tc_result = parse_tool_calls(full_text, tool_names)
         if tc_result.calls:

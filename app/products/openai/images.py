@@ -460,6 +460,18 @@ async def generate(
     aspect_ratio = resolve_aspect_ratio(size)
     enable_nsfw  = cfg.get_bool("features.enable_nsfw", True)
 
+    if spec.upstream_profile == "chatgpt_image":
+        from .gpt_image import generate as gpt_image_generate
+
+        return await gpt_image_generate(
+            model=spec.upstream_model_name(),
+            prompt=prompt,
+            n=n,
+            response_format=response_format,
+            stream=stream,
+            chat_format=chat_format,
+        )
+
     from app.dataplane.account import _directory as _acct_dir
     if _acct_dir is None:
         raise RateLimitError("Account directory not initialised")

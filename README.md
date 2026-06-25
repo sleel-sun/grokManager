@@ -25,6 +25,7 @@
 - Anthropic 兼容接口：`/v1/messages`、`/v1/messages/count_tokens`；`/v1/models` 在收到 `anthropic-version` 请求头时自动返回 Anthropic 格式
 - 支持流式与非流式对话、显式思考输出、函数工具结构透传、Web Search 控制，以及统一的 token / usage 统计
 - 支持多账号池、层级选号、失败反馈、额度同步、批量刷新、批量 NSFW 开启与自动维护
+- 支持 console 429 独立计数、滑动窗口误判缓和、过期配额自动重置与健康账号自动恢复
 - 支持本地缓存图片、视频、附件下载代理与本地代理链接返回
 - 支持文生图、图像编辑、文生视频、图生视频
 - 内置 Admin 后台管理、Web Chat、MCP 工具管理、代码预览、Masonry 生图、ChatKit 语音页面
@@ -487,6 +488,71 @@ uv run grokmanager-maintainer --count 5 --workers 2  # 2 个并发 worker × 每
 ## 接口示例
 
 > 以下示例默认使用 `http://localhost:8000` 地址。
+
+### Cloudflare / WAF 与 OpenAI Python SDK
+
+如果公网域名前置了 Cloudflare 或其他 WAF，可能会出现同一个 API key 用 `curl`
+正常访问，但 OpenAI Python SDK 或 Python `urllib` 返回 `HTTP 403`、`error code:
+1010`、`Your request was blocked` 的情况。这类响应通常由 WAF 在请求到达
+grokManager 前拦截，服务端日志里不会出现对应请求。
+
+常见触发头包括：
+
+```text
+User-Agent: OpenAI/Python ...
+User-Agent: Python-urllib/...
+```
+
+客户端可覆盖请求头：
+
+```python
+import os
+from openai import OpenAI
+
+client = OpenAI(
+    api_key=os.environ["GROKMANAGER_API_KEY"],
+    base_url="https://your-domain.example/v1",
+    default_headers={
+        "User-Agent": "curl/8.5.0",
+        "Accept": "*/*",
+    },
+)
+
+response = client.chat.completions.create(
+    model="grok-4.20-auto",
+    messages=[{"role": "user", "content": "你好"}],
+)
+print(response.choices[0].message.content)
+```
+
+`urllib` 也需要显式设置请求头：
+
+```python
+import json
+import os
+from urllib import request
+
+req = request.Request(
+    "https://your-domain.example/v1/models",
+    headers={
+        "Authorization": f"Bearer {os.environ['GROKMANAGER_API_KEY']}",
+        "User-Agent": "curl/8.5.0",
+        "Accept": "*/*",
+    },
+)
+
+with request.urlopen(req, timeout=30) as resp:
+    print(json.loads(resp.read()))
+```
+
+更稳定的做法是在 Cloudflare 里为 API 路径配置跳过 WAF / Bot 规则，例如仅对独立
+API 域名和 `/v1/*` 路径放行，并保留鉴权与速率限制：
+
+```text
+(http.host eq "your-domain.example" and starts_with(http.request.uri.path, "/v1/"))
+```
+
+不要把整站关闭防护；只放行 OpenAI / Anthropic 兼容 API 路径即可。
 
 <details>
 <summary><code>GET /v1/models</code></summary>

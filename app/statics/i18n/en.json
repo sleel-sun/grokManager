@@ -241,6 +241,44 @@
     "actionAdd": "Add Account",
     "actionImportShort": "Import",
     "actionAddShort": "Add",
+    "gptImageTitle": "GPT Image Accounts",
+    "gptImageSubtitle": "ChatGPT access tokens for gpt-image-1 / gpt-image-2, kept separate from the xAI account pool.",
+    "gptImageRefresh": "Refresh",
+    "gptImageAdd": "Add GPT",
+    "gptImageColToken": "Access Token",
+    "gptImageColAccount": "Account",
+    "gptImageColType": "Type",
+    "gptImageColStatus": "Status",
+    "gptImageColUpdated": "Updated",
+    "gptImageEmpty": "No GPT image accounts imported yet.",
+    "gptImageModalTitle": "Add GPT Image Accounts",
+    "gptImageModalHelp": "Enter one ChatGPT access token per line. JSON objects per line are also supported with access_token, email, alias, and is_free fields.",
+    "gptImagePlaceholder": "Bearer eyJ...\n{\"access_token\":\"eyJ...\",\"email\":\"user@example.com\"}",
+    "gptImageFree": "Import as free accounts",
+    "gptImageFreeHint": "Free accounts use the conservative ChatGPT image model route.",
+    "gptImageLoadFailed": "Failed to load GPT image accounts",
+    "gptImageJsonInvalid": "GPT image account JSON must include access_token, or email, password, and mail_token together",
+    "gptImageEnterToken": "Enter GPT image access tokens",
+    "gptImageAdding": "Adding {n} GPT image accounts…",
+    "gptImageAddDone": "GPT image accounts added: {n}",
+    "gptImageAddFailed": "Failed to add GPT image accounts",
+    "gptImageDeleteTitle": "Delete GPT Image Account",
+    "gptImageDeleteBody": "Delete GPT image account {token}?<br><small style=\"color:var(--error)\">This action cannot be undone.</small>",
+    "gptImageDeleting": "Deleting GPT image account…",
+    "gptImageDeleteDone": "GPT image account deleted",
+    "gptImageDeleteFailed": "Failed to delete GPT image account",
+    "gptImageTypeFree": "Free",
+    "gptImageTypePaid": "Paid",
+    "gptImageStatus": {
+      "available": "Available",
+      "unchecked": "Unchecked",
+      "loginRequired": "Login required",
+      "loginFailed": "Login failed",
+      "invalid": "Invalid",
+      "failed": "Failed",
+      "timeout": "Timed out",
+      "rateLimited": "Rate limited"
+    },
     "sectionOverview": "Overview",
     "sectionTable": "Account List",
     "statTotal": "Total Accounts",
@@ -660,7 +698,7 @@
         },
         "retryCodes": {
           "label": "Application Retry Status Codes",
-          "desc": "HTTP status codes that trigger application-layer retries. Separate multiple values with commas, for example 429,503."
+          "desc": "HTTP status codes that trigger application-layer retries. Separate multiple values with commas, for example 429,502,503."
         },
         "resetSessionCodes": {
           "label": "Transport Session Rebuild Status Codes",
@@ -673,6 +711,10 @@
         "imageTimeout": {
           "label": "Image Request Timeout (s)",
           "desc": "Overall timeout for image generation WebSocket requests."
+        },
+        "gptImageTimeout": {
+          "label": "GPT Image Request Timeout (s)",
+          "desc": "Overall timeout for ChatGPT gpt-image-1 / gpt-image-2 generation requests."
         },
         "videoTimeout": {
           "label": "Video Request Timeout (s)",

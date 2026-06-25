@@ -3,9 +3,9 @@
 Canonical quota totals per pool type (from upstream rate-limits API):
 
               auto    fast    expert    heavy    grok_4_3  console
-  basic         20      60       8        —         —        30      window: 72000 / 36000 / 900 s
-  super         50     140      50        —        50        30      window: 7200 / 900 s
-  heavy        150     400     150       20       150       30      window: 7200 / 900 s
+  basic         20      60       8        —         —        30      window: 72000 / 36000 / 1800 s
+  super         50     140      50        —        50        30      window: 7200 / 1800 s
+  heavy        150     400     150       20       150       30      window: 7200 / 1800 s
 
 Pool inference uses ``auto.total`` as the primary signal — the three values
 (20 / 50 / 150) are mutually exclusive across pool types.
@@ -41,7 +41,7 @@ def _w(remaining: int, total: int, window_seconds: int) -> QuotaWindow:
 # ---------------------------------------------------------------------------
 
 CONSOLE_LIMIT = 30
-CONSOLE_WINDOW_SECONDS = 900
+CONSOLE_WINDOW_SECONDS = 1800
 
 BASIC_QUOTA_DEFAULTS = AccountQuotaSet(
     auto=_w(20, 20, 72_000),  # 20  queries / 20 h

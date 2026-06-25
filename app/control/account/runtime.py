@@ -9,11 +9,24 @@ from typing import TYPE_CHECKING, Literal
 
 if TYPE_CHECKING:
     from .refresh import AccountRefreshService
+    from .repository import AccountRepository
     from .scheduler import AccountRefreshScheduler
 
+_repository: "AccountRepository | None" = None
 _refresh_service: "AccountRefreshService | None" = None
 _refresh_scheduler: "AccountRefreshScheduler | None" = None
 _refresh_scheduler_leader = False
+
+
+def set_account_repository(repository: "AccountRepository | None") -> None:
+    """Register the process-global account repository for non-request code paths."""
+    global _repository
+    _repository = repository
+
+
+def get_account_repository() -> "AccountRepository | None":
+    """Return the registered account repository, if any."""
+    return _repository
 
 
 def set_refresh_service(service: "AccountRefreshService | None") -> None:
@@ -92,6 +105,8 @@ def reconcile_refresh_runtime(
 
 
 __all__ = [
+    "get_account_repository",
+    "set_account_repository",
     "get_refresh_service",
     "set_refresh_service",
     "get_refresh_scheduler",

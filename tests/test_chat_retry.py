@@ -8,11 +8,14 @@ from app.products.openai import chat
 
 
 class _FakeConfig:
-    def __init__(self, values: dict[str, int] | None = None) -> None:
+    def __init__(self, values: dict[str, object] | None = None) -> None:
         self._values = values or {}
 
     def get_int(self, key: str, default: int) -> int:
         return int(self._values.get(key, default))
+
+    def get(self, key: str, default=None):
+        return self._values.get(key, default)
 
 
 def test_plain_403_retries_with_another_account() -> None:
@@ -42,6 +45,25 @@ def test_chat_retry_count_can_raise_account_swap_floor() -> None:
 
     with patch.object(chat, "selection_max_retries", return_value=1):
         assert chat._chat_max_retries(cfg) == 8
+
+
+def test_default_retry_codes_include_transport_502() -> None:
+    assert 502 in chat._configured_retry_codes(_FakeConfig())
+
+
+def test_transport_retry_count_has_small_default() -> None:
+    assert chat._chat_transport_max_retries(_FakeConfig()) == 2
+
+
+def test_curl_transport_502_is_retryable() -> None:
+    exc = UpstreamError(
+        "Transport request failed: Failed to perform, curl: (92) HTTP/2 stream 1 was not closed cleanly",
+        status=502,
+        body="Failed to perform, curl: (92) HTTP/2 stream 1 was not closed cleanly",
+    )
+
+    assert chat._is_transient_transport_error(exc)
+    assert chat._should_retry_upstream(exc, frozenset())
 
 
 def test_chat_account_exhaustion_reports_entitlement_condition() -> None:

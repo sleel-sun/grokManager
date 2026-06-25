@@ -7,6 +7,7 @@ from typing import Any
 import orjson
 
 from app.control.model.spec import ModelSpec
+from app.dataplane.reverse.protocol.tool_parser import ParsedToolCall
 from app.dataplane.reverse.protocol.xai_chat import (
     FrameEvent,
     _split_trailing_incomplete_image_url,
@@ -14,7 +15,27 @@ from app.dataplane.reverse.protocol.xai_chat import (
 
 
 _REQUESTED_REASONING_EFFORT_KEY = "_reasoning_effort"
-CONSOLE_SERVER_SIDE_TOOL_TYPES = frozenset({"web_search", "x_search"})
+CONSOLE_SERVER_SIDE_TOOL_TYPES = frozenset({
+    "web_search",
+    "x_search",
+    "code_interpreter",
+    "file_search",
+    "web_search_with_snippets",
+    "browse_page",
+    "open_page",
+    "open_page_with_find",
+    "search_images",
+    "image_search",
+    "view_image",
+    "x_user_search",
+    "x_keyword_search",
+    "x_semantic_search",
+    "x_thread_fetch",
+    "view_x_video",
+    "chatroom_send",
+    "code_execution",
+    "collections_search",
+})
 _CONSOLE_DEFAULT_SEARCH_TOOLS = (
     {"type": "web_search"},
     {"type": "x_search"},
@@ -69,6 +90,7 @@ def build_console_responses_payload(
     public_model: str | None = None,
     spec: ModelSpec | None = None,
     request_overrides: dict[str, Any] | None = None,
+    messages: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Build a Responses-compatible payload for console.x.ai/v1/responses."""
     payload: dict[str, Any] = {}
@@ -98,7 +120,11 @@ def build_console_responses_payload(
         else identity
     )
     payload["model"] = model
-    payload["input"] = _apply_console_input_prefix(message, spec)
+    payload["input"] = (
+        _messages_to_console_input(messages, spec)
+        if messages is not None
+        else _apply_console_input_prefix(message, spec)
+    )
     payload["stream"] = stream
     return payload
 
@@ -145,29 +171,37 @@ def split_console_server_tools(
     tools: list[Any] | None,
     spec: ModelSpec | None,
 ) -> tuple[list[dict[str, Any]] | None, list[dict[str, Any]]]:
-    """Split xAI Console server-side tools from local function tools.
+    """Split tools for the selected upstream protocol.
 
-    OpenAI-compatible function tools are handled locally through XML prompt
-    injection. xAI's ``web_search`` / ``x_search`` tools must instead be sent
-    through to console.x.ai for server-side execution.
+    Console Responses supports native tools, so both xAI server-side tools and
+    client-declared function tools are forwarded there. Non-console transports
+    keep the legacy XML local-tool path.
     """
     if not tools:
         return None, []
     if spec is None or not spec.uses_console_responses():
         return tools, []
 
-    local_tools: list[dict[str, Any]] = []
-    server_tools: list[dict[str, Any]] = []
+    console_tools: list[dict[str, Any]] = []
     for tool in tools:
-        server_tool = _console_server_tool_from(tool)
-        if server_tool is not None:
-            server_tools.append(server_tool)
-        elif isinstance(tool, dict):
-            local_tools.append(tool)
-    return (local_tools or None), server_tools
+        console_tool = _console_tool_from(tool)
+        if console_tool is not None:
+            console_tools.append(console_tool)
+    return None, console_tools
 
 
-def _console_server_tool_from(tool: Any) -> dict[str, Any] | None:
+def _function_tool_source(tool: dict[str, Any]) -> dict[str, Any] | None:
+    if tool.get("type") != "function":
+        return None
+    function = tool.get("function")
+    if isinstance(function, dict):
+        return function
+    if "name" in tool:
+        return tool
+    return None
+
+
+def _console_tool_from(tool: Any) -> dict[str, Any] | None:
     if not isinstance(tool, dict):
         return None
 
@@ -175,22 +209,44 @@ def _console_server_tool_from(tool: Any) -> dict[str, Any] | None:
     if tool_type in CONSOLE_SERVER_SIDE_TOOL_TYPES:
         return dict(tool)
 
-    if tool_type != "function":
-        return None
-    function = tool.get("function")
-    if not isinstance(function, dict):
+    src = _function_tool_source(tool)
+    if src is None:
         return None
 
-    function_name = str(function.get("name") or "").strip()
-    if function_name not in CONSOLE_SERVER_SIDE_TOOL_TYPES:
+    function_name = str(src.get("name") or "").strip()
+    if not function_name:
         return None
 
-    server_tool: dict[str, Any] = {"type": function_name}
-    for source in (tool, function):
-        for key, value in source.items():
-            if key not in _CONSOLE_FUNCTION_TOOL_EXCLUDED_KEYS and value is not None:
-                server_tool[key] = value
-    return server_tool
+    if function_name in CONSOLE_SERVER_SIDE_TOOL_TYPES:
+        server_tool: dict[str, Any] = {"type": function_name}
+        for source in (tool, src):
+            for key, value in source.items():
+                if key not in _CONSOLE_FUNCTION_TOOL_EXCLUDED_KEYS and value is not None:
+                    server_tool[key] = value
+        return server_tool
+
+    client_tool: dict[str, Any] = {"type": "function", "name": function_name}
+    for key in ("description", "parameters", "strict"):
+        if key in src and src[key] is not None:
+            client_tool[key] = src[key]
+        elif key in tool and tool[key] is not None:
+            client_tool[key] = tool[key]
+    return client_tool
+
+
+def client_function_tool_names(tools: list[Any] | None) -> set[str]:
+    """Return client-declared function tool names for native console filtering."""
+    names: set[str] = set()
+    for tool in tools or []:
+        if not isinstance(tool, dict):
+            continue
+        src = _function_tool_source(tool)
+        if src is None:
+            continue
+        name = str(src.get("name") or "").strip()
+        if name and name not in CONSOLE_SERVER_SIDE_TOOL_TYPES:
+            names.add(name)
+    return names
 
 
 def console_tool_choice_override(
@@ -204,12 +260,9 @@ def console_tool_choice_override(
     if isinstance(tool_choice, str):
         return tool_choice
     if isinstance(tool_choice, dict):
-        server_choice = _console_tool_choice_from_function(tool_choice)
-        if server_choice is not None:
-            return server_choice
-        # Function choices refer to local XML tool calls, not xAI server tools.
-        if tool_choice.get("type") == "function":
-            return None
+        console_choice = _console_tool_choice_from_function(tool_choice)
+        if console_choice is not None:
+            return console_choice
         return tool_choice
     return None
 
@@ -218,12 +271,146 @@ def _console_tool_choice_from_function(tool_choice: dict[str, Any]) -> dict[str,
     if tool_choice.get("type") != "function":
         return None
     function = tool_choice.get("function")
-    if not isinstance(function, dict):
+    if isinstance(function, dict):
+        function_name = str(function.get("name") or "").strip()
+    else:
+        function_name = str(tool_choice.get("name") or "").strip()
+    if not function_name:
         return None
-    function_name = str(function.get("name") or "").strip()
-    if function_name not in CONSOLE_SERVER_SIDE_TOOL_TYPES:
+    if function_name in CONSOLE_SERVER_SIDE_TOOL_TYPES:
+        return {"type": function_name}
+    return {"type": "function", "name": function_name}
+
+
+def _messages_to_console_input(
+    messages: list[dict[str, Any]],
+    spec: ModelSpec | None,
+) -> list[dict[str, Any]]:
+    input_items: list[dict[str, Any]] = []
+    for msg in messages:
+        if not isinstance(msg, dict):
+            continue
+        role = str(msg.get("role") or "user")
+        if role == "tool":
+            tool_output = _tool_message_to_console_output(msg)
+            if tool_output:
+                input_items.append(tool_output)
+            continue
+
+        content_blocks = (
+            []
+            if role == "assistant" and msg.get("tool_calls") and not msg.get("content")
+            else _message_content_blocks(msg.get("content"))
+        )
+        if content_blocks:
+            api_role = role if role in {"system", "developer", "assistant", "user"} else "user"
+            if api_role == "user" and not input_items:
+                content_blocks = _prefix_first_console_content(content_blocks, spec)
+            input_items.append({"role": api_role, "content": content_blocks})
+
+        if role == "assistant" and msg.get("tool_calls"):
+            input_items.extend(_assistant_tool_calls_to_console(msg.get("tool_calls")))
+    return input_items
+
+
+def _prefix_first_console_content(
+    content_blocks: list[dict[str, Any]],
+    spec: ModelSpec | None,
+) -> list[dict[str, Any]]:
+    prefix = (getattr(spec, "console_input_prefix", None) or "").strip()
+    if not prefix or not content_blocks:
+        return content_blocks
+    first = dict(content_blocks[0])
+    if first.get("type") == "input_text":
+        text = str(first.get("text") or "")
+        first["text"] = _apply_console_input_prefix(text, spec)
+        return [first, *content_blocks[1:]]
+    return [{"type": "input_text", "text": _apply_console_input_prefix("", spec)}, *content_blocks]
+
+
+def _message_content_blocks(content: Any) -> list[dict[str, Any]]:
+    if content is None:
+        return []
+    if isinstance(content, str):
+        return [{"type": "input_text", "text": content}] if content else []
+    if isinstance(content, list):
+        blocks: list[dict[str, Any]] = []
+        for block in content:
+            if not isinstance(block, dict):
+                continue
+            btype = block.get("type")
+            if btype in {"text", "input_text", "output_text"}:
+                text = block.get("text") or block.get("content") or ""
+                if text:
+                    blocks.append({"type": "input_text", "text": str(text)})
+            elif btype in {"image_url", "input_image"}:
+                src = block.get("image_url") or block.get("source") or {}
+                url = src.get("url") if isinstance(src, dict) else src
+                if url:
+                    blocks.append({"type": "input_image", "image_url": str(url)})
+            else:
+                text = block.get("text") or block.get("content")
+                if text:
+                    blocks.append({"type": "input_text", "text": str(text)})
+        return blocks
+    return [{"type": "input_text", "text": str(content)}]
+
+
+def _content_to_text(content: Any) -> str:
+    if content is None:
+        return ""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: list[str] = []
+        for block in content:
+            if isinstance(block, dict):
+                text = block.get("text") or block.get("content")
+                parts.append(str(text if text is not None else block))
+            else:
+                parts.append(str(block))
+        return "\n".join(part for part in parts if part)
+    return str(content)
+
+
+def _assistant_tool_calls_to_console(tool_calls: Any) -> list[dict[str, Any]]:
+    if not isinstance(tool_calls, list):
+        return []
+    items: list[dict[str, Any]] = []
+    for tool_call in tool_calls:
+        if not isinstance(tool_call, dict) or tool_call.get("type") not in (None, "function"):
+            continue
+        fn = tool_call.get("function")
+        if not isinstance(fn, dict):
+            continue
+        call_id = str(tool_call.get("id") or tool_call.get("call_id") or "").strip()
+        name = str(fn.get("name") or "").strip()
+        if not call_id or not name:
+            continue
+        arguments = fn.get("arguments")
+        if arguments is None:
+            arguments = "{}"
+        elif not isinstance(arguments, str):
+            arguments = orjson.dumps(arguments).decode()
+        items.append({
+            "type": "function_call",
+            "call_id": call_id,
+            "name": name,
+            "arguments": arguments,
+            "status": "completed",
+        })
+    return items
+
+
+def _tool_message_to_console_output(msg: dict[str, Any]) -> dict[str, Any] | None:
+    call_id = str(msg.get("tool_call_id") or msg.get("call_id") or "").strip()
+    if not call_id:
         return None
-    return {"type": function_name}
+    return {
+        "type": "function_call_output",
+        "call_id": call_id,
+        "output": _content_to_text(msg.get("content", "")),
+    }
 
 
 def _extract_requested_reasoning_effort(
@@ -252,20 +439,39 @@ class ConsoleResponsesStreamAdapter:
         "thinking_buf",
         "text_buf",
         "image_urls",
+        "function_calls",
         "_seen_image_urls",
         "_pending_text",
         "_search_sources",
         "_search_urls_seen",
+        "_allowed_function_names",
+        "_ignored_function_keys",
+        "_function_calls_by_key",
+        "_function_order",
+        "_function_keys_by_output_index",
     )
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        function_tool_names: set[str] | list[str] | tuple[str, ...] | None = None,
+    ) -> None:
         self.thinking_buf: list[str] = []
         self.text_buf: list[str] = []
         self.image_urls: list[tuple[str, str]] = []
+        self.function_calls: list[ParsedToolCall] = []
         self._seen_image_urls: set[str] = set()
         self._pending_text = ""
         self._search_sources: list[dict[str, str]] = []
         self._search_urls_seen: set[str] = set()
+        self._allowed_function_names = {
+            str(name).strip()
+            for name in (function_tool_names or ())
+            if str(name).strip() and str(name).strip() not in CONSOLE_SERVER_SIDE_TOOL_TYPES
+        }
+        self._ignored_function_keys: set[str] = set()
+        self._function_calls_by_key: dict[str, dict[str, Any]] = {}
+        self._function_order: list[str] = []
+        self._function_keys_by_output_index: dict[str, str] = {}
 
     def references_suffix(self) -> str:
         return ""
@@ -309,9 +515,37 @@ class ConsoleResponsesStreamAdapter:
         self._collect_search_sources(obj)
 
         if event_type.endswith("output_item.done") or event_type.endswith("output_item.added"):
-            self._append_response_images(events, obj.get("item") or obj.get("output_item"))
+            item = obj.get("item") or obj.get("output_item")
+            if isinstance(item, dict) and item.get("type") == "function_call":
+                self._upsert_function_call(item, obj, completed=event_type.endswith("done"))
+                if event_type.endswith("done"):
+                    calls = self._current_function_calls()
+                    if calls:
+                        events.append(FrameEvent("tool_calls", tool_calls=calls))
+                return events
+            self._append_response_images(events, item)
             if events:
                 return events
+
+        if event_type.endswith("function_call_arguments.delta"):
+            key = self._function_key(obj)
+            if self._should_ignore_function_event(key, obj):
+                return events
+            delta = obj.get("delta", "")
+            if key and isinstance(delta, str):
+                info = self._ensure_function_call(key, obj)
+                info["arguments"] = str(info.get("arguments") or "") + delta
+            return events
+
+        if event_type.endswith("function_call_arguments.done"):
+            key = self._function_key(obj)
+            if self._should_ignore_function_event(key, obj):
+                return events
+            args = obj.get("arguments")
+            if key and isinstance(args, str):
+                info = self._ensure_function_call(key, obj)
+                info["arguments"] = args
+            return events
 
         if "image" in event_type:
             self._append_response_images(events, obj)
@@ -337,11 +571,19 @@ class ConsoleResponsesStreamAdapter:
             if not self.text_buf:
                 for text in _extract_completed_text(obj.get("response")):
                     self._append_text(events, text)
+            response = obj.get("response")
+            if isinstance(response, dict):
+                for item in response.get("output", []) or []:
+                    if isinstance(item, dict) and item.get("type") == "function_call":
+                        self._upsert_function_call(item, {}, completed=True)
             if not self.thinking_buf:
-                for text in _extract_completed_reasoning(obj.get("response")):
+                for text in _extract_completed_reasoning(response):
                     self.thinking_buf.append(text)
                     events.append(FrameEvent("thinking", text))
-            self._append_response_images(events, obj.get("response"))
+            self._append_response_images(events, response)
+            calls = self._current_function_calls()
+            if calls:
+                events.append(FrameEvent("tool_calls", tool_calls=calls))
             events.append(FrameEvent("soft_stop"))
             return events
 
@@ -372,6 +614,121 @@ class ConsoleResponsesStreamAdapter:
                 continue
             self._search_urls_seen.add(url)
             self._search_sources.append(source)
+
+    def _function_key(self, obj: dict[str, Any]) -> str:
+        raw = obj.get("item_id")
+        if raw:
+            return str(raw)
+        raw = obj.get("output_index")
+        if raw is None:
+            return ""
+        idx_key = str(raw)
+        return self._function_keys_by_output_index.get(idx_key) or f"output:{idx_key}"
+
+    def _should_ignore_function_event(self, key: str, obj: dict[str, Any]) -> bool:
+        if not key:
+            return True
+        if key in self._ignored_function_keys:
+            return True
+        name = str(obj.get("name") or "").strip()
+        if name and not self._is_allowed_function_name(name):
+            self._ignored_function_keys.add(key)
+            self._function_calls_by_key.pop(key, None)
+            return True
+        return False
+
+    def _is_allowed_function_name(self, name: str) -> bool:
+        if not name or name in CONSOLE_SERVER_SIDE_TOOL_TYPES:
+            return False
+        return name in self._allowed_function_names
+
+    def _ensure_function_call(self, key: str, obj: dict[str, Any]) -> dict[str, Any]:
+        info = self._function_calls_by_key.get(key)
+        if info is None:
+            info = {
+                "call_id": str(obj.get("call_id") or key),
+                "name": str(obj.get("name") or "").strip(),
+                "arguments": "",
+            }
+            self._function_calls_by_key[key] = info
+            self._function_order.append(key)
+        else:
+            if obj.get("call_id"):
+                info["call_id"] = str(obj.get("call_id"))
+            if obj.get("name"):
+                info["name"] = str(obj.get("name")).strip()
+        return info
+
+    def _upsert_function_call(
+        self,
+        item: dict[str, Any],
+        envelope: dict[str, Any],
+        *,
+        completed: bool = False,
+    ) -> None:
+        key = str(item.get("id") or envelope.get("item_id") or "")
+        if not key:
+            output_index = envelope.get("output_index")
+            key = f"output:{output_index}" if output_index is not None else ""
+        if not key:
+            return
+
+        name = str(item.get("name") or "").strip()
+        if not self._is_allowed_function_name(name):
+            self._ignored_function_keys.add(key)
+            self._function_calls_by_key.pop(key, None)
+            return
+
+        output_index = envelope.get("output_index")
+        if output_index is not None:
+            idx_key = str(output_index)
+            previous_key = self._function_keys_by_output_index.get(idx_key) or f"output:{idx_key}"
+            if previous_key != key and previous_key in self._function_calls_by_key:
+                previous = self._function_calls_by_key.pop(previous_key)
+                current = self._function_calls_by_key.get(key, {})
+                previous.update({k: v for k, v in current.items() if v})
+                self._function_calls_by_key[key] = previous
+                self._function_order = [
+                    key if existing == previous_key else existing
+                    for existing in self._function_order
+                ]
+            self._function_keys_by_output_index[idx_key] = key
+
+        info = self._ensure_function_call(key, item)
+        info["name"] = name
+        info["call_id"] = str(item.get("call_id") or info.get("call_id") or key)
+        if item.get("arguments") is not None:
+            info["arguments"] = (
+                item["arguments"]
+                if isinstance(item["arguments"], str)
+                else orjson.dumps(item["arguments"]).decode()
+            )
+        if completed:
+            self._sync_function_calls()
+
+    def _current_function_calls(self) -> list[ParsedToolCall]:
+        self._sync_function_calls()
+        return list(self.function_calls)
+
+    def _sync_function_calls(self) -> None:
+        calls: list[ParsedToolCall] = []
+        for key in self._function_order:
+            if key in self._ignored_function_keys:
+                continue
+            info = self._function_calls_by_key.get(key)
+            if not info:
+                continue
+            name = str(info.get("name") or "").strip()
+            if not self._is_allowed_function_name(name):
+                continue
+            call_id = str(info.get("call_id") or key)
+            arguments = info.get("arguments")
+            if arguments is None:
+                arguments = "{}"
+            elif not isinstance(arguments, str):
+                arguments = orjson.dumps(arguments).decode()
+            calls.append(ParsedToolCall(call_id=call_id, name=name, arguments=arguments))
+        self.function_calls = calls
 
 
 def _extract_delta(obj: dict[str, Any]) -> str:
@@ -674,6 +1031,7 @@ __all__ = [
     "CONSOLE_SERVER_SIDE_TOOL_TYPES",
     "ConsoleResponsesStreamAdapter",
     "build_console_responses_payload",
+    "client_function_tool_names",
     "console_tool_choice_override",
     "ensure_console_search_tools",
     "split_console_server_tools",

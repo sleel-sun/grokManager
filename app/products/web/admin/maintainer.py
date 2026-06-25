@@ -247,6 +247,43 @@ def build_runtime_config(
     }
 
 
+def build_gpt_runtime_config(
+    req: MaintainerRunRequest,
+    *,
+    base_url: str,
+    admin_token: str,
+    existing_config: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Build runtime config for ordinary GPT automatic registration."""
+    runtime_config = build_runtime_config(
+        req,
+        base_url=base_url,
+        admin_token=admin_token,
+        existing_config=existing_config,
+    )
+    runtime_config["api"]["endpoint"] = f"{base_url.rstrip('/')}/admin/api/gpt/accounts"
+    saved_gpt = (
+        existing_config.get("gpt", {})
+        if isinstance(existing_config, dict) and isinstance(existing_config.get("gpt"), dict)
+        else {}
+    )
+
+    def _saved_gpt_int(key: str, default: int) -> int:
+        try:
+            return max(1, int(saved_gpt.get(key) or default))
+        except (TypeError, ValueError):
+            return default
+
+    runtime_config["gpt"] = {
+        "auto_oauth_after_register": True,
+        "save_credentials_on_failure": True,
+        "registration_attempts_per_account": _saved_gpt_int("registration_attempts_per_account", 2),
+        "otp_timeout_s": _saved_gpt_int("otp_timeout_s", 90),
+        "login_otp_timeout_s": _saved_gpt_int("login_otp_timeout_s", 90),
+    }
+    return runtime_config
+
+
 def _running_in_container() -> bool:
     return Path("/.dockerenv").exists()
 
@@ -516,6 +553,36 @@ def _run_sync(
                 os.environ[key] = value
 
 
+def _run_gpt_sync(
+    config_path: Path,
+    count: int,
+    workers: int,
+    env: dict[str, str],
+    pause_event: Any,
+    stop_event: Any,
+    progress_callback: Callable[[int, str, dict[str, Any]], None] | None = None,
+) -> list[Any]:
+    previous = {key: os.environ.get(key) for key in _ENV_KEYS}
+    try:
+        os.environ.update(env)
+        from app.maintainer.gpt import run_gpt_batch_parallel
+
+        return run_gpt_batch_parallel(
+            config_path=str(config_path),
+            count=count,
+            workers=workers,
+            pause_event=pause_event,
+            stop_event=stop_event,
+            progress_callback=progress_callback,
+        )
+    finally:
+        for key, value in previous.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+
+
 async def _run_background(
     req: MaintainerRunRequest,
     config_path: Path,
@@ -599,6 +666,120 @@ async def _run_background(
         )
     except Exception as exc:
         logger.exception("maintainer web run failed")
+        _state.update(
+            {
+                "running": False,
+                "paused": False,
+                "status": "failed",
+                "message": f"{type(exc).__name__}: {exc}",
+                "finished_at": int(time.time()),
+            }
+        )
+    finally:
+        controller.reset()
+
+
+async def _run_gpt_background(
+    req: MaintainerRunRequest,
+    config_path: Path,
+    env: dict[str, str],
+    controller: _MaintainerController,
+) -> None:
+    def _latest_progress_error() -> str:
+        progress = _state.get("per_worker_progress") or {}
+        if not isinstance(progress, dict):
+            return ""
+        latest_at = -1
+        latest_error = ""
+        for item in progress.values():
+            if not isinstance(item, dict) or not item.get("last_error"):
+                continue
+            event_at = int(item.get("last_event_at") or 0)
+            if event_at >= latest_at:
+                latest_at = event_at
+                latest_error = str(item.get("last_error") or "")
+        return latest_error
+
+    def _record_progress(worker_id: int, event: str, payload: dict[str, Any]) -> None:
+        snap = dict(_state.get("per_worker_progress") or {})
+        worker_key = str(int(worker_id))
+        entry = dict(snap.get(worker_key) or {})
+        entry["last_event"] = event
+        entry["last_event_at"] = int(time.time() * 1000)
+        if "round" in payload:
+            entry["last_round"] = int(payload["round"])
+        if "attempt" in payload:
+            entry["last_attempt"] = int(payload["attempt"])
+        if "attempts" in payload:
+            entry["last_attempts"] = int(payload["attempts"])
+        if "timeout_s" in payload:
+            entry["last_timeout_s"] = int(payload["timeout_s"])
+        if payload.get("email"):
+            entry["last_email"] = str(payload["email"])[:120]
+        if payload.get("status"):
+            entry["last_status"] = str(payload["status"])[:80]
+        if event == "round_done":
+            entry["rounds_done"] = int(entry.get("rounds_done", 0)) + 1
+        if event == "account_saved":
+            entry["accounts_saved"] = int(entry.get("accounts_saved", 0)) + 1
+        if event in {"round_failed", "worker_failed"} and "error" in payload:
+            entry["last_error"] = str(payload["error"])[:200]
+            entry["failed_rounds"] = int(entry.get("failed_rounds", 0)) + 1
+        if event == "registration_attempt_failed" and "error" in payload:
+            entry["last_error"] = str(payload["error"])[:200]
+            entry["failed_attempts"] = int(entry.get("failed_attempts", 0)) + 1
+        if event == "finished" and "token_count" in payload:
+            entry["finished_token_count"] = int(payload["token_count"])
+        snap[worker_key] = entry
+        _state["per_worker_progress"] = snap
+
+    try:
+        results = await asyncio.to_thread(
+            _run_gpt_sync,
+            config_path,
+            req.count,
+            req.workers,
+            env,
+            controller.pause_event,
+            controller.stop_event,
+            _record_progress,
+        )
+        saved = len(results)
+        available = sum(1 for item in results if getattr(item, "access_token", ""))
+        login_required = saved - available
+        errors = [
+            str(getattr(item, "error", "") or "").strip()
+            for item in results
+            if str(getattr(item, "error", "") or "").strip()
+        ]
+        stopped = controller.is_stopped()
+        status = "stopped" if stopped else ("completed" if saved else "failed")
+        if saved:
+            detail = f"，待登录原因: {errors[-1]}" if errors and not available else ""
+            message = (
+                f"GPT 自动注册完成，保存 {saved} 个账号"
+                f"（可用 {available}，待登录/待验证 {login_required}）"
+                f"{detail}"
+            )
+        else:
+            last_error = _latest_progress_error()
+            message = (
+                f"GPT 自动注册未保存账号，最后错误: {last_error}"
+                if last_error
+                else "GPT 自动注册未保存账号，请查看 maintainer 日志"
+            )
+        _state.update(
+            {
+                "running": False,
+                "paused": False,
+                "status": status,
+                "message": message,
+                "finished_at": int(time.time()),
+                "token_count": saved,
+            }
+        )
+    except Exception as exc:
+        logger.exception("GPT auto-registration web run failed")
         _state.update(
             {
                 "running": False,
@@ -705,6 +886,56 @@ async def maintainer_run(req: MaintainerRunRequest, request: Request):
     return redact_state(dict(_state))
 
 
+@router.post("/gpt/run")
+async def gpt_maintainer_run(req: MaintainerRunRequest, request: Request):
+    global _task
+
+    async with _lock:
+        if _task is not None and not _task.done():
+            raise AppError(
+                "Maintainer task is already running",
+                kind=ErrorKind.VALIDATION,
+                code="maintainer_running",
+                status=409,
+            )
+
+        admin_token = config.get_str("app.app_key", "")
+        if not admin_token:
+            raise ValidationError("Admin app key is empty", param="app.app_key")
+
+        runtime_config = build_gpt_runtime_config(
+            req,
+            base_url=str(request.base_url),
+            admin_token=admin_token,
+            existing_config=_read_runtime_config(),
+        )
+        config_path = _write_runtime_config(runtime_config)
+        env = _env_for_request(req, config_path)
+
+        _controller.reset()
+        _state.update(
+            {
+                "running": True,
+                "paused": False,
+                "status": "running",
+                "message": "GPT 自动注册任务已启动",
+                "started_at": int(time.time()),
+                "finished_at": None,
+                "token_count": 0,
+                "config_path": str(config_path),
+                "output_path": "GPT accounts API",
+                "workers": req.workers,
+                "spawned_workers": req.workers,
+                "per_worker_progress": {},
+            }
+        )
+        _task = asyncio.create_task(
+            _run_gpt_background(req, config_path, env, _controller)
+        )
+
+    return redact_state(dict(_state))
+
+
 def _require_running() -> None:
     if _task is None or _task.done():
         raise AppError(
@@ -751,6 +982,7 @@ async def maintainer_stop():
 __all__ = [
     "MaintainerRunRequest",
     "build_completion_status",
+    "build_gpt_runtime_config",
     "build_saved_config_response",
     "build_runtime_config",
     "redact_state",

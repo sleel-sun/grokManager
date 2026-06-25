@@ -11,6 +11,7 @@ from app.dataplane.reverse.planner import build_plan
 from app.dataplane.reverse.protocol.xai_console import (
     ConsoleResponsesStreamAdapter,
     build_console_responses_payload,
+    client_function_tool_names,
     console_tool_choice_override,
     split_console_server_tools,
 )
@@ -223,7 +224,7 @@ class ConsoleModelRoutingTests(unittest.TestCase):
             "grok-4.3-medium": "grok-4.3",
             "grok-4.3-low": "grok-4.3",
             "grok-build-console": "grok-build-0.1",
-            "grok-composer-2.5-fast": "grok-4.20-multi-agent",
+            "grok-composer-2.5-fast": "grok-4.3",
         }
 
         for public_model, upstream_model in expected.items():
@@ -244,7 +245,7 @@ class ConsoleModelRoutingTests(unittest.TestCase):
             stream=True,
         )
 
-        self.assertEqual(payload["model"], "grok-4.20-multi-agent")
+        self.assertEqual(payload["model"], "grok-4.3")
         self.assertEqual(
             payload["input"],
             "[user]: grok-composer-2.5-fast\n\n[user]: write a short note",
@@ -256,7 +257,7 @@ class ConsoleModelRoutingTests(unittest.TestCase):
 
         def fake_get_config(key: str, default=None):
             if key == "models.composer_fast_upstream_model":
-                return "grok-4.3"
+                return "grok-4.20-multi-agent"
             return default
 
         with patch("app.platform.config.snapshot.get_config", side_effect=fake_get_config):
@@ -268,7 +269,7 @@ class ConsoleModelRoutingTests(unittest.TestCase):
                 stream=True,
             )
 
-        self.assertEqual(payload["model"], "grok-4.3")
+        self.assertEqual(payload["model"], "grok-4.20-multi-agent")
         self.assertEqual(
             payload["input"],
             "[user]: grok-composer-2.5-fast\n\n[user]: hi",
@@ -341,7 +342,7 @@ class ConsoleModelRoutingTests(unittest.TestCase):
         self.assertTrue(payload["stream"])
         self.assertEqual(payload["temperature"], 0.2)
 
-    def test_console_server_side_search_tools_are_split_from_local_tools(self) -> None:
+    def test_console_tools_are_forwarded_as_native_tools(self) -> None:
         spec = resolve("grok-4.3")
         local_tools, console_tools = split_console_server_tools(
             [
@@ -360,10 +361,14 @@ class ConsoleModelRoutingTests(unittest.TestCase):
             [
                 {"type": "web_search"},
                 {"type": "x_search", "enable_video_understanding": True},
+                {
+                    "type": "function",
+                    "name": "lookup",
+                    "parameters": {"type": "object"},
+                },
             ],
         )
-        self.assertEqual(len(local_tools or []), 1)
-        self.assertEqual((local_tools or [])[0]["function"]["name"], "lookup")
+        self.assertIsNone(local_tools)
 
     def test_console_search_tools_are_not_split_for_grok_web_models(self) -> None:
         spec = resolve("grok-4.20-fast")
@@ -423,12 +428,13 @@ class ConsoleModelRoutingTests(unittest.TestCase):
             ),
             {"type": "x_search"},
         )
-        self.assertIsNone(
+        self.assertEqual(
             console_tool_choice_override(
                 {"type": "function", "function": {"name": "lookup"}},
-            )
+            ),
+            {"type": "function", "name": "lookup"},
         )
-        self.assertIsNone(
+        self.assertEqual(
             console_tool_choice_override(
                 {"type": "function", "function": {"name": "lookup"}},
                 local_tools=[
@@ -437,7 +443,8 @@ class ConsoleModelRoutingTests(unittest.TestCase):
                         "function": {"name": "lookup"},
                     }
                 ],
-            )
+            ),
+            {"type": "function", "name": "lookup"},
         )
 
     def test_build_console_responses_payload_passes_search_tools(self) -> None:
@@ -497,6 +504,44 @@ class ConsoleModelRoutingTests(unittest.TestCase):
         )
         self.assertEqual(payload["tool_choice"], "required")
         self.assertNotIn("deepsearchPreset", payload)
+
+    def test_build_console_responses_payload_maps_tool_call_history(self) -> None:
+        payload = build_console_responses_payload(
+            model="grok-4.3",
+            message="ignored when messages are structured",
+            stream=True,
+            messages=[
+                {"role": "user", "content": "lookup order"},
+                {
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": [{
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {
+                            "name": "lookup",
+                            "arguments": '{"order_id":"A1"}',
+                        },
+                    }],
+                },
+                {"role": "tool", "tool_call_id": "call_1", "content": "shipped"},
+            ],
+        )
+
+        self.assertEqual(
+            payload["input"],
+            [
+                {"role": "user", "content": [{"type": "input_text", "text": "lookup order"}]},
+                {
+                    "type": "function_call",
+                    "call_id": "call_1",
+                    "name": "lookup",
+                    "arguments": '{"order_id":"A1"}',
+                    "status": "completed",
+                },
+                {"type": "function_call_output", "call_id": "call_1", "output": "shipped"},
+            ],
+        )
 
     def test_chat_completions_deepsearch_reaches_console_payload_as_tools(self) -> None:
         capture = self._run_console_chat_capture(
@@ -566,13 +611,82 @@ class ConsoleModelRoutingTests(unittest.TestCase):
             [
                 {"type": "web_search"},
                 {"type": "x_search", "enable_video_understanding": True},
+                {
+                    "type": "function",
+                    "name": "lookup",
+                    "parameters": {"type": "object"},
+                },
             ],
         )
         self.assertEqual(capture["payload"]["tool_choice"], "auto")
         self.assertEqual(
             [tool["type"] for tool in capture["payload"].get("tools", [])],
-            ["web_search", "x_search"],
+            ["web_search", "x_search", "function"],
         )
+
+    def test_console_native_adapter_filters_internal_tool_calls(self) -> None:
+        adapter = ConsoleResponsesStreamAdapter(function_tool_names={"lookup"})
+
+        ignored = adapter.feed(orjson.dumps({
+            "type": "response.output_item.done",
+            "output_index": 0,
+            "item": {
+                "id": "builtin",
+                "type": "function_call",
+                "call_id": "call_builtin",
+                "name": "web_search_with_snippets",
+                "arguments": '{"query":"xai"}',
+            },
+        }).decode())
+        emitted = adapter.feed(orjson.dumps({
+            "type": "response.output_item.done",
+            "output_index": 1,
+            "item": {
+                "id": "fc_1",
+                "type": "function_call",
+                "call_id": "call_1",
+                "name": "lookup",
+                "arguments": '{"id":"A1"}',
+            },
+        }).decode())
+
+        self.assertEqual(ignored, [])
+        self.assertEqual(client_function_tool_names([
+            {"type": "function", "function": {"name": "lookup"}},
+            {"type": "function", "function": {"name": "web_search"}},
+        ]), {"lookup"})
+        self.assertEqual(len(emitted), 1)
+        self.assertEqual(emitted[0].kind, "tool_calls")
+        self.assertEqual(emitted[0].tool_calls[0].name, "lookup")
+        self.assertEqual(emitted[0].tool_calls[0].arguments, '{"id":"A1"}')
+
+    def test_console_native_adapter_keeps_arguments_delta_before_item_id(self) -> None:
+        adapter = ConsoleResponsesStreamAdapter(function_tool_names={"lookup"})
+
+        adapter.feed(orjson.dumps({
+            "type": "response.function_call_arguments.delta",
+            "output_index": 0,
+            "delta": '{"id"',
+        }).decode())
+        adapter.feed(orjson.dumps({
+            "type": "response.function_call_arguments.delta",
+            "output_index": 0,
+            "delta": ':"A1"}',
+        }).decode())
+        emitted = adapter.feed(orjson.dumps({
+            "type": "response.output_item.done",
+            "output_index": 0,
+            "item": {
+                "id": "fc_1",
+                "type": "function_call",
+                "call_id": "call_1",
+                "name": "lookup",
+                "arguments": '{"id":"A1"}',
+            },
+        }).decode())
+
+        self.assertEqual(len(emitted), 1)
+        self.assertEqual(emitted[0].tool_calls[0].arguments, '{"id":"A1"}')
 
     def test_chat_completions_function_named_search_tools_reach_console_payload(self) -> None:
         capture = self._run_console_chat_capture(

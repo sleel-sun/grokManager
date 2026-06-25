@@ -201,7 +201,20 @@ async def _nsfw_grok_sequence_once(token: str) -> None:
     kwargs = build_session_kwargs(lease=lease)
     try:
         async with ResettableSession(**kwargs) as session:
-            await set_birth_date(token, session=session, lease=lease)
+            try:
+                await set_birth_date(token, session=session, lease=lease)
+            except UpstreamError as exc:
+                body = ""
+                details = getattr(exc, "details", None)
+                if isinstance(details, dict):
+                    body = str(details.get("body") or "")
+                if exc.status == 429 and "birth-date-change-limit-reached" in body:
+                    logger.debug(
+                        "auth birth date already set and locked, skipping: token={}...",
+                        token[:8],
+                    )
+                else:
+                    raise
             await _grpc_call(
                 NSFW_MGMT_URL, token, build_nsfw_mgmt_payload(),
                 label="enable_nsfw", origin=GROK_ORIGIN, referer=f"{GROK_ORIGIN}/?_s=data",

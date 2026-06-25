@@ -384,6 +384,7 @@ _USER_BLOCK_TYPES = {"text", "image_url", "input_audio", "file"}
 _ALLOWED_SIZES = {"1280x720", "720x1280", "1792x1024", "1024x1792", "1024x1024"}
 _EFFORT_VALUES = {"none", "minimal", "low", "medium", "high", "xhigh"}
 _LITE_IMAGE_MODELS = {"grok-imagine-image-lite"}
+_GPT_IMAGE_MODELS = {"gpt-image-1", "gpt-image-2"}
 
 
 def _validate_chat(req: ChatCompletionRequest) -> None:
@@ -418,7 +419,7 @@ def _validate_chat(req: ChatCompletionRequest) -> None:
 
 
 def _validate_image_n(model_name: str, n: int, *, param: str) -> None:
-    max_n = 4 if model_name in _LITE_IMAGE_MODELS else 10
+    max_n = 4 if model_name in _LITE_IMAGE_MODELS or model_name in _GPT_IMAGE_MODELS else 10
     if not (1 <= n <= max_n):
         raise ValidationError(
             f"n must be between 1 and {max_n} for model {model_name!r}",

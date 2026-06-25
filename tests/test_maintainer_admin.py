@@ -7,6 +7,7 @@ from app.products.web.admin.maintainer import (
     _MaintainerController,
     _env_for_request,
     build_completion_status,
+    build_gpt_runtime_config,
     build_saved_config_response,
     build_runtime_config,
     redact_state,
@@ -49,6 +50,27 @@ class MaintainerAdminTests(unittest.TestCase):
         self.assertEqual(cfg["web"]["turnstile_solver_api_key"], "solver-secret")
         self.assertEqual(cfg["web"]["turnstile_solver_timeout_sec"], 180)
         self.assertEqual(cfg["web"]["turnstile_solver_poll_sec"], 4)
+
+    def test_build_gpt_runtime_config_targets_gpt_accounts_endpoint(self) -> None:
+        req = MaintainerRunRequest(
+            count=2,
+            workers=3,
+            email_worker_domain="mail.example.com",
+            email_domains=["example.com"],
+            email_admin_password="worker-secret",
+        )
+
+        cfg = build_gpt_runtime_config(
+            req,
+            base_url="http://127.0.0.1:8000/",
+            admin_token="admin-secret",
+        )
+
+        self.assertEqual(cfg["api"]["endpoint"], "http://127.0.0.1:8000/admin/api/gpt/accounts")
+        self.assertEqual(cfg["api"]["token"], "admin-secret")
+        self.assertEqual(cfg["run"], {"count": 2, "workers": 3})
+        self.assertTrue(cfg["gpt"]["auto_oauth_after_register"])
+        self.assertTrue(cfg["gpt"]["save_credentials_on_failure"])
 
     def test_redact_state_hides_secret_values(self) -> None:
         redacted = redact_state(
