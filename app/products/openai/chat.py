@@ -40,6 +40,7 @@ from app.dataplane.reverse.protocol.xai_chat import (
 from app.dataplane.reverse.protocol.xai_console import (
     ConsoleResponsesStreamAdapter,
     build_console_responses_payload,
+    client_function_tool_names,
     console_tool_choice_override,
     ensure_console_search_tools,
     split_console_server_tools,
@@ -231,12 +232,14 @@ def _configured_retry_codes(cfg) -> frozenset[int]:
     """Read retry codes from current config, including legacy array keys."""
     raw = cfg.get("retry.on_codes")
     if raw is None:
-        raw = cfg.get("retry.retry_status_codes", "429,401,503")
+        raw = cfg.get("retry.retry_status_codes", "429,401,502,503")
     return _parse_retry_codes(raw)
 
 
 def _should_retry_upstream(exc: UpstreamError, retry_codes: frozenset[int]) -> bool:
-    """Return whether this upstream error should switch to another token."""
+    """Return whether this upstream error is retryable by the chat loop."""
+    if _is_transient_transport_error(exc):
+        return True
     if _is_account_scoped_forbidden(exc):
         return True
     return exc.status in retry_codes or is_invalid_credentials_error(exc)
@@ -249,6 +252,26 @@ _CLOUDFLARE_CHALLENGE_MARKERS = (
     "cloudflare",
 )
 _CHAT_ACCOUNT_RETRY_MIN_RETRIES = 20
+_CHAT_TRANSPORT_RETRY_MAX_RETRIES = 2
+_TRANSIENT_TRANSPORT_STATUSES = frozenset({502, 503, 504})
+_TRANSIENT_TRANSPORT_MARKERS = (
+    "transport request failed",
+    "transport failed",
+    "stream read failed",
+    "curl:",
+    "connect tunnel",
+    "http/2 stream",
+    "connection reset",
+    "timed out",
+)
+
+
+def _is_transient_transport_error(exc: UpstreamError) -> bool:
+    """Return whether this is a proxy/network failure, not account quota."""
+    if exc.status not in _TRANSIENT_TRANSPORT_STATUSES:
+        return False
+    haystack = f"{exc} {_upstream_body(exc)}".lower()
+    return any(marker in haystack for marker in _TRANSIENT_TRANSPORT_MARKERS)
 
 
 def _is_account_scoped_forbidden(exc: UpstreamError) -> bool:
@@ -279,6 +302,17 @@ def _chat_max_retries(cfg) -> int:
         cfg.get_int("chat.account_retry_min_retries", _CHAT_ACCOUNT_RETRY_MIN_RETRIES),
     )
     return max(configured, account_min)
+
+
+def _chat_transport_max_retries(cfg) -> int:
+    """Cap proxy/HTTP transport retries separately from account rotation."""
+    return max(
+        0,
+        cfg.get_int(
+            "chat.transport_retry_max_retries",
+            _CHAT_TRANSPORT_RETRY_MAX_RETRIES,
+        ),
+    )
 
 
 def _feedback_kind(exc: BaseException) -> "FeedbackKind":
@@ -617,6 +651,7 @@ async def _stream_chat(
     tool_overrides: dict | None = None,
     model_config_override: dict | None = None,
     request_overrides: dict | None = None,
+    messages: list[dict] | None = None,
     timeout_s: float = 120.0,
 ) -> AsyncGenerator[str, None]:
     """Yield raw SSE lines from the selected upstream chat endpoint."""
@@ -641,6 +676,7 @@ async def _stream_chat(
             public_model=spec.model_name,
             spec=spec,
             request_overrides=request_overrides,
+            messages=messages,
         )
         transport_context = "Console Responses transport failed"
         stream_context = "Console Responses stream read failed"
@@ -714,10 +750,11 @@ async def _stream_chat(
 def _new_stream_adapter(
     spec: ModelSpec,
     files: list[_FileInput] | None = None,
+    function_tool_names: set[str] | list[str] | tuple[str, ...] | None = None,
 ) -> StreamAdapter | ConsoleResponsesStreamAdapter:
     """Return a stream adapter matching the selected upstream protocol."""
     if _uses_console_responses_transport(spec, files):
-        return ConsoleResponsesStreamAdapter()
+        return ConsoleResponsesStreamAdapter(function_tool_names=function_tool_names)
     return StreamAdapter()
 
 
@@ -763,6 +800,7 @@ async def completions(
     directory = _acct_dir
 
     max_retries = _chat_max_retries(cfg)
+    transport_max_retries = _chat_transport_max_retries(cfg)
     retry_codes = _configured_retry_codes(cfg)
     response_id = make_response_id()
     timeout_s = cfg.get_float("chat.timeout", 120.0)
@@ -776,6 +814,11 @@ async def completions(
         cfg=cfg,
         request_overrides=request_overrides,
     )
+    native_tool_names = (
+        client_function_tool_names(tools)
+        if _uses_console_responses_transport(spec, files)
+        else set()
+    )
     if local_tools:
         tool_names = extract_tool_names(local_tools)
         tool_prompt = build_tool_system_prompt(local_tools, tool_choice)
@@ -787,6 +830,7 @@ async def completions(
 
         async def _run_stream() -> AsyncGenerator[str, None]:
             excluded: list[str] = []
+            transport_retry_count = 0
             for attempt in range(max_retries + 1):
                 acct, selected_mode_id = await reserve_account(
                     directory,
@@ -802,8 +846,9 @@ async def completions(
                 _retry = False
                 _retry_same_account = False
                 fail_exc: BaseException | None = None
-                adapter = _new_stream_adapter(spec, files)
+                adapter = _new_stream_adapter(spec, files, native_tool_names)
                 collected_annotations: list[dict] = []
+                native_text_buffer: list[str] = []
 
                 try:
                     try:
@@ -818,6 +863,7 @@ async def completions(
                             spec=spec,
                             tool_overrides=tool_overrides,
                             request_overrides=request_overrides,
+                            messages=messages if native_tool_names else None,
                             timeout_s=timeout_s,
                         ):
                             event_type, data = classify_line(line)
@@ -830,6 +876,9 @@ async def completions(
                                 if tool_calls_emitted:
                                     break  # already sent [DONE], drop remaining events
                                 if ev.kind == "text":
+                                    if native_tool_names:
+                                        native_text_buffer.append(ev.content)
+                                        continue
                                     if tool_names:
                                         safe_text, parsed_calls = sieve.feed(ev.content)
                                         if safe_text:
@@ -877,6 +926,34 @@ async def completions(
                                     yield f"data: {orjson.dumps(chunk).decode()}\n\n"
                                 elif ev.kind == "annotation" and ev.annotation_data:
                                     collected_annotations.append(ev.annotation_data)
+                                elif ev.kind == "tool_calls" and ev.tool_calls:
+                                    for i, tc in enumerate(ev.tool_calls):
+                                        chunk = make_tool_call_chunk(
+                                            response_id,
+                                            model,
+                                            i,
+                                            tc.call_id,
+                                            tc.name,
+                                            tc.arguments,
+                                            is_first=True,
+                                        )
+                                        yield f"data: {orjson.dumps(chunk).decode()}\n\n"
+                                    done_chunk = make_tool_call_done_chunk(
+                                        response_id, model
+                                    )
+                                    yield f"data: {orjson.dumps(done_chunk).decode()}\n\n"
+                                    yield "data: [DONE]\n\n"
+                                    tool_calls_emitted = True
+                                    success = True
+                                    ended = True
+                                    logger.info(
+                                        "chat stream native tool_calls: attempt={}/{} model={} call_count={}",
+                                        attempt + 1,
+                                        max_retries + 1,
+                                        model,
+                                        len(ev.tool_calls),
+                                    )
+                                    break
                                 elif ev.kind == "soft_stop":
                                     ended = True
                                     break
@@ -916,6 +993,11 @@ async def completions(
                                 )
 
                         if not tool_calls_emitted:
+                            if native_text_buffer:
+                                chunk = make_stream_chunk(
+                                    response_id, model, "".join(native_text_buffer)
+                                )
+                                yield f"data: {orjson.dumps(chunk).decode()}\n\n"
                             extract_images = getattr(
                                 adapter, "extract_generated_images_from_text", None
                             )
@@ -976,7 +1058,25 @@ async def completions(
                                 token[:8],
                             )
                         elif (
-                            _should_retry_upstream(exc, retry_codes)
+                            _is_transient_transport_error(exc)
+                            and transport_retry_count < transport_max_retries
+                            and attempt < max_retries
+                        ):
+                            transport_retry_count += 1
+                            _retry = True
+                            _retry_same_account = True
+                            logger.warning(
+                                "chat stream transport retry scheduled: transport_attempt={}/{} attempt={}/{} status={} token={}...",
+                                transport_retry_count,
+                                transport_max_retries,
+                                attempt + 1,
+                                max_retries,
+                                exc.status,
+                                token[:8],
+                            )
+                        elif (
+                            not _is_transient_transport_error(exc)
+                            and _should_retry_upstream(exc, retry_codes)
                             and attempt < max_retries
                         ):
                             _retry = True
@@ -1032,8 +1132,9 @@ async def completions(
 
     # ── Non-streaming path ────────────────────────────────────────────────────
     excluded: list[str] = []
+    transport_retry_count = 0
     token = ""
-    adapter = _new_stream_adapter(spec, files)
+    adapter = _new_stream_adapter(spec, files, native_tool_names)
     for attempt in range(max_retries + 1):
         acct, selected_mode_id = await reserve_account(
             directory,
@@ -1049,7 +1150,7 @@ async def completions(
         _retry = False
         _retry_same_account = False
         fail_exc: BaseException | None = None
-        adapter = _new_stream_adapter(spec, files)  # fresh adapter per attempt
+        adapter = _new_stream_adapter(spec, files, native_tool_names)  # fresh adapter per attempt
 
         try:
             try:
@@ -1061,6 +1162,7 @@ async def completions(
                     spec=spec,
                     tool_overrides=tool_overrides,
                     request_overrides=request_overrides,
+                    messages=messages if native_tool_names else None,
                     timeout_s=timeout_s,
                 ):
                     event_type, data = classify_line(line)
@@ -1092,7 +1194,28 @@ async def completions(
                         exc.status,
                         token[:8],
                     )
-                elif _should_retry_upstream(exc, retry_codes) and attempt < max_retries:
+                elif (
+                    _is_transient_transport_error(exc)
+                    and transport_retry_count < transport_max_retries
+                    and attempt < max_retries
+                ):
+                    transport_retry_count += 1
+                    _retry = True
+                    _retry_same_account = True
+                    logger.warning(
+                        "chat transport retry scheduled: transport_attempt={}/{} attempt={}/{} status={} token={}...",
+                        transport_retry_count,
+                        transport_max_retries,
+                        attempt + 1,
+                        max_retries,
+                        exc.status,
+                        token[:8],
+                    )
+                elif (
+                    not _is_transient_transport_error(exc)
+                    and _should_retry_upstream(exc, retry_codes)
+                    and attempt < max_retries
+                ):
                     _retry = True
                     logger.warning(
                         "chat retry scheduled: attempt={}/{} status={} token={}...",
@@ -1166,6 +1289,28 @@ async def completions(
     thinking_text = ("".join(adapter.thinking_buf) or None) if emit_think else None
 
     # ── Tool call detection (non-streaming) ──────────────────────────────────
+    if native_tool_names and getattr(adapter, "function_calls", None):
+        calls = list(adapter.function_calls)
+        logger.info(
+            "chat request native tool_calls: attempt={}/{} model={} call_count={}",
+            attempt + 1,
+            max_retries + 1,
+            model,
+            len(calls),
+        )
+        pt = estimate_prompt_tokens(message)
+        resp = make_tool_call_response(
+            model,
+            calls,
+            prompt_content=message,
+            response_id=response_id,
+            usage=build_usage(pt, estimate_tool_call_tokens(calls)),
+        )
+        sources = adapter.search_sources_list()
+        if sources:
+            resp["search_sources"] = sources
+        return resp
+
     if tool_names:
         parse_result = parse_tool_calls(full_text, tool_names)
         if parse_result.calls:

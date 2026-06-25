@@ -40,18 +40,40 @@ _RAW_RECIPIENT_HEADERS = {
 }
 _CODE_LABEL_RE = re.compile(
     r"(?:"
+    r"(?:chatgpt|openai)\s+(?:login\s+|sign[-\s]?in\s+)?code|"
+    r"login\s+code|"
+    r"sign[-\s]?in\s+code|"
+    r"authentication\s+code|"
+    r"auth\s+code|"
+    r"email\s+code|"
+    r"code\s+is|"
     r"verification\s+code|"
     r"security\s+code|"
     r"one[-\s]?time(?:\s+security)?\s+code|"
     r"confirmation\s+code|"
+    r"登录验证码|"
+    r"登入验证码|"
+    r"登录代码|"
+    r"登入代码|"
+    r"邮箱验证码|"
+    r"代码为|"
     r"验证码|"
     r"安全代码|"
     r"一次性(?:安全)?代码"
     r")",
     re.IGNORECASE,
 )
+_CODE_CONTEXT_RE = re.compile(
+    r"(?:chatgpt|openai|verification|verify|security|one[-\s]?time|otp|login|sign[-\s]?in|验证码|代码|登录|登入|安全)",
+    re.IGNORECASE,
+)
 _CODE_CANDIDATE_RE = re.compile(
     r"(?<![A-Z0-9])([A-Z0-9](?:[\s\-‐‑‒–—―ー]*[A-Z0-9]){5})(?![A-Z0-9])",
+    re.IGNORECASE,
+)
+_NUMERIC_CODE_RE = re.compile(r"(?<![#&A-Z0-9])(\d{6})(?![A-Z0-9])", re.IGNORECASE)
+_HIGHLIGHTED_NUMERIC_CODE_RE = re.compile(
+    r"background-color:\s*#F3F3F3[^>]*>[\s\S]*?(\d{6})[\s\S]*?</p>",
     re.IGNORECASE,
 )
 _CODE_SEPARATOR_RE = re.compile(r"[\s\-‐‑‒–—―ー]+")
@@ -132,7 +154,21 @@ def wait_for_verification_code(
     target_email: str = "",
     admin_password: str = "",
     timeout: int = 120,
+    ignore_codes: set[str] | None = None,
+    ignore_ids: set[Any] | None = None,
 ) -> str | None:
+    ignored = {code.replace("-", "").upper() for code in (ignore_codes or set()) if code}
+    ignored_ids = set(ignore_ids or set())
+
+    def should_ignore_code(item: dict[str, Any], code: str) -> bool:
+        normalised = code.replace("-", "").upper()
+        if normalised not in ignored:
+            return False
+        mail_id = item.get("id")
+        # If the worker provides a new message id, treat it as a fresh OTP even
+        # when OpenAI reused the same six-digit value from an earlier email.
+        return mail_id is None or mail_id in ignored_ids
+
     old_ids = set()
     old = fetch_emails(session, worker_domain, cf_token, target_email, admin_password)
     if old:
@@ -143,11 +179,14 @@ def wait_for_verification_code(
             and item.get("id") is not None
             and mail_matches_target_email(item, target_email)
         }
+        old_ids.update(ignored_ids)
         for item in old:
             if not isinstance(item, dict):
                 continue
+            if item.get("id") in ignored_ids:
+                continue
             code = extract_verification_code_from_mail(item, target_email)
-            if code:
+            if code and not should_ignore_code(item, code):
                 return code
 
     start = time.time()
@@ -160,7 +199,7 @@ def wait_for_verification_code(
                 if item.get("id") in old_ids:
                     continue
                 code = extract_verification_code_from_mail(item, target_email)
-                if code:
+                if code and not should_ignore_code(item, code):
                     return code
         time.sleep(3)
     return None
@@ -235,7 +274,7 @@ def fetch_emails(
             },
             headers={"x-admin-auth": admin_password},
         )
-        if ok:
+        if ok and rows:
             return rows
 
     ok, rows = fetch_emails_request(
@@ -270,13 +309,28 @@ def fetch_emails_request(
 def normalise_mail_rows(payload: Any) -> list[dict[str, Any]]:
     rows: Any = payload
     if isinstance(payload, dict):
-        for key in ("results", "data", "mails", "items"):
+        for key in ("results", "data", "mails", "items", "messages", "rows", "list", "emails"):
             candidate = payload.get(key)
             if isinstance(candidate, list):
                 rows = candidate
                 break
+            if isinstance(candidate, dict):
+                nested = normalise_mail_rows(candidate)
+                if nested:
+                    return nested
         else:
-            rows = []
+            mail_keys = {
+                "body",
+                "headers",
+                "html",
+                "id",
+                "raw",
+                "source",
+                "subject",
+                "text",
+                "to",
+            }
+            rows = [payload] if any(key in payload for key in mail_keys) else []
 
     if not isinstance(rows, list):
         return []
@@ -406,6 +460,10 @@ def parsed_rfc822_text_parts(raw: str) -> list[str]:
 
 
 def extract_verification_code(content: str) -> str | None:
+    code = highlighted_numeric_verification_candidate(str(content or ""))
+    if code:
+        return code
+
     searchable = normalise_verification_content(content)
 
     for label in _CODE_LABEL_RE.finditer(searchable):
@@ -418,6 +476,9 @@ def extract_verification_code(content: str) -> str | None:
         code = first_verification_candidate(before, reverse=True)
         if code:
             return code
+
+    if _CODE_CONTEXT_RE.search(searchable):
+        return first_numeric_verification_candidate(searchable)
 
     return None
 
@@ -450,6 +511,22 @@ def first_verification_candidate(text: str, reverse: bool = False) -> str | None
         if code:
             return code
 
+    return None
+
+
+def highlighted_numeric_verification_candidate(text: str) -> str | None:
+    for match in _HIGHLIGHTED_NUMERIC_CODE_RE.finditer(text):
+        code = normalise_verification_candidate(match.group(1))
+        if code:
+            return code
+    return None
+
+
+def first_numeric_verification_candidate(text: str) -> str | None:
+    for match in _NUMERIC_CODE_RE.finditer(text):
+        code = normalise_verification_candidate(match.group(1))
+        if code:
+            return code
     return None
 
 

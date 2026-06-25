@@ -14,6 +14,7 @@
     .page-sub { margin-top:6px; color:var(--fg-muted); font-size:13px; line-height:1.6; }
     .grid { display:grid; grid-template-columns:minmax(0, 1.1fr) minmax(340px, .9fr); gap:16px; align-items:start; }
     .card { background:#fff; border:1px solid #eee8dd; border-radius:18px; box-shadow:0 14px 30px rgba(40,32,20,.05); }
+    .gpt-register-card { margin-bottom:16px; }
     .card-hd { padding:18px 20px 12px; border-bottom:1px solid #f1eee8; }
     .card-title { font-size:14px; font-weight:700; color:#222; }
     .card-sub { margin-top:5px; font-size:12px; color:#8a8175; line-height:1.5; }
@@ -34,6 +35,15 @@
     }
     .input:focus, .select:focus { border-color:#111; box-shadow:0 0 0 3px rgba(17,17,17,.08); }
     .inline { display:grid; grid-template-columns:1fr 160px; gap:12px; }
+    .inline-3 { display:grid; grid-template-columns:1fr 1fr 160px; gap:12px; }
+    .textarea {
+      min-height:96px;
+      padding:10px 12px;
+      line-height:1.45;
+      resize:vertical;
+      font-family:ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size:12px;
+    }
     .switch-row { display:flex; flex-wrap:wrap; gap:10px; }
     .check {
       display:inline-flex;
@@ -135,6 +145,7 @@
     @media (max-width: 900px) {
       .grid { grid-template-columns:1fr; }
       .inline { grid-template-columns:1fr; }
+      .inline-3 { grid-template-columns:1fr; }
     }
   </style>
 </head>
@@ -148,6 +159,124 @@
       </div>
       <button class="btn-soft" id="refresh-btn" type="button">刷新状态</button>
     </div>
+
+    <section class="card gpt-register-card">
+      <div class="card-hd">
+        <div class="card-title">普通 GPT 账号批量注册</div>
+        <div class="card-sub">登记 ChatGPT/Codex 普通账号。可先保存邮箱/密码/mailToken 为待登录状态，也可直接保存 OpenAI OAuth access token / refresh token。</div>
+      </div>
+      <div class="card-body">
+        <form id="gpt-account-form" class="form-grid">
+          <div class="inline">
+            <div class="field">
+              <label for="gpt-account-provider">邮箱来源</label>
+              <select class="select" id="gpt-account-provider">
+                <option value="">未指定</option>
+                <option value="DuckMail">DuckMail</option>
+                <option value="CF Temp Mail">CF Temp Mail</option>
+                <option value="Manual">手工邮箱</option>
+              </select>
+            </div>
+            <div class="field">
+              <label for="gpt-account-plan">计划类型（可选）</label>
+              <input class="input" id="gpt-account-plan" placeholder="free / plus / pro / team" autocomplete="off">
+            </div>
+          </div>
+
+          <div class="field">
+            <label for="gpt-account-bulk-credentials">批量注册凭据</label>
+            <textarea class="input textarea" id="gpt-account-bulk-credentials" placeholder="user1@example.com,password,mailToken,Alias,DuckMail,free&#10;{&quot;email&quot;:&quot;user2@example.com&quot;,&quot;password&quot;:&quot;pass&quot;,&quot;mail_token&quot;:&quot;mail-token&quot;,&quot;alias&quot;:&quot;GPT 2&quot;,&quot;plan_type&quot;:&quot;plus&quot;}"></textarea>
+            <small>每行一个账号。格式：JSON 对象，或 email,password,mailToken[,alias,emailProvider,planType]。</small>
+          </div>
+
+          <div class="field">
+            <label for="gpt-account-oauth-tokens">OAuth access token（可选，支持每行一个）</label>
+            <textarea class="input textarea" id="gpt-account-oauth-tokens" placeholder="Bearer eyJ...&#10;eyJ..."></textarea>
+            <small>如果只填写 access token，会保存为可用账号；如需 refresh_token/id_token/account_id，请使用上方 JSON 行。</small>
+          </div>
+
+          <div class="field">
+            <label for="gpt-account-delete-list">批量删除账号（可选）</label>
+            <textarea class="input textarea" id="gpt-account-delete-list" placeholder="user@example.com&#10;gpt_xxx&#10;gptcred_xxx&#10;Bearer eyJ..."></textarea>
+            <small>每行一个，可填写邮箱、保存后的 gpt_/gptcred_ 记录 ID，或 OAuth access token。</small>
+          </div>
+
+          <div class="actions">
+            <button class="btn-main" id="gpt-account-save-btn" type="submit">保存普通 GPT 账号</button>
+            <button class="btn-main" id="gpt-account-auto-run-btn" type="button">自动注册普通 GPT</button>
+            <button class="btn-soft" id="gpt-account-test-btn" type="button">测试普通 GPT</button>
+            <button class="btn-soft" id="gpt-account-delete-btn" type="button">批量删除普通 GPT</button>
+            <button class="btn-soft" id="gpt-account-clear-btn" type="button">清空普通 GPT 表单</button>
+          </div>
+          <div class="notice">自动注册会使用下方 xAI 注册配置中的临时邮箱域名、Worker 管理密码、注册数量和并发数；成功拿到 ChatGPT session token 时保存为可用账号，否则保存为待登录/待验证凭据。</div>
+        </form>
+      </div>
+    </section>
+
+    <section class="card gpt-register-card">
+      <div class="card-hd">
+        <div class="card-title">GPT 图片账号注册</div>
+        <div class="card-sub">保存 ChatGPT 图片账号凭据或 access token，用于 gpt-image-1 / gpt-image-2。只有 access token 可立即用于生图；邮箱/密码/mailToken 会先保存为待登录状态。</div>
+      </div>
+      <div class="card-body">
+        <form id="gpt-image-form" class="form-grid">
+          <div class="inline">
+            <div class="field">
+              <label for="gpt-image-alias">本地别名</label>
+              <input class="input" id="gpt-image-alias" placeholder="Image / Team / Work" autocomplete="off">
+            </div>
+            <div class="field">
+              <label for="gpt-image-provider">邮箱来源</label>
+              <select class="select" id="gpt-image-provider">
+                <option value="">未指定</option>
+                <option value="DuckMail">DuckMail</option>
+                <option value="CF Temp Mail">CF Temp Mail</option>
+                <option value="Manual">手工邮箱</option>
+              </select>
+            </div>
+          </div>
+
+          <div class="field">
+            <label for="gpt-image-email">ChatGPT 邮箱</label>
+            <input class="input" id="gpt-image-email" placeholder="name@example.com" autocomplete="off">
+            <small>没有 access token 时必须填写邮箱、密码和 mailToken；有 access token 时邮箱可选。</small>
+          </div>
+
+          <div class="inline">
+            <div class="field">
+              <label for="gpt-image-password">ChatGPT 登录密码</label>
+              <input class="input" id="gpt-image-password" type="password" autocomplete="off" placeholder="用于后续登录获取图片 token">
+            </div>
+            <div class="field">
+              <label for="gpt-image-mail-token">邮箱 mailToken</label>
+              <input class="input" id="gpt-image-mail-token" autocomplete="off" placeholder="用于读取登录验证码">
+            </div>
+          </div>
+
+          <div class="field">
+            <label for="gpt-image-access-tokens">图片 access token（可选，支持每行一个）</label>
+            <textarea class="input textarea" id="gpt-image-access-tokens" placeholder="Bearer eyJ...&#10;eyJ..."></textarea>
+            <small>如果填写多行 token，会批量保存；同一组别名/邮箱元数据会应用到每个 token。</small>
+          </div>
+
+          <div class="field">
+            <label for="gpt-image-bulk-credentials">批量注册凭据（可选，支持每行一个）</label>
+            <textarea class="input textarea" id="gpt-image-bulk-credentials" placeholder="user1@example.com,password,mailToken,Alias,DuckMail,false&#10;{&quot;email&quot;:&quot;user2@example.com&quot;,&quot;password&quot;:&quot;pass&quot;,&quot;mail_token&quot;:&quot;mail-token&quot;,&quot;alias&quot;:&quot;Image 2&quot;}"></textarea>
+            <small>优先级高于上方单条邮箱表单。格式：JSON 对象，或 email,password,mailToken[,alias,emailProvider,isFree]。</small>
+          </div>
+
+          <div class="switch-row">
+            <label class="check"><input id="gpt-image-is-free" type="checkbox"> 免费 ChatGPT 账号</label>
+          </div>
+
+          <div class="actions">
+            <button class="btn-main" id="gpt-image-save-btn" type="submit">保存 GPT 图片账号</button>
+            <button class="btn-soft" id="gpt-image-test-btn" type="button">测试 GPT 图片</button>
+            <button class="btn-soft" id="gpt-image-clear-btn" type="button">清空 GPT 表单</button>
+          </div>
+        </form>
+      </div>
+    </section>
 
     <div class="grid">
       <section class="card">
@@ -308,6 +437,16 @@ const resumeBtn = document.getElementById('resume-btn');
 const stopBtn = document.getElementById('stop-btn');
 const saveBtn = document.getElementById('save-btn');
 const refreshBtn = document.getElementById('refresh-btn');
+const gptAccountForm = document.getElementById('gpt-account-form');
+const gptAccountSaveBtn = document.getElementById('gpt-account-save-btn');
+const gptAccountAutoRunBtn = document.getElementById('gpt-account-auto-run-btn');
+const gptAccountTestBtn = document.getElementById('gpt-account-test-btn');
+const gptAccountDeleteBtn = document.getElementById('gpt-account-delete-btn');
+const gptAccountClearBtn = document.getElementById('gpt-account-clear-btn');
+const gptImageForm = document.getElementById('gpt-image-form');
+const gptImageSaveBtn = document.getElementById('gpt-image-save-btn');
+const gptImageTestBtn = document.getElementById('gpt-image-test-btn');
+const gptImageClearBtn = document.getElementById('gpt-image-clear-btn');
 const availableHint = document.getElementById('available-hint');
 const passwordHint = document.getElementById('password-hint');
 const solverKeyHint = document.getElementById('turnstile-solver-key-hint');
@@ -350,6 +489,15 @@ const WORKER_EVENT_LABELS = {
   started: { text: '已启动批次', cls: 'active' },
   browser_started: { text: '浏览器已启动', cls: 'active' },
   round_start: { text: '注册中…', cls: 'active' },
+  registration_attempt_start: { text: '准备注册账号…', cls: 'active' },
+  email_created: { text: '临时邮箱已创建', cls: 'active' },
+  otp_wait_start: { text: '等待注册验证码…', cls: 'active' },
+  otp_wait_timeout: { text: '注册验证码超时', cls: 'failed' },
+  login_otp_wait_start: { text: '等待登录验证码…', cls: 'active' },
+  login_otp_wait_timeout: { text: '登录验证码超时', cls: 'failed' },
+  login_otp_wrong: { text: '登录验证码错误，重试中…', cls: 'active' },
+  registration_attempt_failed: { text: '本次尝试失败', cls: 'failed' },
+  account_saved: { text: '账号已保存', cls: 'done' },
   round_done: { text: '完成一轮', cls: 'done' },
   round_failed: { text: '本轮失败', cls: 'failed' },
   finished: { text: '已结束', cls: 'done' },
@@ -377,8 +525,24 @@ function renderWorkerGrid(perWorker, spawned) {
       if (snap && Number.isFinite(snap.rounds_done)) {
         lines.push(`完成 ${snap.rounds_done} 个`);
       }
+      if (snap && Number.isFinite(snap.last_attempt)) {
+        const attempts = Number.isFinite(snap.last_attempts) ? `/${snap.last_attempts}` : '';
+        lines.push(`尝试 ${snap.last_attempt}${attempts}`);
+      }
+      if (snap && Number.isFinite(snap.last_timeout_s)) {
+        lines.push(`等待上限 ${snap.last_timeout_s}s`);
+      }
+      if (snap && Number.isFinite(snap.accounts_saved)) {
+        lines.push(`保存 ${snap.accounts_saved} 个`);
+      }
       if (snap && snap.last_sso_tail) {
         lines.push(`最近 SSO …${snap.last_sso_tail}`);
+      }
+      if (snap && snap.last_email) {
+        lines.push(`邮箱 ${escapeHtml(snap.last_email)}`);
+      }
+      if (snap && snap.last_status) {
+        lines.push(`状态 ${escapeHtml(snap.last_status)}`);
       }
       if (snap && Number.isFinite(snap.last_elapsed_s)) {
         lines.push(`上轮耗时 ${snap.last_elapsed_s.toFixed(1)}s`);
@@ -441,6 +605,7 @@ function renderStatus(data) {
     ? data.log_tail.join('\n')
     : '暂无日志';
   runBtn.disabled = !!data.running || !data.available;
+  gptAccountAutoRunBtn.disabled = !!data.running;
   saveBtn.disabled = !!data.running;
 
   const running = !!data.running;
@@ -569,6 +734,240 @@ function readPayload() {
   };
 }
 
+function readGPTImagePayload() {
+  const alias = document.getElementById('gpt-image-alias').value.trim();
+  const email = document.getElementById('gpt-image-email').value.trim();
+  const password = document.getElementById('gpt-image-password').value;
+  const mailToken = document.getElementById('gpt-image-mail-token').value.trim();
+  const emailProvider = document.getElementById('gpt-image-provider').value;
+  const isFree = document.getElementById('gpt-image-is-free').checked;
+  const bulkCredentials = parseGPTImageBulkCredentials(
+    document.getElementById('gpt-image-bulk-credentials').value,
+    { defaultIsFree: isFree, defaultProvider: emailProvider },
+  );
+  const accessTokens = document.getElementById('gpt-image-access-tokens').value
+    .split(/\r?\n/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+
+  if (bulkCredentials.length) {
+    return {
+      accounts: bulkCredentials,
+      is_free: isFree,
+    };
+  }
+
+  if (accessTokens.length) {
+    return {
+      accounts: accessTokens.map((accessToken) => ({
+        access_token: accessToken,
+        alias,
+        email,
+        password,
+        mail_token: mailToken,
+        email_provider: emailProvider,
+        is_free: isFree,
+      })),
+      is_free: isFree,
+    };
+  }
+
+  if (!email || !password || !mailToken) {
+    throw new Error('请填写 access token，或同时填写邮箱、密码和 mailToken');
+  }
+
+  return {
+    accounts: [{
+      alias,
+      email,
+      password,
+      mail_token: mailToken,
+      email_provider: emailProvider,
+      is_free: isFree,
+    }],
+    is_free: isFree,
+  };
+}
+
+function readGPTAccountPayload() {
+  const emailProvider = document.getElementById('gpt-account-provider').value;
+  const planType = document.getElementById('gpt-account-plan').value.trim();
+  const bulkCredentials = parseGPTAccountBulkCredentials(
+    document.getElementById('gpt-account-bulk-credentials').value,
+    { defaultProvider: emailProvider, defaultPlanType: planType },
+  );
+  const accessTokens = document.getElementById('gpt-account-oauth-tokens').value
+    .split(/\r?\n/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+
+  const tokenAccounts = accessTokens.map((accessToken) => ({
+    access_token: accessToken,
+    email_provider: emailProvider,
+    plan_type: planType,
+  }));
+  const accounts = [...bulkCredentials, ...tokenAccounts];
+  if (!accounts.length) {
+    throw new Error('请填写普通 GPT 批量凭据或 OAuth access token');
+  }
+  return { accounts };
+}
+
+function parseGPTAccountBulkCredentials(raw, { defaultProvider, defaultPlanType }) {
+  return raw
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => parseGPTAccountBulkCredentialLine(line, { defaultProvider, defaultPlanType }));
+}
+
+function parseGPTAccountBulkCredentialLine(line, { defaultProvider, defaultPlanType }) {
+  if (line.startsWith('{')) {
+    let item;
+    try {
+      item = JSON.parse(line);
+    } catch {
+      throw new Error('普通 GPT 批量凭据 JSON 格式错误');
+    }
+    if (!item || typeof item !== 'object') {
+      throw new Error('普通 GPT 批量凭据 JSON 必须是对象');
+    }
+    const normalized = {
+      alias: String(item.alias || '').trim(),
+      email: String(item.email || '').trim(),
+      password: String(item.password || '').trim(),
+      mail_token: String(item.mail_token || item.mailToken || '').trim(),
+      email_provider: String(item.email_provider || item.emailProvider || defaultProvider || '').trim(),
+      access_token: String(item.access_token || item.accessToken || '').trim(),
+      id_token: String(item.id_token || item.idToken || '').trim(),
+      refresh_token: String(item.refresh_token || item.refreshToken || '').trim(),
+      account_id: String(item.account_id || item.accountID || item.accountId || '').trim(),
+      organization_id: String(item.organization_id || item.organizationID || item.organizationId || '').trim(),
+      plan_type: String(item.plan_type || item.planType || defaultPlanType || '').trim(),
+    };
+    if (!normalized.access_token && (!normalized.email || !normalized.password || !normalized.mail_token)) {
+      throw new Error('普通 GPT JSON 必须包含 access_token，或同时包含 email、password、mail_token');
+    }
+    return normalized;
+  }
+
+  const parts = line.split(',').map((part) => part.trim());
+  const [email, password, mailToken, alias = '', emailProvider = defaultProvider, planType = defaultPlanType] = parts;
+  if (!email || !password || !mailToken) {
+    throw new Error('普通 GPT 批量凭据行必须至少包含 email,password,mailToken');
+  }
+  return {
+    alias,
+    email,
+    password,
+    mail_token: mailToken,
+    email_provider: emailProvider || defaultProvider,
+    plan_type: planType || defaultPlanType,
+  };
+}
+
+function clearGPTAccountForm() {
+  document.getElementById('gpt-account-provider').value = '';
+  document.getElementById('gpt-account-plan').value = '';
+  document.getElementById('gpt-account-bulk-credentials').value = '';
+  document.getElementById('gpt-account-oauth-tokens').value = '';
+  document.getElementById('gpt-account-delete-list').value = '';
+}
+
+function readGPTAccountDeletePayload() {
+  const values = document.getElementById('gpt-account-delete-list').value
+    .split(/\r?\n/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+  if (!values.length) {
+    throw new Error('请填写要删除的普通 GPT 账号');
+  }
+  return Array.from(new Set(values));
+}
+
+function parseGPTImageBulkCredentials(raw, { defaultIsFree, defaultProvider }) {
+  return raw
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => parseGPTImageBulkCredentialLine(line, { defaultIsFree, defaultProvider }));
+}
+
+function parseGPTImageBulkCredentialLine(line, { defaultIsFree, defaultProvider }) {
+  if (line.startsWith('{')) {
+    let item;
+    try {
+      item = JSON.parse(line);
+    } catch {
+      throw new Error('批量凭据 JSON 格式错误');
+    }
+    if (!item || typeof item !== 'object') {
+      throw new Error('批量凭据 JSON 必须是对象');
+    }
+    const normalized = {
+      alias: String(item.alias || '').trim(),
+      email: String(item.email || '').trim(),
+      password: String(item.password || '').trim(),
+      mail_token: String(item.mail_token || item.mailToken || '').trim(),
+      email_provider: String(item.email_provider || item.emailProvider || defaultProvider || '').trim(),
+      is_free: item.is_free == null ? defaultIsFree : Boolean(item.is_free),
+    };
+    if (!normalized.email || !normalized.password || !normalized.mail_token) {
+      throw new Error('批量凭据 JSON 必须包含 email、password、mail_token');
+    }
+    return normalized;
+  }
+
+  const parts = line.split(',').map((part) => part.trim());
+  const [email, password, mailToken, alias = '', emailProvider = defaultProvider, isFree = ''] = parts;
+  if (!email || !password || !mailToken) {
+    throw new Error('批量凭据行必须至少包含 email,password,mailToken');
+  }
+  return {
+    alias,
+    email,
+    password,
+    mail_token: mailToken,
+    email_provider: emailProvider || defaultProvider,
+    is_free: isFree === '' ? defaultIsFree : ['1', 'true', 'yes', 'on', 'free', '免费'].includes(isFree.toLowerCase()),
+  };
+}
+
+function clearGPTImageForm({ keepIdentity = false } = {}) {
+  if (!keepIdentity) {
+    document.getElementById('gpt-image-alias').value = '';
+    document.getElementById('gpt-image-email').value = '';
+    document.getElementById('gpt-image-provider').value = '';
+    document.getElementById('gpt-image-is-free').checked = false;
+  }
+  document.getElementById('gpt-image-password').value = '';
+  document.getElementById('gpt-image-mail-token').value = '';
+  document.getElementById('gpt-image-access-tokens').value = '';
+  document.getElementById('gpt-image-bulk-credentials').value = '';
+}
+
+function testSummaryText(label, data) {
+  const summary = (data && data.summary) || {};
+  const total = Number(summary.total) || 0;
+  const ok = Number(summary.ok) || 0;
+  const fail = Number(summary.fail) || Math.max(0, total - ok);
+  return `${label}测试完成：可用 ${ok} / ${total}，失败 ${fail}`;
+}
+
+async function runGPTAccountTest(path, button, label) {
+  button.disabled = true;
+  try {
+    showToast(`${label}测试中…`, 'info');
+    const data = await api('POST', path, {});
+    const fail = Number((data.summary || {}).fail) || 0;
+    showToast(testSummaryText(label, data), fail ? 'error' : 'success');
+  } catch (err) {
+    showToast(err.message || `${label}测试失败`, 'error');
+  } finally {
+    button.disabled = false;
+  }
+}
+
 function preserveIntent(savedConfig, sentPayload) {
   if (!savedConfig || typeof savedConfig !== 'object') return savedConfig;
   // Always reflect the user's just-sent count/workers, even if the backend
@@ -615,6 +1014,109 @@ form.addEventListener('submit', async (event) => {
     showToast('注册任务已启动', 'success');
   } catch (err) {
     showToast(err.message || '启动失败', 'error');
+  } finally {
+    await refreshStatus();
+  }
+});
+
+gptImageForm.addEventListener('submit', async (event) => {
+  event.preventDefault();
+  gptImageSaveBtn.disabled = true;
+  let payload;
+  try {
+    payload = readGPTImagePayload();
+  } catch (err) {
+    showToast(err.message || 'GPT 图片账号表单无效', 'error');
+    gptImageSaveBtn.disabled = false;
+    return;
+  }
+
+  try {
+    const data = await api('POST', '/gpt-image/accounts', payload);
+    const count = data && data.count ? data.count : payload.accounts.length;
+    showToast(`GPT 图片账号已保存：${count} 个`, 'success');
+    clearGPTImageForm({ keepIdentity: false });
+  } catch (err) {
+    showToast(err.message || 'GPT 图片账号保存失败', 'error');
+  } finally {
+    gptImageSaveBtn.disabled = false;
+  }
+});
+
+gptImageClearBtn.addEventListener('click', () => clearGPTImageForm());
+
+gptImageTestBtn.addEventListener('click', () => {
+  runGPTAccountTest('/gpt-image/accounts/test', gptImageTestBtn, 'GPT 图片账号');
+});
+
+gptAccountForm.addEventListener('submit', async (event) => {
+  event.preventDefault();
+  gptAccountSaveBtn.disabled = true;
+  let payload;
+  try {
+    payload = readGPTAccountPayload();
+  } catch (err) {
+    showToast(err.message || '普通 GPT 账号表单无效', 'error');
+    gptAccountSaveBtn.disabled = false;
+    return;
+  }
+
+  try {
+    const data = await api('POST', '/gpt/accounts', payload);
+    const count = data && data.count ? data.count : payload.accounts.length;
+    showToast(`普通 GPT 账号已保存：${count} 个`, 'success');
+    clearGPTAccountForm();
+  } catch (err) {
+    showToast(err.message || '普通 GPT 账号保存失败', 'error');
+  } finally {
+    gptAccountSaveBtn.disabled = false;
+  }
+});
+
+gptAccountClearBtn.addEventListener('click', () => clearGPTAccountForm());
+
+gptAccountTestBtn.addEventListener('click', () => {
+  runGPTAccountTest('/gpt/accounts/test', gptAccountTestBtn, '普通 GPT 账号');
+});
+
+gptAccountDeleteBtn.addEventListener('click', async () => {
+  let payload;
+  try {
+    payload = readGPTAccountDeletePayload();
+  } catch (err) {
+    showToast(err.message || '普通 GPT 删除列表无效', 'error');
+    return;
+  }
+  if (!confirm(`确认删除 ${payload.length} 个普通 GPT 账号？此操作不可撤销。`)) {
+    return;
+  }
+  gptAccountDeleteBtn.disabled = true;
+  try {
+    const data = await api('DELETE', '/gpt/accounts', payload);
+    showToast(`普通 GPT 账号已删除：${data.deleted || 0} 个`, 'success');
+    document.getElementById('gpt-account-delete-list').value = '';
+  } catch (err) {
+    showToast(err.message || '普通 GPT 账号删除失败', 'error');
+  } finally {
+    gptAccountDeleteBtn.disabled = false;
+  }
+});
+
+gptAccountAutoRunBtn.addEventListener('click', async () => {
+  gptAccountAutoRunBtn.disabled = true;
+  const sentPayload = readPayload();
+  try {
+    const data = await api('POST', '/maintainer/gpt/run', sentPayload);
+    renderStatus(data);
+    try {
+      const savedConfig = await api('GET', '/maintainer/config');
+      renderSavedConfig(preserveIntent(savedConfig, sentPayload));
+    } catch (err) {
+      showToast(err.message || '配置加载失败', 'error');
+    }
+    showToast('普通 GPT 自动注册任务已启动', 'success');
+  } catch (err) {
+    showToast(err.message || '普通 GPT 自动注册启动失败', 'error');
   } finally {
     await refreshStatus();
   }

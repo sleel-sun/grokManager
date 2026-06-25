@@ -138,6 +138,7 @@ class FrameEvent:
     message_tag: str = ""
     message_step_id: int | None = None
     annotation_data: dict | None = None
+    tool_calls: list[Any] | None = None
 
 
 # ---------------------------------------------------------------------------

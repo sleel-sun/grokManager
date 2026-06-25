@@ -22,7 +22,7 @@ from ..models import (
 )
 from redis.asyncio import Redis
 
-from ..quota_defaults import default_quota_set
+from ..quota_defaults import CONSOLE_LIMIT, CONSOLE_WINDOW_SECONDS, default_quota_set
 
 _KEY_REV      = "accounts:rev"
 _KEY_RECORD   = "accounts:record:{token}"
@@ -308,7 +308,8 @@ class RedisAccountRepository:
             if patch.clear_failures:
                 for k in ("cooldown_until", "cooldown_reason", "disabled_at",
                           "disabled_reason", "expired_at", "expired_reason",
-                          "forbidden_strikes"):
+                          "forbidden_strikes", "console_429_count",
+                          "console_429_last_at"):
                     ext.pop(k, None)
                 updates["status"]           = AccountStatus.ACTIVE.value
                 updates["usage_fail_count"] = "0"
@@ -418,6 +419,117 @@ class RedisAccountRepository:
             deleted=deleted_result.deleted,
             revision=upserted_result.revision,
         )
+
+    async def reset_expired_console_windows(self) -> int:
+        """Reset exhausted or stale console quota windows in Redis."""
+        now = now_ms()
+        reset_json = json.dumps({
+            "remaining": CONSOLE_LIMIT,
+            "total": CONSOLE_LIMIT,
+            "window_seconds": CONSOLE_WINDOW_SECONDS,
+            "reset_at": None,
+            "synced_at": now,
+            "source": 0,
+        })
+
+        to_reset: list[str] = []
+        async for raw_key in self._r.scan_iter("accounts:record:*"):
+            key = raw_key.decode() if isinstance(raw_key, bytes) else raw_key
+            h = await self._r.hgetall(key)
+            if not h:
+                continue
+
+            def _bget(field: str) -> str:
+                value = h.get(field) or h.get(field.encode())
+                return value.decode() if isinstance(value, bytes) else (value or "")
+
+            if _bget("status") != "active" or _bget("deleted_at"):
+                continue
+            raw_quota = _bget("quota_console")
+            if not raw_quota or raw_quota == "{}":
+                continue
+            try:
+                quota = json.loads(raw_quota)
+                remaining = int(quota.get("remaining") or 0)
+                reset_at_raw = quota.get("reset_at")
+                reset_at = int(reset_at_raw) if reset_at_raw is not None else None
+            except (ValueError, TypeError):
+                continue
+
+            exhausted_and_expired = remaining <= 0 and (
+                reset_at is None or reset_at < now
+            )
+            stale_reset = reset_at is not None and reset_at < now
+            if exhausted_and_expired or stale_reset:
+                to_reset.append(key.split(":", 2)[-1])
+
+        if not to_reset:
+            return 0
+
+        rev = await self._bump_revision()
+        for token in to_reset:
+            await self._r.hset(_record_key(token), mapping={
+                "quota_console": reset_json,
+                "revision": str(rev),
+                "updated_at": str(now),
+            })
+            await self._r.zadd(_KEY_REV_LOG, {token: rev})
+        return len(to_reset)
+
+    async def recover_console_expired_accounts(self) -> int:
+        """Recover accounts expired by repeated console 429 after one hour."""
+        now = now_ms()
+        recovery_threshold = now - 3600 * 1000
+        to_recover: list[tuple[str, dict[str, Any]]] = []
+
+        async for raw_key in self._r.scan_iter("accounts:record:*"):
+            key = raw_key.decode() if isinstance(raw_key, bytes) else raw_key
+            h = await self._r.hgetall(key)
+            if not h:
+                continue
+
+            def _bget(field: str) -> str:
+                value = h.get(field) or h.get(field.encode())
+                return value.decode() if isinstance(value, bytes) else (value or "")
+
+            if (
+                _bget("status") != "expired"
+                or _bget("deleted_at")
+                or _bget("state_reason") != "console_429_threshold_exceeded"
+            ):
+                continue
+            try:
+                if int(_bget("usage_use_count") or 0) <= 5:
+                    continue
+                ext = json.loads(_bget("ext") or "{}")
+                expired_at = int(ext.get("expired_at"))
+            except (ValueError, TypeError):
+                continue
+            if expired_at > recovery_threshold:
+                continue
+            for field in (
+                "expired_at",
+                "expired_reason",
+                "console_429_count",
+                "console_429_last_at",
+            ):
+                ext.pop(field, None)
+            to_recover.append((key.split(":", 2)[-1], ext))
+
+        if not to_recover:
+            return 0
+
+        rev = await self._bump_revision()
+        for token, ext in to_recover:
+            await self._r.hset(_record_key(token), mapping={
+                "status": "active",
+                "state_reason": "",
+                "ext": json.dumps(ext),
+                "revision": str(rev),
+                "updated_at": str(now),
+            })
+            await self._r.zadd(_KEY_REV_LOG, {token: rev})
+        return len(to_recover)
 
     async def close(self) -> None:
         """Close the underlying Redis connection pool."""

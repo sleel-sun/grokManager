@@ -26,7 +26,8 @@ _W_QUOTA    = 25.0
 _W_RECENT   = 15.0     # penalty for recently used accounts
 _W_INFLIGHT = 20.0
 _W_FAIL     = 4.0
-_RECENT_WINDOW_S = 15  # seconds
+_RECENT_WINDOW_S = 60  # seconds; covers longer Grok reasoning requests
+_RANDOM_MAX_FAILS = 5  # skip repeatedly failing accounts in random strategy
 
 
 # ---------------------------------------------------------------------------
@@ -313,6 +314,7 @@ def _random_select(
     max_inflight = int(get_config("account.selection.max_inflight", 8))
     cooling_col  = table.cooling_until_s_by_idx
     inflight_col = table.inflight_by_idx
+    fail_col     = table.fail_count_by_idx
 
     working = candidates.copy()
     if exclude_idxs:
@@ -321,6 +323,7 @@ def _random_select(
         idx for idx in working
         if int(cooling_col[idx]) <= now_s
         and int(inflight_col[idx]) < max_inflight
+        and int(fail_col[idx]) < _RANDOM_MAX_FAILS
     }
     if not working:
         return None

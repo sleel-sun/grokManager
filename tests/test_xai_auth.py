@@ -68,6 +68,47 @@ async def test_nsfw_sequence_continues_when_accept_tos_transiently_fails(monkeyp
 
 
 @pytest.mark.anyio
+async def test_nsfw_sequence_skips_locked_birth_date_429(monkeypatch) -> None:
+    proxy = _FakeProxy()
+    calls = []
+
+    async def _accept_tos(token: str) -> GrpcStatus:
+        calls.append(("accept", token))
+        return GrpcStatus(0)
+
+    async def _set_birth_date(token: str, *, session=None, lease=None) -> dict:
+        calls.append(("birth", token))
+        raise UpstreamError(
+            "birth date locked",
+            status=429,
+            body='{"code":"birth-date-change-limit-reached"}',
+        )
+
+    async def _grpc_call(url: str, token: str, payload: bytes, **kwargs: object) -> GrpcStatus:
+        calls.append(("grpc", token, kwargs.get("label")))
+        return GrpcStatus(0)
+
+    async def _get_proxy_runtime() -> _FakeProxy:
+        return proxy
+
+    monkeypatch.setattr(xai_auth, "accept_tos", _accept_tos)
+    monkeypatch.setattr(xai_auth, "set_birth_date", _set_birth_date)
+    monkeypatch.setattr(xai_auth, "_grpc_call", _grpc_call)
+    monkeypatch.setattr(xai_auth, "get_proxy_runtime", _get_proxy_runtime)
+    monkeypatch.setattr(xai_auth, "build_session_kwargs", lambda **_: {})
+    monkeypatch.setattr(xai_auth, "ResettableSession", _FakeSession)
+
+    await xai_auth.nsfw_sequence("token-locked")
+
+    assert calls == [
+        ("accept", "token-locked"),
+        ("birth", "token-locked"),
+        ("grpc", "token-locked", "enable_nsfw"),
+    ]
+    assert proxy.feedbacks[-1].kind == ProxyFeedbackKind.SUCCESS
+
+
+@pytest.mark.anyio
 async def test_set_birth_date_retries_transient_429(monkeypatch) -> None:
     proxy = _FakeProxy()
     attempts = 0

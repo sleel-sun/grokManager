@@ -5,7 +5,7 @@ import json
 import sqlite3
 from contextlib import closing
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable, TypeVar
 
 from app.platform.runtime.clock import now_ms
 from ..commands import AccountPatch, AccountUpsert, BulkReplacePoolCommand, ListAccountsQuery
@@ -17,10 +17,11 @@ from ..models import (
     AccountRecord,
     RuntimeSnapshot,
 )
-from ..quota_defaults import default_quota_set
+from ..quota_defaults import CONSOLE_LIMIT, CONSOLE_WINDOW_SECONDS, default_quota_set
 
 _TBL = "accounts"
 _META = "account_meta"
+_T = TypeVar("_T")
 
 
 class LocalAccountRepository:
@@ -42,6 +43,12 @@ class LocalAccountRepository:
         conn.execute("PRAGMA busy_timeout=5000")
         conn.execute("PRAGMA foreign_keys=ON")
         return conn
+
+    async def _run_sync(self, fn: Callable[[], _T]) -> _T:
+        # SQLite local mode is single-process and mutation paths are already
+        # serialized by _lock. Running inline avoids default-executor shutdown
+        # hangs in short-lived asyncio.run() test and admin code paths.
+        return fn()
 
     def _init_sync(self) -> None:
         self._path.parent.mkdir(parents=True, exist_ok=True)
@@ -292,7 +299,8 @@ class LocalAccountRepository:
             if patch.clear_failures:
                 for k in ("cooldown_until", "cooldown_reason", "disabled_at",
                           "disabled_reason", "expired_at", "expired_reason",
-                          "forbidden_strikes"):
+                          "forbidden_strikes", "console_429_count",
+                          "console_429_last_at"):
                     ext.pop(k, None)
                 sets["status"]           = AccountStatus.ACTIVE.value
                 sets["usage_fail_count"] = 0
@@ -315,13 +323,13 @@ class LocalAccountRepository:
 
     async def initialize(self) -> None:
         async with self._lock:
-            await asyncio.to_thread(self._init_sync)
+            await self._run_sync(self._init_sync)
 
     async def get_revision(self) -> int:
         def _sync() -> int:
             with closing(self._connect()) as conn:
                 return self._get_revision_sync(conn)
-        return await asyncio.to_thread(_sync)
+        return await self._run_sync(_sync)
 
     async def runtime_snapshot(self) -> RuntimeSnapshot:
         def _sync() -> RuntimeSnapshot:
@@ -334,7 +342,7 @@ class LocalAccountRepository:
                     revision=rev,
                     items=[self._row_to_record(r) for r in rows],
                 )
-        return await asyncio.to_thread(_sync)
+        return await self._run_sync(_sync)
 
     async def scan_changes(
         self,
@@ -364,7 +372,7 @@ class LocalAccountRepository:
                     deleted_tokens=deleted,
                     has_more=has_more,
                 )
-        return await asyncio.to_thread(_sync)
+        return await self._run_sync(_sync)
 
     async def upsert_accounts(
         self,
@@ -381,7 +389,7 @@ class LocalAccountRepository:
                 return AccountMutationResult(upserted=count, revision=rev)
 
         async with self._lock:
-            return await asyncio.to_thread(_sync)
+            return await self._run_sync(_sync)
 
     async def patch_accounts(
         self,
@@ -398,7 +406,7 @@ class LocalAccountRepository:
                 return AccountMutationResult(patched=count, revision=rev)
 
         async with self._lock:
-            return await asyncio.to_thread(_sync)
+            return await self._run_sync(_sync)
 
     async def delete_accounts(
         self,
@@ -421,7 +429,7 @@ class LocalAccountRepository:
                 return AccountMutationResult(deleted=count, revision=rev)
 
         async with self._lock:
-            return await asyncio.to_thread(_sync)
+            return await self._run_sync(_sync)
 
     async def get_accounts(
         self,
@@ -439,7 +447,7 @@ class LocalAccountRepository:
                 ).fetchall()
                 return [self._row_to_record(r) for r in rows]
 
-        return await asyncio.to_thread(_sync)
+        return await self._run_sync(_sync)
 
     async def list_accounts(
         self,
@@ -490,7 +498,7 @@ class LocalAccountRepository:
                     revision=rev,
                 )
 
-        return await asyncio.to_thread(_sync)
+        return await self._run_sync(_sync)
 
     async def replace_pool(
         self,
@@ -516,7 +524,126 @@ class LocalAccountRepository:
                 )
 
         async with self._lock:
-            return await asyncio.to_thread(_sync)
+            return await self._run_sync(_sync)
+
+    async def reset_expired_console_windows(self) -> int:
+        """Reset exhausted or stale console quota windows in one SQLite update."""
+        def _sync() -> int:
+            now = now_ms()
+            with closing(self._connect()) as conn:
+                count = conn.execute(
+                    f"""
+                    SELECT COUNT(*) FROM {_TBL}
+                    WHERE status = 'active'
+                      AND deleted_at IS NULL
+                      AND (
+                        (
+                          CAST(json_extract(quota_console, '$.remaining') AS INTEGER) <= 0
+                          AND (
+                            json_extract(quota_console, '$.reset_at') IS NULL
+                            OR CAST(json_extract(quota_console, '$.reset_at') AS INTEGER) < ?
+                          )
+                        )
+                        OR (
+                          json_extract(quota_console, '$.reset_at') IS NOT NULL
+                          AND CAST(json_extract(quota_console, '$.reset_at') AS INTEGER) < ?
+                        )
+                      )
+                    """,
+                    (now, now),
+                ).fetchone()[0]
+                if count == 0:
+                    return 0
+
+                reset_json = json.dumps({
+                    "remaining": CONSOLE_LIMIT,
+                    "total": CONSOLE_LIMIT,
+                    "window_seconds": CONSOLE_WINDOW_SECONDS,
+                    "reset_at": None,
+                    "synced_at": now,
+                    "source": 0,
+                })
+                rev = self._bump_revision(conn)
+                conn.execute(
+                    f"""
+                    UPDATE {_TBL}
+                    SET quota_console = ?, revision = ?, updated_at = ?
+                    WHERE status = 'active'
+                      AND deleted_at IS NULL
+                      AND (
+                        (
+                          CAST(json_extract(quota_console, '$.remaining') AS INTEGER) <= 0
+                          AND (
+                            json_extract(quota_console, '$.reset_at') IS NULL
+                            OR CAST(json_extract(quota_console, '$.reset_at') AS INTEGER) < ?
+                          )
+                        )
+                        OR (
+                          json_extract(quota_console, '$.reset_at') IS NOT NULL
+                          AND CAST(json_extract(quota_console, '$.reset_at') AS INTEGER) < ?
+                        )
+                      )
+                    """,
+                    (reset_json, rev, now, now, now),
+                )
+                affected = conn.execute("SELECT changes()").fetchone()[0]
+                conn.commit()
+                return affected
+
+        async with self._lock:
+            return await self._run_sync(_sync)
+
+    async def recover_console_expired_accounts(self) -> int:
+        """Recover accounts expired by repeated console 429 after one hour."""
+        def _sync() -> int:
+            now = now_ms()
+            recovery_threshold = now - 3600 * 1000
+            with closing(self._connect()) as conn:
+                rows = conn.execute(
+                    f"""
+                    SELECT token, ext FROM {_TBL}
+                    WHERE status = 'expired'
+                      AND deleted_at IS NULL
+                      AND state_reason = 'console_429_threshold_exceeded'
+                      AND usage_use_count > 5
+                      AND CAST(json_extract(ext, '$.expired_at') AS INTEGER) <= ?
+                    """,
+                    (recovery_threshold,),
+                ).fetchall()
+                if not rows:
+                    return 0
+
+                rev = self._bump_revision(conn)
+                for row in rows:
+                    ext_raw = row["ext"]
+                    try:
+                        ext = json.loads(ext_raw) if ext_raw else {}
+                    except (ValueError, TypeError):
+                        ext = {}
+                    for key in (
+                        "expired_at",
+                        "expired_reason",
+                        "console_429_count",
+                        "console_429_last_at",
+                    ):
+                        ext.pop(key, None)
+                    conn.execute(
+                        f"""
+                        UPDATE {_TBL}
+                        SET status = 'active',
+                            state_reason = NULL,
+                            ext = ?,
+                            revision = ?,
+                            updated_at = ?
+                        WHERE token = ?
+                        """,
+                        (json.dumps(ext), rev, now, row["token"]),
+                    )
+                conn.commit()
+                return len(rows)
+
+        async with self._lock:
+            return await self._run_sync(_sync)
 
     async def close(self) -> None:
         """No-op for SQLite — connections are opened and closed per operation."""

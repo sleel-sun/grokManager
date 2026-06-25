@@ -575,7 +575,7 @@ const SCHEMA_DEF = [
             label: 'Composer Fast 底层模型',
             labelKey: 'config.schema.fields.composerFastUpstreamModel.label',
             type: 'text',
-            desc: 'grok-composer-2.5-fast 的实际 Console Responses 底层模型。默认 grok-4.20-multi-agent；可改为当前账号可用的 grok-4.3、grok-4.20-0309 等模型 ID。',
+            desc: 'grok-composer-2.5-fast 的实际 Console Responses 底层模型。默认 grok-4.3；如账号具备 multi-agent 权限，可改为 grok-4.20-multi-agent。',
             descKey: 'config.schema.fields.composerFastUpstreamModel.desc',
             wide: true,
           },
@@ -768,7 +768,7 @@ const SCHEMA_DEF = [
         section: 'retry',
         fields: [
           { key: 'max_retries', label: '应用层重试上限', labelKey: 'config.schema.fields.maxRetries.label', type: 'number', desc: '请求失败后的应用层最大重试次数；0 表示不重试。适用于 chat.completions 与 responses 端点。', descKey: 'config.schema.fields.maxRetries.desc' },
-          { key: 'on_codes', label: '应用层重试触发状态码', labelKey: 'config.schema.fields.retryCodes.label', type: 'text', desc: '收到指定 HTTP 状态码时触发应用层重试，多个值请使用英文逗号分隔，例如 429,503。', descKey: 'config.schema.fields.retryCodes.desc' },
+          { key: 'on_codes', label: '应用层重试触发状态码', labelKey: 'config.schema.fields.retryCodes.label', type: 'text', desc: '收到指定 HTTP 状态码时触发应用层重试，多个值请使用英文逗号分隔，例如 429,502,503。', descKey: 'config.schema.fields.retryCodes.desc' },
           { key: 'reset_session_status_codes', label: '传输层会话重建状态码', labelKey: 'config.schema.fields.resetSessionCodes.label', type: 'text', desc: '收到指定 HTTP 状态码时自动重建传输层代理会话（Transport Session），多个值请使用英文逗号分隔。', descKey: 'config.schema.fields.resetSessionCodes.desc' },
         ]
       },
@@ -777,7 +777,9 @@ const SCHEMA_DEF = [
         section: 'chat',
         fields: [
           { key: 'timeout', section: 'chat', label: '对话请求超时（秒）', labelKey: 'config.schema.fields.chatTimeout.label', type: 'number', desc: '对话与图像编辑请求的 HTTP 连接超时时间。', descKey: 'config.schema.fields.chatTimeout.desc' },
+          { key: 'transport_retry_max_retries', section: 'chat', label: '对话传输重试上限', type: 'number', desc: '代理/HTTP2 传输失败时的短重试次数；不计入账号权限类 20 次换号地板。' },
           { key: 'timeout', section: 'image', label: '图像请求超时（秒）', labelKey: 'config.schema.fields.imageTimeout.label', type: 'number', desc: '图像生成 WebSocket 请求的总超时时间。', descKey: 'config.schema.fields.imageTimeout.desc' },
+          { key: 'timeout', section: 'gpt_image', label: 'GPT 图片请求超时（秒）', labelKey: 'config.schema.fields.gptImageTimeout.label', type: 'number', desc: 'ChatGPT gpt-image-1 / gpt-image-2 生成请求的总超时时间。', descKey: 'config.schema.fields.gptImageTimeout.desc' },
           { key: 'stream_timeout', section: 'image', label: '图像流式空闲超时（秒）', type: 'number', desc: '图像生成 WebSocket 在流式接收阶段允许的最长连续空闲等待时长。' },
           { key: 'max_retries', section: 'image', label: '图像换号重试上限', type: 'number', desc: '图像生成遇到账号限流或权限失败时，最多额外尝试的账号数量。' },
           { key: 'timeout', section: 'video', label: '视频请求超时（秒）', labelKey: 'config.schema.fields.videoTimeout.label', type: 'number', desc: '视频生成请求的统一超时时间。', descKey: 'config.schema.fields.videoTimeout.desc' },

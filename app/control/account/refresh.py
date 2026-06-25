@@ -394,12 +394,38 @@ class AccountRefreshService:
                     now = now_ms()
                     quota_patch: dict[str, dict] = {}
                     window = record.quota_set().get(mode_id)
+                    extra_patch: dict = {}
                     if window is not None:
-                        reset_at = (
-                            window.reset_at
-                            if window.reset_at is not None and window.reset_at > now
-                            else now + max(window.window_seconds, 1) * 1000
-                        )
+                        if mode_id == int(ModeId.CONSOLE):
+                            reset_at = window.reset_at
+                            if reset_at is None and window.window_seconds > 0:
+                                reset_at = now + window.window_seconds * 1000
+                            ext_data = dict(record.ext or {})
+                            last_429_at = int(ext_data.get("console_429_last_at", 0) or 0)
+                            if last_429_at and now - last_429_at > 12 * 3600 * 1000:
+                                console_429_count = 0
+                            else:
+                                console_429_count = int(ext_data.get("console_429_count", 0) or 0)
+                            console_429_count += 1
+                            ext_data["console_429_count"] = console_429_count
+                            ext_data["console_429_last_at"] = now
+                            if console_429_count >= 3:
+                                extra_patch["status"] = AccountStatus.EXPIRED
+                                extra_patch["state_reason"] = "console_429_threshold_exceeded"
+                                ext_data["expired_at"] = now
+                                ext_data["expired_reason"] = "console_429_threshold_exceeded"
+                                logger.info(
+                                    "account marked expired due to repeated console 429: token={}... count={}",
+                                    token[:10],
+                                    console_429_count,
+                                )
+                            extra_patch["ext_merge"] = ext_data
+                        else:
+                            reset_at = (
+                                window.reset_at
+                                if window.reset_at is not None and window.reset_at > now
+                                else now + max(window.window_seconds, 1) * 1000
+                            )
                         quota_patch[_MODE_KEYS[mode_id]] = QuotaWindow(
                             remaining=0,
                             total=window.total,
@@ -415,6 +441,7 @@ class AccountRefreshService:
                                 usage_fail_delta=1,
                                 last_fail_at=now,
                                 last_fail_reason="rate_limited",
+                                **extra_patch,
                                 **quota_patch,
                             )
                         ]
@@ -471,20 +498,27 @@ class AccountRefreshService:
                         remaining=max(0, default.total - 1),
                         total=default.total,
                         window_seconds=default.window_seconds,
-                        reset_at=now + default.window_seconds * 1000,
+                        reset_at=None
+                        if mode_id == int(ModeId.CONSOLE)
+                        else now + default.window_seconds * 1000,
                         synced_at=now,
                         source=QuotaSource.ESTIMATED,
                     ).to_dict()
                 else:
+                    new_remaining = max(0, existing.remaining - 1)
                     reset_at = existing.reset_at
                     if (
                         mode_id in _LOCAL_ONLY_MODE_IDS
                         and reset_at is None
                         and existing.window_seconds > 0
+                        and (
+                            mode_id != int(ModeId.CONSOLE)
+                            or new_remaining <= 20
+                        )
                     ):
                         reset_at = now + existing.window_seconds * 1000
                     quota_patch[mode_key] = QuotaWindow(
-                        remaining=max(0, existing.remaining - 1),
+                        remaining=new_remaining,
                         total=existing.total,
                         window_seconds=existing.window_seconds,
                         reset_at=reset_at,
@@ -525,6 +559,20 @@ class AccountRefreshService:
             exc,
             source="usage refresh",
         )
+
+    async def reset_expired_console_windows(self) -> int:
+        """Reset exhausted or stale console quota windows via the active backend."""
+        count = await self._repo.reset_expired_console_windows()
+        if count > 0:
+            logger.debug("console quota windows auto-reset: count={}", count)
+        return count
+
+    async def recover_console_expired_accounts(self) -> int:
+        """Recover accounts expired only by repeated console 429 after a cooldown."""
+        count = await self._repo.recover_console_expired_accounts()
+        if count > 0:
+            logger.info("console expired accounts auto-recovered: count={}", count)
+        return count
 
 
 __all__ = ["AccountRefreshService", "RefreshResult"]
