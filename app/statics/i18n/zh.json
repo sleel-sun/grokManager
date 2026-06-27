@@ -445,8 +445,10 @@
       "empty": "未配置 WebUI 用户，将继续使用单密码模式。",
       "username": "用户名",
       "password": "密码",
+      "key": "访问 Key",
       "displayName": "显示名",
       "enabled": "启用",
+      "allowNsfw": "允许 NSFW",
       "remove": "删除"
     },
     "loadFailed": "配置加载失败：{message}",
@@ -529,7 +531,7 @@
         },
         "webuiUsers": {
           "label": "WebUI 用户",
-          "desc": "配置后 WebUI 使用用户名 + 密码登录，并按用户隔离浏览器端会话、搜索设置与 MCP 配置。留空时继续使用单密码模式。"
+          "desc": "配置后 WebUI 使用用户名 + 独立 key 登录，并按用户隔离浏览器端会话、搜索设置与 MCP 配置；可为每个用户独立控制 NSFW 生成能力。留空时继续使用单密码模式。"
         },
         "temporary": {
           "label": "临时会话",

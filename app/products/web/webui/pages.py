@@ -52,4 +52,11 @@ async def webui_masonry_page():
     return _serve_html("masonry.html")
 
 
+@router.get("/webui/image-studio")
+async def webui_image_studio_page():
+    if not is_webui_enabled():
+        raise HTTPException(status_code=404, detail="Not Found")
+    return _serve_html("image-studio.html")
+
+
 __all__ = ["router"]

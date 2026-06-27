@@ -195,17 +195,10 @@
             <small>如果只填写 access token，会保存为可用账号；如需 refresh_token/id_token/account_id，请使用上方 JSON 行。</small>
           </div>
 
-          <div class="field">
-            <label for="gpt-account-delete-list">批量删除账号（可选）</label>
-            <textarea class="input textarea" id="gpt-account-delete-list" placeholder="user@example.com&#10;gpt_xxx&#10;gptcred_xxx&#10;Bearer eyJ..."></textarea>
-            <small>每行一个，可填写邮箱、保存后的 gpt_/gptcred_ 记录 ID，或 OAuth access token。</small>
-          </div>
-
           <div class="actions">
             <button class="btn-main" id="gpt-account-save-btn" type="submit">保存普通 GPT 账号</button>
             <button class="btn-main" id="gpt-account-auto-run-btn" type="button">自动注册普通 GPT</button>
             <button class="btn-soft" id="gpt-account-test-btn" type="button">测试普通 GPT</button>
-            <button class="btn-soft" id="gpt-account-delete-btn" type="button">批量删除普通 GPT</button>
             <button class="btn-soft" id="gpt-account-clear-btn" type="button">清空普通 GPT 表单</button>
           </div>
           <div class="notice">自动注册会使用下方 xAI 注册配置中的临时邮箱域名、Worker 管理密码、注册数量和并发数；成功拿到 ChatGPT session token 时保存为可用账号，否则保存为待登录/待验证凭据。</div>
@@ -441,7 +434,6 @@ const gptAccountForm = document.getElementById('gpt-account-form');
 const gptAccountSaveBtn = document.getElementById('gpt-account-save-btn');
 const gptAccountAutoRunBtn = document.getElementById('gpt-account-auto-run-btn');
 const gptAccountTestBtn = document.getElementById('gpt-account-test-btn');
-const gptAccountDeleteBtn = document.getElementById('gpt-account-delete-btn');
 const gptAccountClearBtn = document.getElementById('gpt-account-clear-btn');
 const gptImageForm = document.getElementById('gpt-image-form');
 const gptImageSaveBtn = document.getElementById('gpt-image-save-btn');
@@ -871,18 +863,6 @@ function clearGPTAccountForm() {
   document.getElementById('gpt-account-plan').value = '';
   document.getElementById('gpt-account-bulk-credentials').value = '';
   document.getElementById('gpt-account-oauth-tokens').value = '';
-  document.getElementById('gpt-account-delete-list').value = '';
-}
-
-function readGPTAccountDeletePayload() {
-  const values = document.getElementById('gpt-account-delete-list').value
-    .split(/\r?\n/)
-    .map((item) => item.trim())
-    .filter(Boolean);
-  if (!values.length) {
-    throw new Error('请填写要删除的普通 GPT 账号');
-  }
-  return Array.from(new Set(values));
 }
 
 function parseGPTImageBulkCredentials(raw, { defaultIsFree, defaultProvider }) {
@@ -1077,29 +1057,6 @@ gptAccountClearBtn.addEventListener('click', () => clearGPTAccountForm());
 
 gptAccountTestBtn.addEventListener('click', () => {
   runGPTAccountTest('/gpt/accounts/test', gptAccountTestBtn, '普通 GPT 账号');
-});
-
-gptAccountDeleteBtn.addEventListener('click', async () => {
-  let payload;
-  try {
-    payload = readGPTAccountDeletePayload();
-  } catch (err) {
-    showToast(err.message || '普通 GPT 删除列表无效', 'error');
-    return;
-  }
-  if (!confirm(`确认删除 ${payload.length} 个普通 GPT 账号？此操作不可撤销。`)) {
-    return;
-  }
-  gptAccountDeleteBtn.disabled = true;
-  try {
-    const data = await api('DELETE', '/gpt/accounts', payload);
-    showToast(`普通 GPT 账号已删除：${data.deleted || 0} 个`, 'success');
-    document.getElementById('gpt-account-delete-list').value = '';
-  } catch (err) {
-    showToast(err.message || '普通 GPT 账号删除失败', 'error');
-  } finally {
-    gptAccountDeleteBtn.disabled = false;
-  }
 });
 
 gptAccountAutoRunBtn.addEventListener('click', async () => {

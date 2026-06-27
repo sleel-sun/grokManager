@@ -10,8 +10,9 @@ api_key = ""
 webui_enabled = false
 # WebUI 访问密码
 webui_key = ""
-# WebUI 多用户列表；配置后 WebUI 使用用户名 + 密码登录，并按用户隔离浏览器端会话与 MCP 配置
-# 示例：[{ username = "alice", password = "secret", display_name = "Alice", enabled = true }]
+# WebUI 多用户列表；配置后 WebUI 使用用户名 + 独立 key 登录，并按用户隔离浏览器端会话与 MCP 配置
+# allow_nsfw 可独立控制该用户是否允许 NSFW 生成；全局 features.enable_nsfw=false 时所有用户都禁用
+# 示例：[{ username = "alice", key = "secret", display_name = "Alice", enabled = true, allow_nsfw = true }]
 webui_users = []
 
 
@@ -171,8 +172,10 @@ login_otp_timeout_s = 90
 auto_login_credentials = true
 # 凭据登录失败后的重试冷却秒数，避免每次生图都重复等待邮箱验证码
 login_retry_cooldown_s = 300
-# ChatGPT GPT 图片生成总超时秒数，避免 WebUI 长时间停在执行中
-timeout = 60
+# ChatGPT GPT 图片生成总超时秒数；上游经常异步出图，默认给足轮询窗口
+timeout = 180
+# 每张 GPT 图片在同一个 HTTP 请求内最多尝试的账号数；调高会增加客户端等待时间
+max_account_attempts_per_image = 1
 
 
 # ==================== 视频配置 ====================

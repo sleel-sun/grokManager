@@ -297,7 +297,7 @@
     }
     .cfg-webui-user-row {
       display:grid;
-      grid-template-columns:minmax(96px, 1fr) minmax(96px, 1fr) minmax(96px, 1fr) auto auto;
+      grid-template-columns:minmax(88px, 1fr) minmax(104px, 1fr) minmax(88px, 1fr) auto auto auto;
       gap:6px;
       align-items:center;
       padding:8px;
@@ -478,7 +478,7 @@ const SCHEMA_DEF = [
           { key: 'api_key', label: 'API 调用密钥', labelKey: 'config.schema.fields.apiKey.label', type: 'text', desc: 'OpenAI 兼容 API 的鉴权密钥。多个值请使用英文逗号分隔；留空则禁用鉴权。', descKey: 'config.schema.fields.apiKey.desc', rand: true },
           { key: 'webui_enabled', label: '启用 WebUI', labelKey: 'config.schema.fields.webuiEnabled.label', type: 'bool', desc: '开放 WebUI 功能入口。关闭后相关路由将返回 404。', descKey: 'config.schema.fields.webuiEnabled.desc' },
           { key: 'webui_key', label: 'WebUI 访问密码', labelKey: 'config.schema.fields.webuiKey.label', type: 'password', desc: 'WebUI 的访问鉴权密码。配置后访问时必须提供。', descKey: 'config.schema.fields.webuiKey.desc', rand: true, showIf: 'app.webui_enabled' },
-          { key: 'webui_users', label: 'WebUI 用户', labelKey: 'config.schema.fields.webuiUsers.label', type: 'webui_users', desc: '配置后 WebUI 使用用户名 + 密码登录，并按用户隔离浏览器端会话、搜索设置与 MCP 配置。留空时继续使用上面的单密码模式。', descKey: 'config.schema.fields.webuiUsers.desc', showIf: 'app.webui_enabled' },
+          { key: 'webui_users', label: 'WebUI 用户', labelKey: 'config.schema.fields.webuiUsers.label', type: 'webui_users', desc: '配置后 WebUI 使用用户名 + 独立 key 登录，并按用户隔离浏览器端会话、搜索设置与 MCP 配置；可为每个用户独立控制 NSFW 生成能力。留空时继续使用上面的单密码模式。', descKey: 'config.schema.fields.webuiUsers.desc', showIf: 'app.webui_enabled' },
         ]
       },
       {
@@ -1026,22 +1026,35 @@ function _valuesEqual(a, b) {
   return String(a == null ? '' : a) === String(b == null ? '' : b);
 }
 
+function _coerceConfigBool(value, fallback) {
+  if (value == null) return fallback;
+  if (typeof value === 'boolean') return value;
+  if (typeof value === 'string') {
+    const text = value.trim().toLowerCase();
+    if (!text) return fallback;
+    if (['1', 'true', 'yes', 'on', 'enabled', 'allow'].includes(text)) return true;
+    if (['0', 'false', 'no', 'off', 'disabled', 'deny', 'blocked'].includes(text)) return false;
+  }
+  return Boolean(value);
+}
+
 function _normalizeWebuiUserEntry(entry) {
   if (!entry || typeof entry !== 'object') return null;
   const username = String(entry.username || entry.name || entry.id || '').trim();
-  const password = String(entry.password || entry.key || entry.token || '').trim();
-  if (!username && !password) return null;
+  const key = String(entry.key || entry.password || entry.token || '').trim();
+  if (!username && !key) return null;
   const displayName = String(entry.display_name || entry.displayName || username).trim();
-  let enabled = entry.enabled;
-  if (typeof enabled === 'string') {
-    enabled = !['0', 'false', 'no', 'off', 'disabled'].includes(enabled.trim().toLowerCase());
-  }
-  if (enabled == null) enabled = true;
+  let allowNsfwValue = entry.allow_nsfw;
+  if (allowNsfwValue === undefined) allowNsfwValue = entry.allowNsfw;
+  if (allowNsfwValue === undefined) allowNsfwValue = entry.nsfw;
+  if (allowNsfwValue === undefined) allowNsfwValue = entry.enable_nsfw;
+  const allowNsfw = _coerceConfigBool(allowNsfwValue, true);
   return {
     username,
-    password,
+    key,
     display_name: displayName || username,
-    enabled: Boolean(enabled),
+    enabled: _coerceConfigBool(entry.enabled, true),
+    allow_nsfw: allowNsfw,
   };
 }
 
@@ -1061,8 +1074,9 @@ function _normalizeWebuiUsers(value) {
         if (index < 0) return null;
         return {
           username: trimmed.slice(0, index).trim(),
-          password: trimmed.slice(index + 1).trim(),
+          key: trimmed.slice(index + 1).trim(),
           enabled: true,
+          allow_nsfw: true,
         };
       }).filter(Boolean);
     }
@@ -1070,7 +1084,7 @@ function _normalizeWebuiUsers(value) {
   if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
     if (Array.isArray(raw.users)) raw = raw.users;
     else if (Array.isArray(raw.webui_users)) raw = raw.webui_users;
-    else raw = Object.entries(raw).map(([username, password]) => ({ username, password }));
+    else raw = Object.entries(raw).map(([username, key]) => ({ username, key }));
   }
   if (!Array.isArray(raw)) return [];
   return raw.map(_normalizeWebuiUserEntry).filter(Boolean);
@@ -1181,9 +1195,10 @@ function renderWebuiUsersInput(value, onChange) {
       const index = users.length + 1;
       users = users.concat([{
         username: `user${index}`,
-        password: _randomSecret(),
+        key: _randomSecret(),
         display_name: `User ${index}`,
         enabled: true,
+        allow_nsfw: true,
       }]);
       onChange(_normalizeWebuiUsers(users));
       renderList();
@@ -1215,14 +1230,14 @@ function renderWebuiUsersInput(value, onChange) {
       });
       username.addEventListener('input', () => updateUser(index, { username: username.value }));
 
-      const password = _el('input', {
+      const keyInput = _el('input', {
         class: 'cfg-text',
         type: 'password',
-        value: user.password || '',
+        value: user.key || user.password || '',
         autocomplete: 'new-password',
-        placeholder: tr('config.webuiUsers.password', null, '密码'),
+        placeholder: tr('config.webuiUsers.key', null, '访问 Key'),
       });
-      password.addEventListener('input', () => updateUser(index, { password: password.value }));
+      keyInput.addEventListener('input', () => updateUser(index, { key: keyInput.value }));
 
       const displayName = _el('input', {
         class: 'cfg-text',
@@ -1242,6 +1257,15 @@ function renderWebuiUsersInput(value, onChange) {
         '启用',
       ));
 
+      const allowNsfw = _el('input', { type: 'checkbox' });
+      allowNsfw.checked = user.allow_nsfw !== false;
+      allowNsfw.addEventListener('change', () => updateUser(index, { allow_nsfw: allowNsfw.checked }));
+      const allowNsfwLabel = _el('label', { class: 'cfg-webui-user-toggle' }, allowNsfw, tr(
+        'config.webuiUsers.allowNsfw',
+        null,
+        '允许 NSFW',
+      ));
+
       const removeBtn = _el('button', {
         class: 'cfg-webui-user-btn cfg-webui-user-remove',
         type: 'button',
@@ -1259,9 +1283,10 @@ function renderWebuiUsersInput(value, onChange) {
         'div',
         { class: 'cfg-webui-user-row' },
         username,
-        password,
+        keyInput,
         displayName,
         enabledLabel,
+        allowNsfwLabel,
         removeBtn,
       ));
     });

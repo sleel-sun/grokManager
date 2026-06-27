@@ -1,0 +1,440 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>grokManager - Image Studio</title>
+  <link rel="icon" href="/favicon.ico?v={{APP_VERSION}}">
+  <link href="https://cdn.jsdelivr.net/npm/geist@1.0.0/dist/fonts/geist-sans/style.css" rel="stylesheet">
+  <link href="https://cdn.jsdelivr.net/npm/geist@1.0.0/dist/fonts/geist-mono/style.css" rel="stylesheet">
+  <link href="/static/css/app.css?v={{APP_VERSION}}" rel="stylesheet">
+  <style>
+    .image-studio-page {
+      --studio-ink:#191714;
+      --studio-muted:#81776a;
+      --studio-paper:#fffaf0;
+      --studio-panel:#fffdf8;
+      --studio-line:#eadfce;
+      --studio-accent:#cc5a24;
+      --studio-accent-2:#143f3a;
+      background:
+        radial-gradient(circle at 12% 12%, rgba(204,90,36,.16), transparent 28rem),
+        radial-gradient(circle at 84% 4%, rgba(20,63,58,.12), transparent 24rem),
+        linear-gradient(135deg, #f7efe0 0%, #fbf6ea 48%, #efe2ce 100%);
+    }
+    .studio-main {
+      width:100%;
+      max-width:1360px;
+      margin:0 auto;
+      padding:24px 22px 34px;
+    }
+    .studio-hero {
+      min-height:154px;
+      border:1px solid rgba(54,43,30,.12);
+      border-radius:28px;
+      padding:26px;
+      display:grid;
+      grid-template-columns:minmax(0,1fr) auto;
+      gap:20px;
+      align-items:end;
+      background:
+        linear-gradient(120deg, rgba(255,253,248,.94), rgba(255,247,231,.78)),
+        repeating-linear-gradient(90deg, rgba(25,23,20,.04) 0 1px, transparent 1px 18px);
+      box-shadow:0 20px 60px rgba(71,48,25,.08);
+      overflow:hidden;
+      position:relative;
+    }
+    .studio-hero::after {
+      content:"";
+      position:absolute;
+      right:-70px;
+      top:-90px;
+      width:280px;
+      height:280px;
+      border-radius:38% 62% 44% 56%;
+      background:linear-gradient(135deg, rgba(204,90,36,.2), rgba(20,63,58,.12));
+      filter:blur(1px);
+      transform:rotate(18deg);
+    }
+    .studio-kicker {
+      font-size:12px;
+      font-weight:800;
+      letter-spacing:.13em;
+      text-transform:uppercase;
+      color:var(--studio-accent);
+    }
+    .studio-title {
+      margin-top:8px;
+      max-width:760px;
+      font-size:clamp(34px, 6vw, 78px);
+      line-height:.9;
+      letter-spacing:-.07em;
+      color:var(--studio-ink);
+    }
+    .studio-sub {
+      margin-top:14px;
+      max-width:720px;
+      color:var(--studio-muted);
+      font-size:14px;
+    }
+    .studio-health {
+      position:relative;
+      z-index:1;
+      min-width:220px;
+      padding:14px;
+      border-radius:18px;
+      background:rgba(255,253,248,.72);
+      border:1px solid rgba(234,223,206,.8);
+      color:var(--studio-muted);
+      font-size:12px;
+    }
+    .studio-health strong {
+      display:block;
+      margin-bottom:3px;
+      color:var(--studio-ink);
+      font-size:22px;
+      letter-spacing:-.04em;
+    }
+    .studio-grid {
+      margin-top:18px;
+      display:grid;
+      grid-template-columns:minmax(320px, 420px) minmax(0,1fr);
+      gap:18px;
+      align-items:start;
+    }
+    .studio-card {
+      border:1px solid var(--studio-line);
+      border-radius:24px;
+      background:rgba(255,253,248,.9);
+      box-shadow:0 18px 48px rgba(71,48,25,.07);
+    }
+    .studio-control {
+      padding:18px;
+      position:sticky;
+      top:70px;
+    }
+    .studio-field {
+      display:grid;
+      gap:8px;
+      margin-top:14px;
+    }
+    .studio-label {
+      display:flex;
+      align-items:center;
+      justify-content:space-between;
+      gap:10px;
+      font-size:12px;
+      font-weight:800;
+      color:#4a3c2f;
+    }
+    .studio-label span:last-child {
+      font-weight:600;
+      color:var(--studio-muted);
+    }
+    .studio-textarea {
+      min-height:154px;
+      padding:14px;
+      border-radius:18px;
+      border:1px solid var(--studio-line);
+      resize:vertical;
+      background:#fffaf2;
+      color:var(--studio-ink);
+      font-size:14px;
+      line-height:1.55;
+    }
+    .studio-textarea:focus,
+    .studio-select:focus {
+      border-color:rgba(204,90,36,.55);
+      box-shadow:0 0 0 3px rgba(204,90,36,.1);
+    }
+    .studio-row {
+      display:grid;
+      grid-template-columns:1fr 1fr;
+      gap:10px;
+    }
+    .studio-select,
+    .studio-file {
+      width:100%;
+      height:40px;
+      border:1px solid var(--studio-line);
+      border-radius:14px;
+      padding:0 12px;
+      background:#fffaf2;
+      color:var(--studio-ink);
+      font-size:13px;
+    }
+    .studio-toggle {
+      display:grid;
+      grid-template-columns:1fr 1fr;
+      gap:8px;
+      padding:5px;
+      border-radius:18px;
+      background:#efe3d1;
+    }
+    .studio-toggle button {
+      height:36px;
+      border-radius:14px;
+      color:#6d6256;
+      font-size:13px;
+      font-weight:800;
+    }
+    .studio-toggle button.is-active {
+      background:var(--studio-panel);
+      color:var(--studio-ink);
+      box-shadow:0 8px 22px rgba(71,48,25,.08);
+    }
+    .studio-submit {
+      width:100%;
+      height:46px;
+      margin-top:18px;
+      border-radius:16px;
+      display:inline-flex;
+      align-items:center;
+      justify-content:center;
+      gap:8px;
+      background:var(--studio-ink);
+      color:#fff9ef;
+      font-size:14px;
+      font-weight:900;
+      letter-spacing:-.01em;
+    }
+    .studio-submit:disabled {
+      cursor:default;
+      opacity:.55;
+    }
+    .studio-status {
+      min-height:20px;
+      margin-top:12px;
+      color:var(--studio-muted);
+      font-size:12px;
+    }
+    .studio-results {
+      min-height:520px;
+      padding:18px;
+    }
+    .studio-results-head {
+      display:flex;
+      align-items:center;
+      justify-content:space-between;
+      gap:12px;
+      margin-bottom:14px;
+    }
+    .studio-results-title {
+      font-size:18px;
+      font-weight:900;
+      color:var(--studio-ink);
+      letter-spacing:-.04em;
+    }
+    .studio-link-btn {
+      height:30px;
+      padding:0 11px;
+      border-radius:999px;
+      background:#f0e5d4;
+      color:#5b4b3c;
+      font-size:12px;
+      font-weight:800;
+    }
+    .studio-output-grid {
+      display:grid;
+      grid-template-columns:repeat(auto-fill, minmax(210px, 1fr));
+      gap:12px;
+    }
+    .studio-output {
+      overflow:hidden;
+      border-radius:18px;
+      background:#f4ead9;
+      border:1px solid rgba(234,223,206,.9);
+      animation:studioRise .42s cubic-bezier(.16,1,.3,1) both;
+    }
+    .studio-output a {
+      display:block;
+      background:#eadfcc;
+    }
+    .studio-output img {
+      display:block;
+      width:100%;
+      aspect-ratio:1 / 1;
+      object-fit:cover;
+    }
+    .studio-output-body {
+      padding:11px;
+      display:grid;
+      gap:5px;
+    }
+    .studio-output-title {
+      color:var(--studio-ink);
+      font-size:12px;
+      font-weight:800;
+      overflow:hidden;
+      text-overflow:ellipsis;
+      white-space:nowrap;
+    }
+    .studio-output-meta {
+      color:var(--studio-muted);
+      font-size:11px;
+      overflow:hidden;
+      text-overflow:ellipsis;
+      white-space:nowrap;
+    }
+    .studio-empty {
+      min-height:420px;
+      display:grid;
+      place-items:center;
+      border:1px dashed rgba(25,23,20,.16);
+      border-radius:20px;
+      color:#8d8173;
+      text-align:center;
+      padding:24px;
+    }
+    .studio-empty strong {
+      display:block;
+      color:var(--studio-ink);
+      font-size:24px;
+      letter-spacing:-.05em;
+      margin-bottom:6px;
+    }
+    .studio-hidden {
+      display:none !important;
+    }
+    @keyframes studioRise {
+      from { opacity:0; transform:translateY(14px) scale(.98) }
+      to { opacity:1; transform:none }
+    }
+    @media (max-width: 900px) {
+      .studio-hero,
+      .studio-grid {
+        grid-template-columns:1fr;
+      }
+      .studio-control {
+        position:static;
+      }
+      .studio-health {
+        min-width:0;
+      }
+    }
+    @media (max-width: 560px) {
+      .studio-main {
+        padding:14px 12px 26px;
+      }
+      .studio-hero {
+        border-radius:22px;
+        padding:20px;
+      }
+      .studio-row {
+        grid-template-columns:1fr;
+      }
+      .studio-output-grid {
+        grid-template-columns:1fr;
+      }
+    }
+  </style>
+</head>
+<body class="webui-page image-studio-page">
+  <div id="webui-header" data-active="/webui/image-studio"></div>
+
+  <main class="studio-main">
+    <section class="studio-hero">
+      <div>
+        <div class="studio-kicker">GPT Image Studio</div>
+        <h1 class="studio-title">把提示词直接变成可交付图片</h1>
+        <p class="studio-sub">参考 ChatGPT2API 的在线画图工作台思路，使用本机已接入的 GPT 图片号池和现有 Grok 图像编辑通道。</p>
+      </div>
+      <div class="studio-health">
+        <strong id="studioModelCount">0</strong>
+        <span id="studioModelHint">正在读取图片模型...</span>
+      </div>
+    </section>
+
+    <section class="studio-grid">
+      <form id="studioForm" class="studio-card studio-control">
+        <div class="studio-toggle" id="studioModeToggle">
+          <button type="button" class="is-active" data-mode="generate">文生图</button>
+          <button type="button" data-mode="edit">图像编辑</button>
+        </div>
+
+        <div class="studio-field">
+          <label class="studio-label" for="studioPrompt">
+            <span>提示词</span>
+            <span id="studioPromptCount">0 字</span>
+          </label>
+          <textarea id="studioPrompt" class="studio-textarea" placeholder="例如：一张低角度电影海报，雨夜霓虹街道，黑猫穿过发光的斑马线，胶片颗粒，高对比光影"></textarea>
+        </div>
+
+        <div class="studio-field" id="studioGenerateModelField">
+          <label class="studio-label" for="studioModel">
+            <span>图片模型</span>
+            <span>GPT 号池</span>
+          </label>
+          <select id="studioModel" class="studio-select"></select>
+        </div>
+
+        <div class="studio-field studio-hidden" id="studioEditModelField">
+          <label class="studio-label" for="studioEditModel">
+            <span>编辑模型</span>
+            <span>参考图</span>
+          </label>
+          <select id="studioEditModel" class="studio-select"></select>
+        </div>
+
+        <div class="studio-field studio-hidden" id="studioImageField">
+          <label class="studio-label" for="studioImages">
+            <span>参考图</span>
+            <span id="studioImageCount">未选择</span>
+          </label>
+          <input id="studioImages" class="studio-file" type="file" accept="image/*" multiple>
+        </div>
+
+        <div class="studio-row">
+          <div class="studio-field">
+            <label class="studio-label" for="studioSize">
+              <span>画幅</span>
+            </label>
+            <select id="studioSize" class="studio-select">
+              <option value="1024x1024">1:1</option>
+              <option value="1280x720">16:9</option>
+              <option value="720x1280">9:16</option>
+              <option value="1792x1024">3:2</option>
+              <option value="1024x1792">2:3</option>
+            </select>
+          </div>
+          <div class="studio-field">
+            <label class="studio-label" for="studioCount">
+              <span>张数</span>
+            </label>
+            <select id="studioCount" class="studio-select">
+              <option value="1">1</option>
+              <option value="2">2</option>
+              <option value="3">3</option>
+              <option value="4">4</option>
+            </select>
+          </div>
+        </div>
+
+        <button id="studioSubmit" class="studio-submit" type="submit">开始生成</button>
+        <div id="studioStatus" class="studio-status" aria-live="polite">就绪</div>
+      </form>
+
+      <section class="studio-card studio-results">
+        <div class="studio-results-head">
+          <div class="studio-results-title">生成结果</div>
+          <button id="studioClearHistory" class="studio-link-btn" type="button">清空历史</button>
+        </div>
+        <div id="studioOutput" class="studio-output-grid"></div>
+        <div id="studioEmpty" class="studio-empty">
+          <div>
+            <strong>还没有图片</strong>
+            <span>提交一次任务后，结果和最近历史会显示在这里。</span>
+          </div>
+        </div>
+      </section>
+    </section>
+  </main>
+
+  <script src="/static/js/i18n.js?v={{APP_VERSION}}"></script>
+  <script src="/static/js/auth.js?v={{APP_VERSION}}-usernsfw1"></script>
+  <script src="/static/js/toast.js?v={{APP_VERSION}}"></script>
+  <script src="/static/js/webui-header.js?v={{APP_VERSION}}-studio1"></script>
+  <script src="/static/js/footer.js?v={{APP_VERSION}}"></script>
+  <script src="/static/js/webui/image-studio.js?v={{APP_VERSION}}-studio1"></script>
+</body>
+</html>

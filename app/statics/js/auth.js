@@ -130,6 +130,7 @@ function _normalizeWebuiAuth(value) {
     id: String(rawUser.id || auth.user_id || storageScope).trim() || fallback.id,
     username: String(rawUser.username || username || fallback.username).trim() || fallback.username,
     display_name: String(rawUser.display_name || rawUser.displayName || username || fallback.display_name).trim() || fallback.display_name,
+    allow_nsfw: rawUser.allow_nsfw !== false && rawUser.allowNsfw !== false,
     legacy: Boolean(rawUser.legacy || (!hasUserIdentity && !username && password)),
     anonymous: Boolean(rawUser.anonymous || (!hasUserIdentity && !username && !password)),
     storage_scope: storageScope,

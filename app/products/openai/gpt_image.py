@@ -40,7 +40,7 @@ _TRANSIENT_STATUSES = {429, 502, 503, 504}
 _FILE_ID_RE = re.compile(r"(file-service://|sediment://)([A-Za-z0-9_-]+)")
 _DATA_BUILD_RE = re.compile(r'data-build="([^"]*)"', re.I)
 _SCRIPT_RE = re.compile(r'<script[^>]+src="([^"]+)"', re.I)
-_DEFAULT_GENERATION_TIMEOUT_S = 60.0
+_DEFAULT_GENERATION_TIMEOUT_S = 180.0
 _INVALID_CREDENTIAL_MARKERS = (
     "invalid token",
     "expired token",
@@ -51,6 +51,7 @@ _INVALID_CREDENTIAL_MARKERS = (
     "access token",
     "invalid_api_key",
 )
+_GENERATION_FAILURE_COOLDOWN_S = 1800.0
 
 
 @dataclass(slots=True)
@@ -86,6 +87,14 @@ def _generation_timeout_s() -> float:
     except Exception:
         value = _DEFAULT_GENERATION_TIMEOUT_S
     return max(5.0, float(value or _DEFAULT_GENERATION_TIMEOUT_S))
+
+
+def _max_account_attempts_per_image(account_count: int) -> int:
+    try:
+        value = get_config().get_int("gpt_image.max_account_attempts_per_image", 1)
+    except Exception:
+        value = 1
+    return min(max(1, int(value or 1)), max(1, account_count))
 
 
 def _now_ms() -> int:
@@ -142,15 +151,27 @@ def _browser_headers(device_id: str) -> dict[str, str]:
     }
 
 
+def _target_headers(path: str, headers: dict[str, str]) -> dict[str, str]:
+    return {
+        **headers,
+        "x-openai-target-path": path,
+        "x-openai-target-route": path,
+    }
+
+
 def _conversation_headers(
     context: _ChatGPTContext,
     chat_token: str,
     proof_token: str | None,
+    *,
+    path: str = "/backend-api/conversation",
+    conduit_token: str = "",
+    accept: str = "text/event-stream",
 ) -> dict[str, str]:
     headers = {
         **_browser_headers(context.device_id),
         "authorization": f"Bearer {context.access_token}",
-        "accept": "text/event-stream",
+        "accept": accept,
         "content-type": "application/json",
         "oai-language": "zh-CN",
         "oai-client-build-number": CLIENT_BUILD_NUMBER,
@@ -159,7 +180,11 @@ def _conversation_headers(
     }
     if proof_token:
         headers["openai-sentinel-proof-token"] = proof_token
-    return headers
+    if conduit_token:
+        headers["x-conduit-token"] = conduit_token
+    if accept == "text/event-stream":
+        headers["x-oai-turn-trace-id"] = str(uuid4())
+    return _target_headers(path, headers)
 
 
 async def _response_error(response: aiohttp.ClientResponse, prefix: str) -> UpstreamError:
@@ -348,11 +373,71 @@ def _client_contextual_info() -> dict[str, Any]:
 
 def _upstream_model(requested_model: str, is_free: bool) -> str:
     model = (requested_model or "gpt-image-1").strip()
-    if model == "gpt-image-1":
-        return "auto"
-    if model == "gpt-image-2":
-        return "auto" if is_free else "gpt-5-3"
+    if model in {"gpt-image-1", "gpt-image-2"}:
+        return "gpt-5-3"
     return model or "gpt-4o"
+
+
+def _image_generation_prompt(prompt: str) -> str:
+    user_prompt = str(prompt or "").strip()
+    return (
+        "Create exactly one original image from the following user prompt. "
+        "Use image generation only. Do not search the web, do not return "
+        "existing image results, do not provide image_group/search results, "
+        "and do not answer with explanatory text. Return the generated image "
+        "file.\n\n"
+        f"User prompt:\n{user_prompt}"
+    )
+
+
+def _no_image_error(text: str) -> str:
+    clean = str(text or "").strip()
+    lower = clean.lower()
+    if (
+        "processing image" in lower
+        or "creating images" in lower
+        or "image is still being generated" in lower
+        or "正在处理图片" in clean
+        or "很多人在创建图片" in clean
+        or "图片准备好后" in clean
+    ):
+        return "ChatGPT image generation is still queued upstream; retry later"
+    if "image_group" in clean or "image" in clean:
+        return "ChatGPT returned image search results instead of a generated image"
+    return clean[:500] or "ChatGPT image generation returned no images"
+
+
+def _consume_sse_payload(
+    payload: str,
+    conversation_id: str,
+    file_ids: list[str],
+    text_parts: list[str],
+) -> tuple[str, bool]:
+    if not payload:
+        return conversation_id, False
+    if payload == "[DONE]":
+        return conversation_id, True
+    for match in _FILE_ID_RE.finditer(payload):
+        prefix, file_id = match.groups()
+        value = f"sed:{file_id}" if prefix == "sediment://" else file_id
+        if value not in file_ids:
+            file_ids.append(value)
+    try:
+        obj = orjson.loads(payload)
+    except Exception:
+        return conversation_id, False
+    if isinstance(obj, dict):
+        conversation_id = str(obj.get("conversation_id") or conversation_id)
+        nested = obj.get("v")
+        if isinstance(nested, dict):
+            conversation_id = str(nested.get("conversation_id") or conversation_id)
+        message = obj.get("message") if isinstance(obj.get("message"), dict) else {}
+        content = message.get("content") if isinstance(message.get("content"), dict) else {}
+        if content.get("content_type") == "text":
+            parts = content.get("parts")
+            if isinstance(parts, list) and parts:
+                text_parts.append(str(parts[0]))
+    return conversation_id, False
 
 
 async def _send_conversation(
@@ -362,50 +447,161 @@ async def _send_conversation(
     prompt: str,
     requested_model: str,
     is_free: bool,
-) -> str:
+) -> tuple[str, list[str], str]:
     chat_token, proof_info = await _chat_requirements(session, context)
+    proof_token = _proof_token(context, proof_info)
+    conduit_token = await _prepare_image_conversation(
+        session,
+        context,
+        chat_token=chat_token,
+        proof_token=proof_token,
+        prompt=prompt,
+        requested_model=requested_model,
+        is_free=is_free,
+    )
+    path = "/backend-api/f/conversation"
+    prompt_text = _image_generation_prompt(prompt)
+    message_metadata: dict[str, Any] = {
+        "developer_mode_connector_ids": [],
+        "selected_github_repos": [],
+        "selected_all_github_repos": False,
+        "system_hints": ["picture_v2"],
+        "serialization_metadata": {"custom_symbol_offsets": []},
+    }
     response = await _request(
         session,
         "POST",
-        f"{BASE_URL}/backend-api/conversation",
-        headers=_conversation_headers(context, chat_token, _proof_token(context, proof_info)),
+        f"{BASE_URL}{path}",
+        headers=_conversation_headers(
+            context,
+            chat_token,
+            proof_token,
+            path=path,
+            conduit_token=conduit_token,
+        ),
         json_body={
             "action": "next",
             "messages": [
                 {
                     "id": str(uuid4()),
                     "author": {"role": "user"},
-                    "content": {"content_type": "text", "parts": [prompt]},
-                    "metadata": {"attachments": []},
+                    "create_time": time.time(),
+                    "content": {"content_type": "text", "parts": [prompt_text]},
+                    "metadata": message_metadata,
                 }
             ],
             "parent_message_id": str(uuid4()),
             "model": _upstream_model(requested_model, is_free),
+            "client_prepare_state": "sent",
             "history_and_training_disabled": False,
             "timezone_offset_min": TIMEZONE_OFFSET_MIN,
             "timezone": TIMEZONE,
             "conversation_mode": {"kind": "primary_assistant"},
-            "conversation_origin": None,
-            "force_paragen": False,
-            "force_paragen_model_slug": "",
-            "force_rate_limit": False,
-            "force_use_sse": True,
-            "paragen_cot_summary_display_override": "allow",
-            "paragen_stream_type_override": None,
-            "reset_rate_limits": False,
-            "suggestions": [],
-            "supported_encodings": [],
+            "enable_message_followups": True,
             "system_hints": ["picture_v2"],
+            "supports_buffering": True,
+            "supported_encodings": ["v1"],
+            "paragen_cot_summary_display_override": "allow",
+            "force_parallel_switch": "auto",
             "variant_purpose": "comparison_implicit",
             "websocket_request_id": str(uuid4()),
-            "client_contextual_info": _client_contextual_info(),
+            "client_contextual_info": {
+                **_client_contextual_info(),
+                "app_name": "chatgpt.com",
+            },
         },
         timeout_s=180.0,
         retry_statuses=_TRANSIENT_STATUSES,
     )
     if not response.ok:
         raise await _response_error(response, "ChatGPT image conversation failed")
-    return await response.text()
+    conversation_id = ""
+    file_ids: list[str] = []
+    text_parts: list[str] = []
+    buffer = ""
+    async for chunk in response.content.iter_chunked(8192):
+        if not chunk:
+            continue
+        buffer += chunk.decode("utf-8", errors="ignore")
+        while "\n" in buffer:
+            raw_line, buffer = buffer.split("\n", 1)
+            line = raw_line.strip()
+            if not line.startswith("data:"):
+                continue
+            payload = line[5:].strip()
+            conversation_id, done = _consume_sse_payload(
+                payload,
+                conversation_id,
+                file_ids,
+                text_parts,
+            )
+            if file_ids or done:
+                response.release()
+                return conversation_id, file_ids, "".join(text_parts)
+    if buffer.strip().startswith("data:"):
+        conversation_id, _done = _consume_sse_payload(
+            buffer.strip()[5:].strip(),
+            conversation_id,
+            file_ids,
+            text_parts,
+        )
+    return conversation_id, file_ids, "".join(text_parts)
+
+
+async def _prepare_image_conversation(
+    session: aiohttp.ClientSession,
+    context: _ChatGPTContext,
+    *,
+    chat_token: str,
+    proof_token: str | None,
+    prompt: str,
+    requested_model: str,
+    is_free: bool,
+) -> str:
+    path = "/backend-api/f/conversation/prepare"
+    response = await _request(
+        session,
+        "POST",
+        f"{BASE_URL}{path}",
+        headers=_conversation_headers(
+            context,
+            chat_token,
+            proof_token,
+            path=path,
+            accept="*/*",
+        ),
+        json_body={
+            "action": "next",
+            "fork_from_shared_post": False,
+            "parent_message_id": str(uuid4()),
+            "model": _upstream_model(requested_model, is_free),
+            "client_prepare_state": "success",
+            "timezone_offset_min": TIMEZONE_OFFSET_MIN,
+            "timezone": TIMEZONE,
+            "conversation_mode": {"kind": "primary_assistant"},
+            "system_hints": ["picture_v2"],
+            "partial_query": {
+                "id": str(uuid4()),
+                "author": {"role": "user"},
+                "content": {"content_type": "text", "parts": [_image_generation_prompt(prompt)]},
+            },
+            "supports_buffering": True,
+            "supported_encodings": ["v1"],
+            "client_contextual_info": {"app_name": "chatgpt.com"},
+        },
+        timeout_s=60.0,
+        retry_statuses=_TRANSIENT_STATUSES,
+    )
+    if not response.ok:
+        raise await _response_error(response, "ChatGPT image conversation prepare failed")
+    try:
+        payload = await response.json(content_type=None)
+    except Exception as exc:
+        raise UpstreamError("ChatGPT image conversation prepare returned invalid JSON", status=502) from exc
+    conduit_token = str(payload.get("conduit_token") or "")
+    if not conduit_token:
+        raise UpstreamError("ChatGPT image conversation prepare returned no conduit token", status=502)
+    return conduit_token
 
 
 def _parse_sse(raw_text: str) -> tuple[str, list[str], str]:
@@ -417,28 +613,14 @@ def _parse_sse(raw_text: str) -> tuple[str, list[str], str]:
         if not line.startswith("data:"):
             continue
         payload = line[5:].strip()
-        if not payload or payload == "[DONE]":
+        conversation_id, done = _consume_sse_payload(
+            payload,
+            conversation_id,
+            file_ids,
+            text_parts,
+        )
+        if done:
             break
-        for match in _FILE_ID_RE.finditer(payload):
-            prefix, file_id = match.groups()
-            value = f"sed:{file_id}" if prefix == "sediment://" else file_id
-            if value not in file_ids:
-                file_ids.append(value)
-        try:
-            obj = orjson.loads(payload)
-        except Exception:
-            continue
-        if isinstance(obj, dict):
-            conversation_id = str(obj.get("conversation_id") or conversation_id)
-            nested = obj.get("v")
-            if isinstance(nested, dict):
-                conversation_id = str(nested.get("conversation_id") or conversation_id)
-            message = obj.get("message") if isinstance(obj.get("message"), dict) else {}
-            content = message.get("content") if isinstance(message.get("content"), dict) else {}
-            if content.get("content_type") == "text":
-                parts = content.get("parts")
-                if isinstance(parts, list) and parts:
-                    text_parts.append(str(parts[0]))
     return conversation_id, file_ids, "".join(text_parts)
 
 
@@ -580,18 +762,17 @@ async def _download_base64(
 async def _generate_one_inner(account: GPTImageAccount, prompt: str, model: str) -> _GeneratedImage:
     async with aiohttp.ClientSession(cookie_jar=aiohttp.CookieJar()) as session:
         context = await _bootstrap(session, account.access_token)
-        sse_text = await _send_conversation(
+        conversation_id, file_ids, text = await _send_conversation(
             session,
             context,
             prompt=prompt,
             requested_model=model,
             is_free=account.is_free,
         )
-        conversation_id, file_ids, text = _parse_sse(sse_text)
         if conversation_id and not file_ids:
             file_ids = await _poll_image_ids(session, context, conversation_id)
         if not file_ids:
-            raise UpstreamError(text or "ChatGPT image generation returned no images", status=502)
+            raise UpstreamError(_no_image_error(text), status=502)
         download_url = await _fetch_download_url(session, context, conversation_id, file_ids[0])
         if not download_url:
             raise UpstreamError("ChatGPT image generation returned no download URL", status=502)
@@ -626,7 +807,8 @@ async def _gpt_image_accounts() -> list[GPTImageAccount]:
     if repo is None:
         raise RateLimitError("Account repository not initialised")
 
-    accounts: list[GPTImageAccount] = []
+    candidates: list[GPTImageAccount] = []
+    blocked_tokens: set[str] = set()
     page_num = 1
     while True:
         page = await repo.list_accounts(
@@ -639,12 +821,27 @@ async def _gpt_image_accounts() -> list[GPTImageAccount]:
             )
         )
         for record in page.items:
+            blocked_access_token = _record_blocked_access_token(record)
+            if blocked_access_token:
+                blocked_tokens.add(_token_key(blocked_access_token))
             account = await _account_from_record(record)
             if account is not None:
-                accounts.append(account)
+                candidates.append(account)
         if page_num * 2000 >= page.total:
             break
         page_num += 1
+
+    accounts: list[GPTImageAccount] = []
+    seen_tokens: set[str] = set()
+    for account in sorted(
+        candidates,
+        key=lambda item: 0 if item.status_key.startswith("gpt_image_") else 1,
+    ):
+        token_key = _token_key(account.access_token)
+        if token_key in blocked_tokens or token_key in seen_tokens:
+            continue
+        seen_tokens.add(token_key)
+        accounts.append(account)
     return accounts
 
 
@@ -709,7 +906,59 @@ def _login_cooldown_active(ext: dict[str, Any]) -> bool:
 
 
 def _usable_access_token_status(status: str) -> bool:
-    return status not in {"invalid", "login_failed"}
+    return status not in {"invalid", "login_failed", "timeout", "rate_limited"}
+
+
+def _token_key(access_token: str) -> str:
+    return hashlib.sha256(access_token.encode("utf-8")).hexdigest()
+
+
+def _recent_generation_failure(record: Any) -> bool:
+    reason = str(getattr(record, "last_fail_reason", "") or "").lower()
+    if not reason:
+        return False
+    generation_markers = (
+        "gpt image",
+        "image generation",
+        "image search results",
+        "generated image",
+        "queued upstream",
+        "returned no images",
+    )
+    if not any(marker in reason for marker in generation_markers):
+        return False
+    transient_markers = (
+        "timed out",
+        "timeout",
+        "rate",
+        "image search results",
+        "queued upstream",
+        "returned no images",
+    )
+    if not any(marker in reason for marker in transient_markers):
+        return False
+    try:
+        last_fail_at = int(getattr(record, "last_fail_at", None) or 0)
+    except (TypeError, ValueError):
+        last_fail_at = 0
+    if not last_fail_at:
+        return True
+    age_s = (_now_ms() - last_fail_at) / 1000
+    return age_s < _GENERATION_FAILURE_COOLDOWN_S
+
+
+def _record_blocked_access_token(record: Any) -> str:
+    if not _is_gpt_credential_record(record):
+        return ""
+    ext = record.ext or {}
+    access_token = _record_access_token(ext)
+    if not access_token:
+        return ""
+    _access_key, status_key, _error_key, _attempt_key = _record_patch_keys(ext)
+    status = str(ext.get(status_key) or "unchecked")
+    if _usable_access_token_status(status) and not _recent_generation_failure(record):
+        return ""
+    return access_token
 
 
 async def _login_gpt_credentials_async(
@@ -737,7 +986,7 @@ async def _account_from_record(record: Any) -> GPTImageAccount | None:
     access_token = _record_access_token(ext)
     if access_token:
         status = str(ext.get(status_key) or "unchecked")
-        if not _usable_access_token_status(status):
+        if not _usable_access_token_status(status) or _recent_generation_failure(record):
             return None
         return GPTImageAccount(
             record_token=record.token,
@@ -1017,15 +1266,16 @@ def _capability_failure_status(exc: BaseException) -> str:
 async def _run_generation(prompt: str, model: str, n: int) -> list[_GeneratedImage]:
     accounts = await _gpt_image_accounts()
     if not accounts:
-        raise RateLimitError("No GPT image accounts configured")
+        raise RateLimitError("No currently usable GPT image accounts configured")
 
     images: list[_GeneratedImage] = []
     failures: list[str] = []
     last_exc: BaseException | None = None
     account_index = 0
+    max_attempts = _max_account_attempts_per_image(len(accounts))
     for _ in range(n):
         generated = False
-        for _attempt in range(len(accounts)):
+        for _attempt in range(max_attempts):
             account = accounts[account_index % len(accounts)]
             account_index += 1
             try:

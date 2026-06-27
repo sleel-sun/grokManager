@@ -13,7 +13,9 @@ from app.products.web.webui.imagine import (
     _image_event_error_payload,
     imagine_ws,
     _no_webui_image_accounts_message,
+    _resolve_webui_nsfw,
 )
+from app.platform.auth.middleware import WebUIUser
 
 
 class WebuiImagineErrorPayloadTests(unittest.TestCase):
@@ -70,6 +72,26 @@ class WebuiImagineAccountSelectionTests(unittest.TestCase):
         self.assertIsNone(token)
         self.assertIsNone(lease)
         self.assertEqual(directory.calls[0]["pool_candidates"], (1, 2))
+
+
+class WebuiImagineNsfwPermissionTests(unittest.TestCase):
+    def test_per_user_nsfw_permission_restricts_requested_and_default_nsfw(self) -> None:
+        from app.products.web.webui import imagine
+
+        allowed = WebUIUser(id="alice", username="alice", allow_nsfw=True)
+        blocked = WebUIUser(id="bob", username="bob", allow_nsfw=False)
+        enabled_config = _FakeConfig({"features.enable_nsfw": True})
+        disabled_config = _FakeConfig({"features.enable_nsfw": False})
+
+        with patch.object(imagine, "get_config", return_value=enabled_config):
+            self.assertTrue(_resolve_webui_nsfw(allowed, None))
+            self.assertTrue(_resolve_webui_nsfw(allowed, True))
+            self.assertFalse(_resolve_webui_nsfw(allowed, False))
+            self.assertFalse(_resolve_webui_nsfw(blocked, None))
+            self.assertFalse(_resolve_webui_nsfw(blocked, True))
+
+        with patch.object(imagine, "get_config", return_value=disabled_config):
+            self.assertFalse(_resolve_webui_nsfw(allowed, True))
 
 
 class _FakeConfig:
@@ -164,6 +186,7 @@ class WebuiImagineWebSocketTests(unittest.TestCase):
         async def run():
             with (
                 patch.object(imagine, "_is_allowed", return_value=True),
+                patch.object(imagine, "_webui_user", return_value=WebUIUser(id="alice", username="alice")),
                 patch.object(imagine, "get_config", return_value=config),
                 patch.object(account_module, "_directory", directory),
                 patch.object(imagine_transport, "stream_images", side_effect=fake_stream_images),

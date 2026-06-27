@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -16,6 +17,8 @@ from app.products.web.admin.gpt_image_accounts import (
     GPTImageAccountItem,
     account_credential_record_token,
     _ext_for_item,
+    _export_record,
+    _summary,
     account_record_token,
 )
 
@@ -77,6 +80,36 @@ def test_gpt_image_account_credentials_can_register_without_access_token() -> No
     assert ext["gpt_image_status"] == "login_required"
 
 
+def test_gpt_image_account_summary_and_secret_export() -> None:
+    record = AccountRecord(
+        token="gptimg_123",
+        tags=["gpt-image"],
+        ext={
+            "gpt_image": True,
+            "gpt_image_access_token": "image-access-secret",
+            "gpt_image_email": "image@example.test",
+            "gpt_image_password": "password-secret",
+            "gpt_image_mail_token": "mail-secret",
+            "gpt_image_is_free": True,
+            "gpt_image_status": "available",
+        },
+    )
+
+    summary = _summary([record])
+    safe_export = _export_record(record, include_secrets=False)
+    secret_export = _export_record(record, include_secrets=True)
+
+    assert summary["total"] == 1
+    assert summary["available"] == 1
+    assert summary["types"]["free"] == 1
+    assert summary["with_access_token"] == 1
+    assert summary["with_credentials"] == 1
+    assert "access_token" not in safe_export
+    assert secret_export["access_token"] == "image-access-secret"
+    assert secret_export["password"] == "password-secret"
+    assert secret_export["mail_token"] == "mail-secret"
+
+
 def test_gpt_image_parse_sse_extracts_conversation_and_file_ids() -> None:
     raw = "\n".join(
         [
@@ -95,9 +128,31 @@ def test_gpt_image_parse_sse_extracts_conversation_and_file_ids() -> None:
     assert text == "working"
 
 
+def test_gpt_image_prompt_forces_generation_not_search() -> None:
+    prompt = gpt_image._image_generation_prompt("马斯克直播图")
+
+    assert "Create exactly one original image" in prompt
+    assert "Do not search the web" in prompt
+    assert "image_group" in prompt
+    assert "马斯克直播图" in prompt
+
+
+def test_gpt_image_no_image_error_sanitizes_image_group_text() -> None:
+    message = gpt_image._no_image_error('马斯克直播图image_group{"query":["Elon Musk"]}')
+
+    assert message == "ChatGPT returned image search results instead of a generated image"
+
+
+def test_gpt_image_no_image_error_sanitizes_processing_queue_text() -> None:
+    message = gpt_image._no_image_error("正在处理图片\n\n目前有很多人在创建图片，因此可能需要一点时间。")
+
+    assert message == "ChatGPT image generation is still queued upstream; retry later"
+
+
 def test_gpt_image_upstream_model_uses_gpt5_for_paid_image2() -> None:
-    assert gpt_image._upstream_model("gpt-image-1", is_free=False) == "auto"
-    assert gpt_image._upstream_model("gpt-image-2", is_free=True) == "auto"
+    assert gpt_image._upstream_model("gpt-image-1", is_free=True) == "gpt-5-3"
+    assert gpt_image._upstream_model("gpt-image-1", is_free=False) == "gpt-5-3"
+    assert gpt_image._upstream_model("gpt-image-2", is_free=True) == "gpt-5-3"
     assert gpt_image._upstream_model("gpt-image-2", is_free=False) == "gpt-5-3"
 
 
@@ -172,6 +227,139 @@ def test_gpt_image_accounts_skip_invalid_access_token() -> None:
     account = asyncio.run(gpt_image._account_from_record(record))
 
     assert account is None
+
+
+def test_gpt_image_accounts_skip_timeout_status() -> None:
+    record = AccountRecord(
+        token="gptimg_123",
+        tags=["gpt-image"],
+        ext={
+            "gpt_image": True,
+            "gpt_image_access_token": "timeout-access-token",
+            "gpt_image_status": "timeout",
+        },
+    )
+
+    account = asyncio.run(gpt_image._account_from_record(record))
+
+    assert account is None
+
+
+def test_gpt_image_accounts_skip_recent_generation_timeout_even_if_status_available() -> None:
+    record = AccountRecord(
+        token="gpt_123",
+        tags=["gpt"],
+        last_fail_at=gpt_image._now_ms(),
+        last_fail_reason="ChatGPT image generation timed out after 180s: timeout",
+        ext={
+            "gpt": True,
+            "gpt_access_token": "ordinary-access-token",
+            "gpt_status": "available",
+        },
+    )
+
+    account = asyncio.run(gpt_image._account_from_record(record))
+
+    assert account is None
+
+
+def test_gpt_image_accounts_skip_recent_image_search_failure() -> None:
+    record = AccountRecord(
+        token="gptimg_123",
+        tags=["gpt-image"],
+        last_fail_at=gpt_image._now_ms(),
+        last_fail_reason="ChatGPT returned image search results instead of a generated image",
+        ext={
+            "gpt_image": True,
+            "gpt_image_access_token": "search-routed-token",
+            "gpt_image_status": "failed",
+        },
+    )
+
+    account = asyncio.run(gpt_image._account_from_record(record))
+
+    assert account is None
+
+
+def test_gpt_image_accounts_dedupe_tokens_and_prioritize_image_records(monkeypatch) -> None:
+    class FakeRepo:
+        async def list_accounts(self, query):
+            return SimpleNamespace(
+                total=3,
+                items=[
+                    AccountRecord(
+                        token="gpt_1",
+                        tags=["gpt"],
+                        ext={
+                            "gpt": True,
+                            "gpt_access_token": "shared-token",
+                            "gpt_status": "available",
+                        },
+                    ),
+                    AccountRecord(
+                        token="gptimg_1",
+                        tags=["gpt-image"],
+                        ext={
+                            "gpt_image": True,
+                            "gpt_image_access_token": "image-token",
+                            "gpt_image_status": "available",
+                        },
+                    ),
+                    AccountRecord(
+                        token="gptimg_2",
+                        tags=["gpt-image"],
+                        ext={
+                            "gpt_image": True,
+                            "gpt_image_access_token": "shared-token",
+                            "gpt_image_status": "available",
+                        },
+                    ),
+                ],
+            )
+
+    monkeypatch.setattr(gpt_image, "get_account_repository", lambda: FakeRepo())
+
+    accounts = asyncio.run(gpt_image._gpt_image_accounts())
+
+    assert [item.record_token for item in accounts] == ["gptimg_1", "gptimg_2"]
+
+
+def test_gpt_image_accounts_block_duplicate_token_after_image_timeout(monkeypatch) -> None:
+    shared_token = "shared-timeout-token"
+
+    class FakeRepo:
+        async def list_accounts(self, query):
+            return SimpleNamespace(
+                total=2,
+                items=[
+                    AccountRecord(
+                        token="gptimg_1",
+                        tags=["gpt-image"],
+                        last_fail_at=gpt_image._now_ms(),
+                        last_fail_reason="ChatGPT image generation timed out after 180s: timeout",
+                        ext={
+                            "gpt_image": True,
+                            "gpt_image_access_token": shared_token,
+                            "gpt_image_status": "timeout",
+                        },
+                    ),
+                    AccountRecord(
+                        token="gpt_1",
+                        tags=["gpt"],
+                        ext={
+                            "gpt": True,
+                            "gpt_access_token": shared_token,
+                            "gpt_status": "available",
+                        },
+                    ),
+                ],
+            )
+
+    monkeypatch.setattr(gpt_image, "get_account_repository", lambda: FakeRepo())
+
+    accounts = asyncio.run(gpt_image._gpt_image_accounts())
+
+    assert accounts == []
 
 
 def test_gpt_image_accounts_login_ordinary_gpt_credentials(monkeypatch) -> None:
@@ -348,6 +536,33 @@ def test_gpt_image_generate_one_has_hard_timeout(monkeypatch) -> None:
 
     assert excinfo.value.status == 504
     assert "timed out" in str(excinfo.value)
+
+
+def test_gpt_image_run_generation_defaults_to_single_account_attempt(monkeypatch) -> None:
+    attempts: list[str] = []
+    accounts = [
+        gpt_image.GPTImageAccount(record_token="gptimg_1", access_token="token-1"),
+        gpt_image.GPTImageAccount(record_token="gptimg_2", access_token="token-2"),
+    ]
+
+    async def fake_accounts():
+        return accounts
+
+    async def fail_generate(account, prompt, model):
+        attempts.append(account.record_token)
+        raise UpstreamError("ChatGPT image generation timed out after 180s", status=504)
+
+    async def mark_failure(account, exc):
+        return None
+
+    monkeypatch.setattr(gpt_image, "_gpt_image_accounts", fake_accounts)
+    monkeypatch.setattr(gpt_image, "_generate_one", fail_generate)
+    monkeypatch.setattr(gpt_image, "_mark_account_failure", mark_failure)
+
+    with pytest.raises(UpstreamError):
+        asyncio.run(gpt_image._run_generation("draw", "gpt-image-2", 1))
+
+    assert attempts == ["gptimg_1"]
 
 
 def test_account_admin_page_exposes_gpt_image_account_panel() -> None:
