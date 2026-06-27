@@ -4,6 +4,7 @@ import asyncio
 import base64
 import binascii
 import mimetypes
+from io import BytesIO
 from typing import Annotated, AsyncGenerator, AsyncIterable, Literal
 
 import orjson
@@ -469,6 +470,11 @@ def _coalesce_uploads(*groups: list[UploadFile] | None) -> list[UploadFile]:
 
 
 async def _upload_to_data_uri(upload: UploadFile, *, param: str) -> str:
+    raw, mime = await _read_upload_image(upload, param=param)
+    return _image_bytes_to_data_uri(raw, mime, param=param)
+
+
+async def _read_upload_image(upload: UploadFile, *, param: str) -> tuple[bytes, str]:
     raw = await upload.read()
     if not raw:
         raise ValidationError("Uploaded image cannot be empty", param=param)
@@ -480,12 +486,56 @@ async def _upload_to_data_uri(upload: UploadFile, *, param: str) -> str:
     )
     if not mime.startswith("image/"):
         raise ValidationError("Uploaded file must be an image", param=param)
+    return raw, mime
 
+
+def _image_bytes_to_data_uri(raw: bytes, mime: str, *, param: str) -> str:
     try:
         blob_b64 = base64.b64encode(raw).decode("ascii")
     except (ValueError, TypeError, binascii.Error) as exc:
         raise ValidationError("Failed to encode uploaded image", param=param) from exc
     return f"data:{mime};base64,{blob_b64}"
+
+
+def _compose_mask_alpha(image_raw: bytes, mask_raw: bytes, *, param: str) -> bytes:
+    try:
+        from PIL import Image
+
+        image = Image.open(BytesIO(image_raw)).convert("RGBA")
+        mask = Image.open(BytesIO(mask_raw))
+        if "A" in mask.getbands():
+            alpha = mask.getchannel("A")
+        elif mask.mode == "L":
+            alpha = mask
+        else:
+            alpha = mask.convert("L")
+        alpha = alpha.resize(image.size, Image.Resampling.LANCZOS)
+        image.putalpha(alpha)
+        buf = BytesIO()
+        image.save(buf, format="PNG")
+        return buf.getvalue()
+    except Exception as exc:
+        raise ValidationError("Failed to apply mask to uploaded image", param=param) from exc
+
+
+async def _uploads_to_data_uris(
+    uploads: list[UploadFile],
+    *,
+    mask: UploadFile | None = None,
+) -> list[str]:
+    mask_raw: bytes | None = None
+    if mask is not None:
+        mask_raw, _mask_mime = await _read_upload_image(mask, param="mask")
+
+    image_inputs: list[str] = []
+    for index, item in enumerate(uploads):
+        param = f"image.{index}"
+        raw, mime = await _read_upload_image(item, param=param)
+        if mask_raw is not None:
+            raw = _compose_mask_alpha(raw, mask_raw, param=param)
+            mime = "image/png"
+        image_inputs.append(_image_bytes_to_data_uri(raw, mime, param=param))
+    return image_inputs
 
 
 @router.post(
@@ -852,8 +902,6 @@ async def image_edits(
         raise ValidationError(
             f"Model {model!r} is not an image-edit model", param="model"
         )
-    if mask is not None:
-        raise ValidationError("mask is not supported yet", param="mask")
     _validate_image_edit_n(n, param="n")
     image_uploads = _coalesce_uploads(image, image_array)
     if not image_uploads:
@@ -861,10 +909,7 @@ async def image_edits(
 
     from .images import edit as img_edit
 
-    image_inputs = [
-        await _upload_to_data_uri(item, param=f"image.{index}")
-        for index, item in enumerate(image_uploads)
-    ]
+    image_inputs = await _uploads_to_data_uris(image_uploads, mask=mask)
     # Wrap input into a single-message conversation.
     content = [{"type": "text", "text": prompt}]
     content.extend(

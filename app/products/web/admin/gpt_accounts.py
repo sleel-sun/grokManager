@@ -9,10 +9,11 @@ import orjson
 from fastapi import APIRouter, Body, Depends, Query
 from fastapi.responses import Response
 from pydantic import BaseModel, Field, RootModel, field_validator, model_validator
+from starlette.concurrency import run_in_threadpool
 
 from app.control.account.commands import AccountPatch, AccountUpsert, ListAccountsQuery
 from app.control.account.enums import AccountStatus
-from app.platform.errors import ValidationError
+from app.platform.errors import AppError, ErrorKind, ValidationError
 from app.platform.runtime.batch import run_batch
 
 from . import get_repo
@@ -96,6 +97,33 @@ class GPTAccountsTestRequest(BaseModel):
     accounts: list[str] = Field(default_factory=list)
 
 
+class GPTAccountLoginRequest(BaseModel):
+    account: str | None = None
+    email: str | None = None
+    password: str | None = None
+    mail_token: str | None = None
+    email_provider: str | None = None
+    alias: str | None = None
+    plan_type: str | None = None
+    save: bool = True
+    timeout: int = Field(default=90, ge=1, le=600)
+
+
+class GPTAccountOAuthStartRequest(BaseModel):
+    account: str | None = None
+    email_hint: str | None = None
+
+
+class GPTAccountOAuthFinishRequest(BaseModel):
+    session_id: str = ""
+    callback: str = ""
+    account: str | None = None
+    email: str | None = None
+    alias: str | None = None
+    plan_type: str | None = None
+    save: bool = True
+
+
 def _item_from_raw(raw: str | GPTAccountItem) -> GPTAccountItem:
     if isinstance(raw, GPTAccountItem):
         return raw
@@ -167,6 +195,56 @@ def _serialize(record: "AccountRecord") -> dict[str, Any]:
         "updated_at": record.updated_at,
         "last_fail_reason": record.last_fail_reason,
     }
+
+
+def _summary(records: list["AccountRecord"]) -> dict[str, Any]:
+    status_counts: dict[str, int] = {}
+    plan_counts: dict[str, int] = {}
+    with_access_token = 0
+    with_refresh_token = 0
+    with_credentials = 0
+    for record in records:
+        ext = record.ext or {}
+        status = _clean_text(ext.get("gpt_status")) or "unknown"
+        plan = (_clean_text(ext.get("gpt_plan_type")) or "unknown").lower()
+        status_counts[status] = status_counts.get(status, 0) + 1
+        plan_counts[plan] = plan_counts.get(plan, 0) + 1
+        if _clean_text(ext.get("gpt_access_token")):
+            with_access_token += 1
+        if _clean_text(ext.get("gpt_refresh_token")):
+            with_refresh_token += 1
+        if ext.get("gpt_password") and ext.get("gpt_mail_token"):
+            with_credentials += 1
+
+    return {
+        "total": len(records),
+        "available": status_counts.get("available", 0),
+        "unchecked": status_counts.get("unchecked", 0),
+        "login_required": status_counts.get("login_required", 0),
+        "invalid": status_counts.get("invalid", 0),
+        "with_access_token": with_access_token,
+        "with_refresh_token": with_refresh_token,
+        "with_credentials": with_credentials,
+        "status": status_counts,
+        "plans": plan_counts,
+    }
+
+
+def _export_record(record: "AccountRecord", *, include_secrets: bool) -> dict[str, Any]:
+    ext = record.ext or {}
+    payload = _serialize(record)
+    payload["registration_status"] = ext.get("gpt_status") or "unknown"
+    if include_secrets:
+        payload.update(
+            {
+                "access_token": _clean_text(ext.get("gpt_access_token")) or None,
+                "refresh_token": _clean_text(ext.get("gpt_refresh_token")) or None,
+                "id_token": _clean_text(ext.get("gpt_id_token")) or None,
+                "password": _clean_text(ext.get("gpt_password")) or None,
+                "mail_token": _clean_text(ext.get("gpt_mail_token")) or None,
+            }
+        )
+    return payload
 
 
 def _json(data: Any, status_code: int = 200) -> Response:
@@ -241,10 +319,54 @@ def _test_concurrency(value: int | None) -> int:
     return min(max(1, resolved), _MAX_TEST_CONCURRENCY)
 
 
+async def _lookup_gpt_record(
+    repo: "AccountRepository",
+    account_ref: str,
+    *,
+    param: str = "account",
+) -> "AccountRecord":
+    records = await repo.get_accounts(_test_record_tokens([account_ref]))
+    record = next(
+        (item for item in records if _is_gpt_record(item) and not item.is_deleted()),
+        None,
+    )
+    if not record:
+        raise ValidationError("GPT account not found", param=param, code="account_not_found")
+    return record
+
+
 @router.get("/accounts")
 async def list_gpt_accounts(repo: "AccountRepository" = Depends(get_repo)):
     records = await _list_all_gpt_records(repo)
-    return _json({"accounts": [_serialize(record) for record in records]})
+    return _json(
+        {
+            "summary": _summary(records),
+            "accounts": [_serialize(record) for record in records],
+        }
+    )
+
+
+@router.get("/accounts/summary")
+async def summarize_gpt_accounts(repo: "AccountRepository" = Depends(get_repo)):
+    records = await _list_all_gpt_records(repo)
+    return _json({"summary": _summary(records)})
+
+
+@router.get("/accounts/export")
+async def export_gpt_accounts(
+    include_secrets: bool = Query(False),
+    repo: "AccountRepository" = Depends(get_repo),
+):
+    records = await _list_all_gpt_records(repo)
+    return _json(
+        {
+            "summary": _summary(records),
+            "accounts": [
+                _export_record(record, include_secrets=include_secrets)
+                for record in records
+            ],
+        }
+    )
 
 
 @router.post("/accounts")
@@ -300,6 +422,280 @@ async def delete_gpt_accounts(
     return _json({"status": "success", "deleted": result.deleted})
 
 
+@router.post("/accounts/oauth/start")
+async def start_gpt_account_oauth(
+    req: GPTAccountOAuthStartRequest,
+    repo: "AccountRepository" = Depends(get_repo),
+):
+    email_hint = _clean_text(req.email_hint)
+    account_ref = _clean_text(req.account)
+    if account_ref:
+        record = await _lookup_gpt_record(repo, account_ref)
+        email_hint = email_hint or _clean_text((record.ext or {}).get("gpt_email"))
+
+    try:
+        from app.maintainer.gpt_oauth import GPTAccountOAuthError, gpt_oauth_login_service
+
+        payload = await run_in_threadpool(gpt_oauth_login_service.start, email_hint)
+    except GPTAccountOAuthError as exc:
+        raise ValidationError(str(exc), param="oauth", code="oauth_start_failed") from exc
+
+    return _json({"status": "success", **payload, "email_hint": email_hint})
+
+
+@router.post("/accounts/oauth/finish")
+async def finish_gpt_account_oauth(
+    req: GPTAccountOAuthFinishRequest,
+    repo: "AccountRepository" = Depends(get_repo),
+):
+    account_ref = _clean_text(req.account)
+    record: AccountRecord | None = None
+    email = _clean_text(req.email)
+    alias = _clean_text(req.alias)
+    plan_type = _clean_text(req.plan_type)
+    if account_ref:
+        record = await _lookup_gpt_record(repo, account_ref)
+        ext = record.ext or {}
+        email = email or _clean_text(ext.get("gpt_email"))
+        alias = alias or _clean_text(ext.get("gpt_alias"))
+        plan_type = plan_type or _clean_text(ext.get("gpt_plan_type"))
+
+    try:
+        from app.maintainer.gpt_oauth import GPTAccountOAuthError, gpt_oauth_login_service
+
+        tokens = await run_in_threadpool(
+            gpt_oauth_login_service.finish,
+            req.session_id,
+            req.callback,
+        )
+    except GPTAccountOAuthError as exc:
+        raise ValidationError(str(exc), param="callback", code="oauth_finish_failed") from exc
+
+    access_token = _clean_text(tokens.get("access_token"))
+    refresh_token = _clean_text(tokens.get("refresh_token"))
+    id_token = _clean_text(tokens.get("id_token"))
+    if not access_token:
+        raise AppError(
+            "GPT OAuth login did not return an access token",
+            kind=ErrorKind.UPSTREAM,
+            code="gpt_oauth_no_token",
+            status=502,
+        )
+
+    saved_id = record.token if record else ""
+    if req.save:
+        if record:
+            ext_merge: dict[str, Any] = {
+                "gpt": True,
+                "gpt_access_token": access_token,
+                "gpt_email": email or None,
+                "gpt_alias": alias or None,
+                "gpt_plan_type": plan_type or None,
+                "gpt_status": "available",
+                "gpt_registration_error": None,
+            }
+            if refresh_token:
+                ext_merge["gpt_refresh_token"] = refresh_token
+            if id_token:
+                ext_merge["gpt_id_token"] = id_token
+            await repo.patch_accounts(
+                [
+                    AccountPatch(
+                        token=record.token,
+                        status=AccountStatus.DISABLED,
+                        add_tags=[_TAG],
+                        state_reason="GPT account record; excluded from Grok SSO pool",
+                        ext_merge=ext_merge,
+                    )
+                ]
+            )
+        else:
+            item = GPTAccountItem(
+                access_token=access_token,
+                refresh_token=refresh_token or None,
+                id_token=id_token or None,
+                email=email or None,
+                alias=alias or None,
+                plan_type=plan_type or None,
+                registration_status="available",
+            )
+            saved_id = _record_token_for_item(item)
+            await repo.upsert_accounts(
+                [
+                    AccountUpsert(
+                        token=saved_id,
+                        pool="basic",
+                        tags=[_TAG],
+                        ext=_ext_for_item(item),
+                    )
+                ]
+            )
+            await repo.patch_accounts(
+                [
+                    AccountPatch(
+                        token=saved_id,
+                        status=AccountStatus.DISABLED,
+                        state_reason="GPT account record; excluded from Grok SSO pool",
+                    )
+                ]
+            )
+
+    return _json(
+        {
+            "status": "success",
+            "access_token": access_token,
+            "access_token_masked": _mask(access_token),
+            "refresh_token": refresh_token,
+            "refresh_token_masked": _mask(refresh_token),
+            "id_token": id_token,
+            "account": {
+                "id": saved_id,
+                "email": email or None,
+                "alias": alias or None,
+                "plan_type": plan_type or None,
+                "saved": bool(req.save),
+            },
+        }
+    )
+
+
+@router.post("/accounts/login")
+async def login_gpt_account(
+    req: GPTAccountLoginRequest,
+    repo: "AccountRepository" = Depends(get_repo),
+):
+    record: AccountRecord | None = None
+    email = _clean_text(req.email)
+    password = _clean_text(req.password)
+    mail_token = _clean_text(req.mail_token)
+    email_provider = _clean_text(req.email_provider)
+    alias = _clean_text(req.alias)
+    plan_type = _clean_text(req.plan_type)
+
+    account_ref = _clean_text(req.account)
+    if account_ref:
+        records = await repo.get_accounts(_test_record_tokens([account_ref]))
+        record = next((item for item in records if _is_gpt_record(item) and not item.is_deleted()), None)
+        if not record:
+            raise ValidationError("GPT account not found", param="account", code="account_not_found")
+        ext = record.ext or {}
+        email = email or _clean_text(ext.get("gpt_email"))
+        password = password or _clean_text(ext.get("gpt_password"))
+        mail_token = mail_token or _clean_text(ext.get("gpt_mail_token"))
+        email_provider = email_provider or _clean_text(ext.get("gpt_email_provider"))
+        alias = alias or _clean_text(ext.get("gpt_alias"))
+        plan_type = plan_type or _clean_text(ext.get("gpt_plan_type"))
+
+    if not email:
+        raise ValidationError("Email is required", param="email")
+    if not password:
+        raise ValidationError("Password is required", param="password")
+    if not mail_token:
+        raise ValidationError("Mail token is required", param="mail_token")
+
+    try:
+        from app.maintainer import gpt as gpt_module
+
+        access_token = await run_in_threadpool(
+            gpt_module.login_gpt_credentials,
+            email=email,
+            password=password,
+            mail_token=mail_token,
+            timeout=req.timeout,
+        )
+    except AppError:
+        raise
+    except Exception as exc:
+        raise AppError(
+            f"GPT account login failed: {exc}",
+            kind=ErrorKind.UPSTREAM,
+            code="gpt_login_failed",
+            status=502,
+        ) from exc
+
+    access_token = _clean_text(access_token)
+    if not access_token:
+        raise AppError(
+            "GPT account login did not return an access token",
+            kind=ErrorKind.UPSTREAM,
+            code="gpt_login_no_token",
+            status=502,
+        )
+
+    saved_id = record.token if record else ""
+    if req.save:
+        if record:
+            await repo.patch_accounts(
+                [
+                    AccountPatch(
+                        token=record.token,
+                        status=AccountStatus.DISABLED,
+                        add_tags=[_TAG],
+                        state_reason="GPT account record; excluded from Grok SSO pool",
+                        ext_merge={
+                            "gpt": True,
+                            "gpt_access_token": access_token,
+                            "gpt_email": email,
+                            "gpt_alias": alias or None,
+                            "gpt_password": password,
+                            "gpt_mail_token": mail_token,
+                            "gpt_email_provider": email_provider or None,
+                            "gpt_plan_type": plan_type or None,
+                            "gpt_status": "available",
+                            "gpt_registration_error": None,
+                        },
+                    )
+                ]
+            )
+        else:
+            item = GPTAccountItem(
+                access_token=access_token,
+                email=email,
+                password=password,
+                mail_token=mail_token,
+                email_provider=email_provider or None,
+                alias=alias or None,
+                plan_type=plan_type or None,
+                registration_status="available",
+            )
+            saved_id = _record_token_for_item(item)
+            await repo.upsert_accounts(
+                [
+                    AccountUpsert(
+                        token=saved_id,
+                        pool="basic",
+                        tags=[_TAG],
+                        ext=_ext_for_item(item),
+                    )
+                ]
+            )
+            await repo.patch_accounts(
+                [
+                    AccountPatch(
+                        token=saved_id,
+                        status=AccountStatus.DISABLED,
+                        state_reason="GPT account record; excluded from Grok SSO pool",
+                    )
+                ]
+            )
+
+    return _json(
+        {
+            "status": "success",
+            "access_token": access_token,
+            "access_token_masked": _mask(access_token),
+            "account": {
+                "id": saved_id,
+                "email": email,
+                "alias": alias or None,
+                "plan_type": plan_type or None,
+                "email_provider": email_provider or None,
+                "saved": bool(req.save),
+            },
+        }
+    )
+
+
 @router.post("/accounts/test")
 async def test_gpt_accounts(
     req: GPTAccountsTestRequest | None = Body(default=None),
@@ -330,11 +726,25 @@ async def test_gpt_accounts(
     )
 
 
+@router.post("/accounts/refresh")
+async def refresh_gpt_accounts(
+    req: GPTAccountsTestRequest | None = Body(default=None),
+    concurrency: int | None = Query(None, ge=1),
+    repo: "AccountRepository" = Depends(get_repo),
+):
+    return await test_gpt_accounts(req=req, concurrency=concurrency, repo=repo)
+
+
 __all__ = [
     "router",
     "GPTAccountItem",
     "GPTAccountsTestRequest",
+    "GPTAccountLoginRequest",
+    "GPTAccountOAuthStartRequest",
+    "GPTAccountOAuthFinishRequest",
     "_ext_for_item",
+    "_summary",
+    "_export_record",
     "_delete_record_tokens",
     "gpt_account_record_token",
     "gpt_account_credential_record_token",

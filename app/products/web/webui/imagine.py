@@ -7,7 +7,13 @@ from typing import Optional
 import orjson
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
-from app.platform.auth.middleware import WEBUI_SESSION_COOKIE, authenticate_webui_session_cookie, authenticate_webui_token
+from app.platform.auth.middleware import (
+    WEBUI_SESSION_COOKIE,
+    WebUIUser,
+    authenticate_webui_session_cookie,
+    authenticate_webui_token,
+    webui_user_allows_nsfw,
+)
 from app.platform.config.snapshot import get_config
 from app.platform.errors import UpstreamError
 from app.platform.logging.logger import logger
@@ -123,8 +129,19 @@ def _extract_token(value: str | None) -> str:
     return raw
 
 
+def _webui_user(token: str, session_cookie: str | None = None) -> WebUIUser | None:
+    return authenticate_webui_token(token) or authenticate_webui_session_cookie(session_cookie)
+
+
 def _is_allowed(token: str, session_cookie: str | None = None) -> bool:
-    return authenticate_webui_token(token) is not None or authenticate_webui_session_cookie(session_cookie) is not None
+    return _webui_user(token, session_cookie) is not None
+
+
+def _resolve_webui_nsfw(user: WebUIUser | None, requested_nsfw: Optional[bool]) -> bool:
+    cfg = get_config()
+    global_enabled = cfg.get_bool("features.enable_nsfw", True)
+    desired = requested_nsfw if requested_nsfw is not None else global_enabled
+    return bool(desired and webui_user_allows_nsfw(user, global_enabled=global_enabled))
 
 
 def _websocket_token(websocket: WebSocket) -> str:
@@ -136,7 +153,9 @@ def _websocket_token(websocket: WebSocket) -> str:
 
 @router.websocket("/imagine/ws")
 async def imagine_ws(websocket: WebSocket):
-    if not _is_allowed(_websocket_token(websocket), websocket.cookies.get(WEBUI_SESSION_COOKIE)):
+    cookies = getattr(websocket, "cookies", {}) or {}
+    user = _webui_user(_websocket_token(websocket), cookies.get(WEBUI_SESSION_COOKIE))
+    if user is None:
         await websocket.close(code=1008)
         return
 
@@ -185,7 +204,7 @@ async def imagine_ws(websocket: WebSocket):
             "quality": quality,
         })
 
-        enable_nsfw = nsfw if nsfw is not None else get_config().get_bool("features.enable_nsfw", True)
+        enable_nsfw = _resolve_webui_nsfw(user, nsfw)
         cfg = get_config()
         max_retries = _image_max_retries(cfg)
         retry_codes = _image_retry_codes(cfg)

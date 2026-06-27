@@ -8,7 +8,7 @@ import re
 from dataclasses import dataclass
 
 from fastapi import Cookie, Header, HTTPException, Query, Response, status
-from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from fastapi.security import HTTPBearer
 
 from app.platform.config.snapshot import get_config
 
@@ -24,6 +24,7 @@ class WebUIUser:
     id: str
     username: str
     display_name: str = ""
+    allow_nsfw: bool = True
     legacy: bool = False
     anonymous: bool = False
 
@@ -32,6 +33,7 @@ class WebUIUser:
             "id": self.id,
             "username": self.username,
             "display_name": self.display_name or self.username,
+            "allow_nsfw": webui_user_allows_nsfw(self),
             "legacy": self.legacy,
             "anonymous": self.anonymous,
             "storage_scope": self.id,
@@ -149,12 +151,20 @@ def _webui_user_credentials() -> list[_WebUIUserCredential]:
             continue
         seen.add(username)
         display_name = str(entry.get("display_name") or entry.get("displayName") or username).strip()
+        allow_nsfw = _bool_config_value(
+            entry.get(
+                "allow_nsfw",
+                entry.get("allowNsfw", entry.get("nsfw", entry.get("enable_nsfw"))),
+            ),
+            True,
+        )
         credentials.append(
             _WebUIUserCredential(
                 user=WebUIUser(
                     id=_webui_user_id(username),
                     username=username,
                     display_name=display_name,
+                    allow_nsfw=allow_nsfw,
                 ),
                 password=password,
             )
@@ -191,6 +201,22 @@ def _truthy_header(value: str | None) -> bool:
     if not isinstance(value, str):
         return False
     return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _bool_config_value(value: object, default: bool) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        text = value.strip().lower()
+        if not text:
+            return default
+        if text in {"1", "true", "yes", "on", "enabled", "allow"}:
+            return True
+        if text in {"0", "false", "no", "off", "disabled", "deny", "blocked"}:
+            return False
+    return bool(value)
 
 
 def _extract_basic(authorization: str | None) -> tuple[str, str] | None:
@@ -452,6 +478,21 @@ def authenticate_webui_token(token: str | None) -> WebUIUser | None:
     return authenticate_webui_credentials(bearer_token=parsed)
 
 
+def webui_user_allows_nsfw(
+    user: WebUIUser | None,
+    *,
+    global_enabled: bool | None = None,
+) -> bool:
+    """Return whether a WebUI user may request NSFW image generation."""
+    if global_enabled is None:
+        global_enabled = _bool_config_value(get_config("features.enable_nsfw", True), True)
+    if not global_enabled:
+        return False
+    if user is not None and not user.allow_nsfw:
+        return False
+    return True
+
+
 # ---------------------------------------------------------------------------
 # Dependencies
 # ---------------------------------------------------------------------------
@@ -547,6 +588,7 @@ __all__ = [
     "build_webui_session_cookie",
     "clear_webui_logout_cookie",
     "clear_webui_session_cookie",
+    "webui_user_allows_nsfw",
     "set_webui_logout_cookie",
     "set_webui_session_cookie",
     "WEBUI_LOGOUT_COOKIE",

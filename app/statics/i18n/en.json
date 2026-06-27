@@ -445,8 +445,10 @@
       "empty": "No WebUI users configured. Single-password mode remains active.",
       "username": "Username",
       "password": "Password",
+      "key": "Access key",
       "displayName": "Display name",
       "enabled": "Enabled",
+      "allowNsfw": "Allow NSFW",
       "remove": "Remove"
     },
     "loadFailed": "Failed to load configuration: {message}",
@@ -529,7 +531,7 @@
         },
         "webuiUsers": {
           "label": "WebUI Users",
-          "desc": "When configured, WebUI login uses username + password and browser-side chat sessions, search settings, and MCP configuration are isolated per user. Leave empty to keep single-password mode."
+          "desc": "When configured, WebUI login uses username + independent key and browser-side chat sessions, search settings, and MCP configuration are isolated per user. Each user can independently allow NSFW generation. Leave empty to keep single-password mode."
         },
         "temporary": {
           "label": "Temporary Sessions",

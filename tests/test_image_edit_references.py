@@ -1,7 +1,11 @@
 import asyncio
+import base64
+from io import BytesIO
 from types import SimpleNamespace
 import unittest
 from unittest.mock import AsyncMock, patch
+
+from PIL import Image
 
 from app.control.account.enums import FeedbackKind
 from app.platform.errors import UpstreamError, ValidationError
@@ -58,7 +62,41 @@ class _FakeImageDirectory:
         self.feedback_calls.append((token, kind, mode_id))
 
 
+class _FakeUpload:
+    def __init__(self, raw: bytes, *, filename: str = "image.png", content_type: str = "image/png") -> None:
+        self._raw = raw
+        self.filename = filename
+        self.content_type = content_type
+
+    async def read(self) -> bytes:
+        return self._raw
+
+
+def _png_bytes(image: Image.Image) -> bytes:
+    buf = BytesIO()
+    image.save(buf, format="PNG")
+    return buf.getvalue()
+
+
 class ImageEditReferenceTests(unittest.TestCase):
+    def test_uploads_to_data_uris_composes_mask_alpha(self) -> None:
+        from app.products.openai.router import _uploads_to_data_uris
+
+        image_raw = _png_bytes(Image.new("RGB", (2, 1), (255, 0, 0)))
+        mask_raw = _png_bytes(Image.frombytes("L", (2, 1), bytes([0, 255])))
+
+        [data_uri] = asyncio.run(
+            _uploads_to_data_uris([_FakeUpload(image_raw)], mask=_FakeUpload(mask_raw))
+        )
+
+        prefix, payload = data_uri.split(",", 1)
+        decoded = base64.b64decode(payload)
+        with Image.open(BytesIO(decoded)) as composed:
+            composed = composed.convert("RGBA")
+            self.assertEqual(prefix, "data:image/png;base64")
+            self.assertEqual(composed.getpixel((0, 0))[3], 0)
+            self.assertEqual(composed.getpixel((1, 0))[3], 255)
+
     def test_upstream_asset_content_url_skips_reupload(self) -> None:
         url = "https://assets.grok.com/users/user-1/asset-1/content"
 

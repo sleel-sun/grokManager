@@ -157,6 +157,52 @@ def _serialize(record: "AccountRecord") -> dict[str, Any]:
     }
 
 
+def _summary(records: list["AccountRecord"]) -> dict[str, Any]:
+    status_counts: dict[str, int] = {}
+    type_counts = {"free": 0, "paid": 0}
+    with_access_token = 0
+    with_credentials = 0
+    for record in records:
+        ext = record.ext or {}
+        status = _clean_text(ext.get("gpt_image_status")) or "unknown"
+        status_counts[status] = status_counts.get(status, 0) + 1
+        if ext.get("gpt_image_is_free"):
+            type_counts["free"] += 1
+        else:
+            type_counts["paid"] += 1
+        if _clean_text(ext.get("gpt_image_access_token")):
+            with_access_token += 1
+        if ext.get("gpt_image_password") and ext.get("gpt_image_mail_token"):
+            with_credentials += 1
+
+    return {
+        "total": len(records),
+        "available": status_counts.get("available", 0),
+        "unchecked": status_counts.get("unchecked", 0),
+        "login_required": status_counts.get("login_required", 0),
+        "invalid": status_counts.get("invalid", 0),
+        "rate_limited": status_counts.get("rate_limited", 0),
+        "with_access_token": with_access_token,
+        "with_credentials": with_credentials,
+        "status": status_counts,
+        "types": type_counts,
+    }
+
+
+def _export_record(record: "AccountRecord", *, include_secrets: bool) -> dict[str, Any]:
+    ext = record.ext or {}
+    payload = _serialize(record)
+    if include_secrets:
+        payload.update(
+            {
+                "access_token": _clean_text(ext.get("gpt_image_access_token")) or None,
+                "password": _clean_text(ext.get("gpt_image_password")) or None,
+                "mail_token": _clean_text(ext.get("gpt_image_mail_token")) or None,
+            }
+        )
+    return payload
+
+
 def _json(data: Any, status_code: int = 200) -> Response:
     return Response(
         content=orjson.dumps(data),
@@ -228,7 +274,35 @@ def _test_concurrency(value: int | None) -> int:
 @router.get("/accounts")
 async def list_gpt_image_accounts(repo: "AccountRepository" = Depends(get_repo)):
     records = await _list_all_gpt_image_records(repo)
-    return _json({"accounts": [_serialize(record) for record in records]})
+    return _json(
+        {
+            "summary": _summary(records),
+            "accounts": [_serialize(record) for record in records],
+        }
+    )
+
+
+@router.get("/accounts/summary")
+async def summarize_gpt_image_accounts(repo: "AccountRepository" = Depends(get_repo)):
+    records = await _list_all_gpt_image_records(repo)
+    return _json({"summary": _summary(records)})
+
+
+@router.get("/accounts/export")
+async def export_gpt_image_accounts(
+    include_secrets: bool = Query(False),
+    repo: "AccountRepository" = Depends(get_repo),
+):
+    records = await _list_all_gpt_image_records(repo)
+    return _json(
+        {
+            "summary": _summary(records),
+            "accounts": [
+                _export_record(record, include_secrets=include_secrets)
+                for record in records
+            ],
+        }
+    )
 
 
 @router.post("/accounts")
@@ -322,9 +396,20 @@ async def test_gpt_image_accounts(
     )
 
 
+@router.post("/accounts/refresh")
+async def refresh_gpt_image_accounts(
+    req: GPTImageTestRequest | None = Body(default=None),
+    concurrency: int | None = Query(None, ge=1),
+    repo: "AccountRepository" = Depends(get_repo),
+):
+    return await test_gpt_image_accounts(req=req, concurrency=concurrency, repo=repo)
+
+
 __all__ = [
     "router",
     "GPTImageTestRequest",
+    "_summary",
+    "_export_record",
     "account_record_token",
     "account_credential_record_token",
 ]

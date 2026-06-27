@@ -50,6 +50,7 @@ def test_webui_users_require_username_password_and_return_stable_user(monkeypatc
         "id": auth_middleware._webui_user_id("alice"),
         "username": "alice",
         "display_name": "Alice",
+        "allow_nsfw": True,
         "legacy": False,
         "anonymous": False,
         "storage_scope": auth_middleware._webui_user_id("alice"),
@@ -89,6 +90,32 @@ def test_webui_users_accept_json_and_line_config_for_basic_auth(monkeypatch: pyt
         },
     )
     assert auth_middleware.authenticate_webui_authorization(_basic("dave", "dave-secret")).username == "dave"
+
+
+def test_webui_users_accept_independent_key_and_nsfw_permission(monkeypatch: pytest.MonkeyPatch) -> None:
+    _configure_auth(
+        monkeypatch,
+        {
+            "app.webui_enabled": True,
+            "app.webui_users": [
+                {"username": "alice", "key": "alice-key", "allow_nsfw": False},
+                {"username": "bob", "key": "bob-key", "allow_nsfw": True},
+            ],
+            "features.enable_nsfw": True,
+        },
+    )
+
+    alice = auth_middleware.authenticate_webui_authorization(_basic("alice", "alice-key"))
+    bob = auth_middleware.authenticate_webui_authorization(_basic("bob", "bob-key"))
+
+    assert alice is not None
+    assert bob is not None
+    assert alice.allow_nsfw is False
+    assert alice.public_dict()["allow_nsfw"] is False
+    assert bob.allow_nsfw is True
+    assert auth_middleware.webui_user_allows_nsfw(alice) is False
+    assert auth_middleware.webui_user_allows_nsfw(bob) is True
+    assert auth_middleware.webui_user_allows_nsfw(bob, global_enabled=False) is False
 
 
 def test_webui_legacy_single_key_and_anonymous_modes_stay_compatible(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -311,7 +338,7 @@ def test_webui_login_page_uses_legacy_browser_safe_auth_script() -> None:
     auth_js = (root / "app" / "statics" / "js" / "auth.js").read_text(encoding="utf-8")
 
     assert "renderSiteFooter?.()" not in html
-    assert "/static/js/auth.js?v={{APP_VERSION}}-logoutfix5" in html
+    assert "/static/js/auth.js?v={{APP_VERSION}}-usernsfw1" in html
     assert "if (params.get('logout') === '1') webuiMarkLoggedOut();" in html
     assert "skipAutoLogin = webuiWasLoggedOut();" in html
     assert "verifyWebuiAccess(VERIFY, username, password, { authOnly: true, loginIntent: true })" in html
@@ -324,13 +351,15 @@ def test_webui_login_page_uses_legacy_browser_safe_auth_script() -> None:
 
 def test_webui_pages_use_same_auth_cache_buster() -> None:
     root = Path(__file__).resolve().parent.parent
-    expected = "/static/js/auth.js?v={{APP_VERSION}}-logoutfix5"
-    for name in ("login.html", "chat.html", "masonry.html", "chatkit.html"):
+    expected = "/static/js/auth.js?v={{APP_VERSION}}-usernsfw1"
+    for name in ("login.html", "chat.html", "masonry.html", "chatkit.html", "image-studio.html"):
         html = (root / "app" / "statics" / "webui" / name).read_text(encoding="utf-8")
         assert expected in html, f"{name} must not load a stale auth.js cache key"
 
     chat_html = (root / "app" / "statics" / "webui" / "chat.html").read_text(encoding="utf-8")
-    assert "/static/js/webui/chat.js?v={{APP_VERSION}}-isolate1" in chat_html
+    assert "/static/js/webui/chat.js?v={{APP_VERSION}}-downloads1" in chat_html
+    masonry_html = (root / "app" / "statics" / "webui" / "masonry.html").read_text(encoding="utf-8")
+    assert "/static/js/webui/masonry.js?v={{APP_VERSION}}-usernsfw1" in masonry_html
 
 
 def test_webui_multi_user_i18n_keys_exist_for_all_locales() -> None:
@@ -341,5 +370,5 @@ def test_webui_multi_user_i18n_keys_exist_for_all_locales() -> None:
         assert data["config"]["schema"]["fields"]["webuiUsers"]["label"]
         assert data["config"]["schema"]["fields"]["webuiUsers"]["desc"]
         users = data["config"]["webuiUsers"]
-        for key in ("add", "empty", "username", "password", "displayName", "enabled", "remove"):
+        for key in ("add", "empty", "username", "password", "key", "displayName", "enabled", "allowNsfw", "remove"):
             assert users[key], f"{path.name} missing config.webuiUsers.{key}"
