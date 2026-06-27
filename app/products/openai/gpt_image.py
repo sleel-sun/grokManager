@@ -52,6 +52,7 @@ _INVALID_CREDENTIAL_MARKERS = (
     "invalid_api_key",
 )
 _GENERATION_FAILURE_COOLDOWN_S = 1800.0
+GPT_IMAGE_MODEL = "gpt-image-2"
 
 
 @dataclass(slots=True)
@@ -371,9 +372,16 @@ def _client_contextual_info() -> dict[str, Any]:
     }
 
 
+def _normalize_image_model(requested_model: str) -> str:
+    model = (requested_model or GPT_IMAGE_MODEL).strip()
+    if model in {"gpt-image-1", GPT_IMAGE_MODEL}:
+        return GPT_IMAGE_MODEL
+    return model or GPT_IMAGE_MODEL
+
+
 def _upstream_model(requested_model: str, is_free: bool) -> str:
-    model = (requested_model or "gpt-image-1").strip()
-    if model in {"gpt-image-1", "gpt-image-2"}:
+    model = _normalize_image_model(requested_model)
+    if model == GPT_IMAGE_MODEL:
         return "gpt-5-3"
     return model or "gpt-4o"
 
@@ -394,6 +402,15 @@ def _no_image_error(text: str) -> str:
     clean = str(text or "").strip()
     lower = clean.lower()
     if (
+        "free plan limit" in lower
+        or "limit for image" in lower
+        or "limit resets" in lower
+        or "usage limit" in lower
+        or "rate limit" in lower
+        or "too many requests" in lower
+    ):
+        return clean[:500] or "ChatGPT image generation quota exhausted"
+    if (
         "processing image" in lower
         or "creating images" in lower
         or "image is still being generated" in lower
@@ -405,6 +422,24 @@ def _no_image_error(text: str) -> str:
     if "image_group" in clean or "image" in clean:
         return "ChatGPT returned image search results instead of a generated image"
     return clean[:500] or "ChatGPT image generation returned no images"
+
+
+def _no_image_exception(text: str) -> UpstreamError:
+    message = _no_image_error(text)
+    lower = f"{text} {message}".lower()
+    status = (
+        429
+        if (
+            "free plan limit" in lower
+            or "limit for image" in lower
+            or "limit resets" in lower
+            or "usage limit" in lower
+            or "rate limit" in lower
+            or "too many requests" in lower
+        )
+        else 502
+    )
+    return UpstreamError(message, status=status, body=str(text or "")[:500])
 
 
 def _consume_sse_payload(
@@ -655,11 +690,39 @@ def _extract_image_ids(mapping: dict[str, Any]) -> list[str]:
     return file_ids
 
 
-async def _poll_image_ids(
+def _extract_assistant_text(mapping: dict[str, Any]) -> str:
+    latest_time = -1.0
+    latest_text = ""
+    for node in (mapping or {}).values():
+        if not isinstance(node, dict):
+            continue
+        message = node.get("message") if isinstance(node.get("message"), dict) else {}
+        author = message.get("author") if isinstance(message.get("author"), dict) else {}
+        content = message.get("content") if isinstance(message.get("content"), dict) else {}
+        if author.get("role") != "assistant" or content.get("content_type") != "text":
+            continue
+        parts = content.get("parts")
+        if not isinstance(parts, list) or not parts:
+            continue
+        text = str(parts[0] or "").strip()
+        if not text:
+            continue
+        try:
+            create_time = float(message.get("create_time") or 0.0)
+        except (TypeError, ValueError):
+            create_time = 0.0
+        if create_time >= latest_time:
+            latest_time = create_time
+            latest_text = text
+    return latest_text
+
+
+async def _poll_image_result(
     session: aiohttp.ClientSession,
     context: _ChatGPTContext,
     conversation_id: str,
-) -> list[str]:
+) -> tuple[list[str], str]:
+    last_text = ""
     deadline = time.monotonic() + 180.0
     while time.monotonic() < deadline:
         response = await _request(
@@ -680,11 +743,35 @@ async def _poll_image_ids(
                 payload = await response.json(content_type=None)
                 file_ids = _extract_image_ids(payload.get("mapping") or {})
                 if file_ids:
-                    return file_ids
+                    return file_ids, last_text
+                text = _extract_assistant_text(payload.get("mapping") or {})
+                if text:
+                    last_text = text
+                    if any(
+                        marker in text.lower()
+                        for marker in (
+                            "free plan limit",
+                            "limit for image",
+                            "limit resets",
+                            "usage limit",
+                            "rate limit",
+                            "too many requests",
+                        )
+                    ):
+                        return [], last_text
             except Exception:
                 pass
         await asyncio.sleep(3)
-    return []
+    return [], last_text
+
+
+async def _poll_image_ids(
+    session: aiohttp.ClientSession,
+    context: _ChatGPTContext,
+    conversation_id: str,
+) -> list[str]:
+    file_ids, _text = await _poll_image_result(session, context, conversation_id)
+    return file_ids
 
 
 async def _fetch_download_url(
@@ -770,17 +857,24 @@ async def _generate_one_inner(account: GPTImageAccount, prompt: str, model: str)
             is_free=account.is_free,
         )
         if conversation_id and not file_ids:
-            file_ids = await _poll_image_ids(session, context, conversation_id)
+            file_ids, polled_text = await _poll_image_result(session, context, conversation_id)
+            text = polled_text or text
         if not file_ids:
-            raise UpstreamError(_no_image_error(text), status=502)
+            raise _no_image_exception(text)
         download_url = await _fetch_download_url(session, context, conversation_id, file_ids[0])
         if not download_url:
             raise UpstreamError("ChatGPT image generation returned no download URL", status=502)
         return await _download_base64(session, context, download_url)
 
 
-async def _generate_one(account: GPTImageAccount, prompt: str, model: str) -> _GeneratedImage:
-    timeout_s = _generation_timeout_s()
+async def _generate_one(
+    account: GPTImageAccount,
+    prompt: str,
+    model: str,
+    *,
+    timeout_s: float | None = None,
+) -> _GeneratedImage:
+    timeout_s = max(1.0, float(timeout_s or _generation_timeout_s()))
     try:
         return await asyncio.wait_for(
             _generate_one_inner(account, prompt, model),
@@ -835,7 +929,7 @@ async def _gpt_image_accounts() -> list[GPTImageAccount]:
     seen_tokens: set[str] = set()
     for account in sorted(
         candidates,
-        key=lambda item: 0 if item.status_key.startswith("gpt_image_") else 1,
+        key=lambda item: 1 if item.status_key.startswith("gpt_image_") else 0,
     ):
         token_key = _token_key(account.access_token)
         if token_key in blocked_tokens or token_key in seen_tokens:
@@ -862,20 +956,22 @@ def _is_gpt_credential_record(record: Any) -> bool:
 
 def _record_access_token(ext: dict[str, Any]) -> str:
     return str(
-        ext.get("gpt_image_access_token")
-        or ext.get("gpt_access_token")
+        ext.get("gpt_access_token")
+        or ext.get("gpt_image_access_token")
         or ""
     ).strip()
 
 
 def _record_credentials(ext: dict[str, Any]) -> tuple[str, str, str]:
-    email = str(ext.get("gpt_image_email") or ext.get("gpt_email") or "").strip()
-    password = str(ext.get("gpt_image_password") or ext.get("gpt_password") or "").strip()
-    mail_token = str(ext.get("gpt_image_mail_token") or ext.get("gpt_mail_token") or "").strip()
+    email = str(ext.get("gpt_email") or ext.get("gpt_image_email") or "").strip()
+    password = str(ext.get("gpt_password") or ext.get("gpt_image_password") or "").strip()
+    mail_token = str(ext.get("gpt_mail_token") or ext.get("gpt_image_mail_token") or "").strip()
     return email, password, mail_token
 
 
 def _record_is_free(ext: dict[str, Any]) -> bool:
+    if "gpt_image_is_free" in ext:
+        return bool(ext.get("gpt_image_is_free"))
     if ext.get("gpt_image"):
         return bool(ext.get("gpt_image_is_free"))
     plan = str(ext.get("gpt_plan_type") or "").strip().lower()
@@ -883,18 +979,18 @@ def _record_is_free(ext: dict[str, Any]) -> bool:
 
 
 def _record_patch_keys(ext: dict[str, Any]) -> tuple[str, str, str, str]:
-    if ext.get("gpt_image"):
+    if ext.get("gpt") or any(key in ext for key in ("gpt_access_token", "gpt_status")):
         return (
-            "gpt_image_access_token",
-            "gpt_image_status",
-            "gpt_image_error",
-            "gpt_image_login_attempt_at",
+            "gpt_access_token",
+            "gpt_status",
+            "gpt_registration_error",
+            "gpt_login_attempt_at",
         )
     return (
-        "gpt_access_token",
-        "gpt_status",
-        "gpt_registration_error",
-        "gpt_login_attempt_at",
+        "gpt_image_access_token",
+        "gpt_image_status",
+        "gpt_image_error",
+        "gpt_image_login_attempt_at",
     )
 
 
@@ -1213,9 +1309,9 @@ def _test_result(
     return {
         "id": record.token,
         "ok": ok,
-        "kind": "gpt_image" if ext.get("gpt_image") else "gpt",
-        "email": ext.get("gpt_image_email") or ext.get("gpt_email"),
-        "alias": ext.get("gpt_image_alias") or ext.get("gpt_alias"),
+        "kind": "gpt" if ext.get("gpt") else "gpt_image",
+        "email": ext.get("gpt_email") or ext.get("gpt_image_email"),
+        "alias": ext.get("gpt_alias") or ext.get("gpt_image_alias"),
         "capability_status": status,
         "capability_error": error or None,
         "has_access_token": bool(token),
@@ -1268,8 +1364,9 @@ async def _run_generation(prompt: str, model: str, n: int) -> list[_GeneratedIma
     if not accounts:
         raise RateLimitError("No currently usable GPT image accounts configured")
 
+    deadline = time.monotonic() + _generation_timeout_s()
     images: list[_GeneratedImage] = []
-    failures: list[str] = []
+    failures: list[tuple[int | None, str]] = []
     last_exc: BaseException | None = None
     account_index = 0
     max_attempts = _max_account_attempts_per_image(len(accounts))
@@ -1278,14 +1375,23 @@ async def _run_generation(prompt: str, model: str, n: int) -> list[_GeneratedIma
         for _attempt in range(max_attempts):
             account = accounts[account_index % len(accounts)]
             account_index += 1
+            remaining_s = deadline - time.monotonic()
+            if remaining_s <= 1.0:
+                last_exc = UpstreamError(
+                    f"ChatGPT image generation timed out after {_generation_timeout_s():g}s",
+                    status=504,
+                    body="timeout",
+                )
+                failures.append((last_exc.status, str(last_exc)))
+                break
             try:
-                images.append(await _generate_one(account, prompt, model))
+                images.append(await _generate_one(account, prompt, model, timeout_s=remaining_s))
                 await _mark_account_success(account)
                 generated = True
                 break
             except Exception as exc:
                 last_exc = exc
-                failures.append(str(exc))
+                failures.append((exc.status if isinstance(exc, AppError) else None, str(exc)))
                 await _mark_account_failure(account, exc)
                 logger.warning(
                     "gpt image account attempt failed: account={} error={}",
@@ -1297,7 +1403,26 @@ async def _run_generation(prompt: str, model: str, n: int) -> list[_GeneratedIma
     if not images:
         if isinstance(last_exc, AppError) and last_exc.status not in {401, 403, 429}:
             raise last_exc
-        detail = failures[-1] if failures else "no account attempts were made"
+        quota_detail = next(
+            (
+                message
+                for status, message in reversed(failures)
+                if status == 429
+                or any(
+                    marker in message.lower()
+                    for marker in (
+                        "free plan limit",
+                        "limit for image",
+                        "limit resets",
+                        "usage limit",
+                        "rate limit",
+                        "too many requests",
+                    )
+                )
+            ),
+            "",
+        )
+        detail = quota_detail or (failures[-1][1] if failures else "no account attempts were made")
         raise RateLimitError(f"GPT image generation failed across configured accounts: {detail}")
     return images
 
@@ -1317,6 +1442,7 @@ async def generate(
     if not (1 <= n <= 4):
         raise ValidationError("n must be between 1 and 4 for GPT image models", param="n")
 
+    model = _normalize_image_model(model)
     response_id = make_response_id()
 
     if stream:

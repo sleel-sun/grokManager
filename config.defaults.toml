@@ -68,8 +68,8 @@ video_format = "grok_url"
 
 # ==================== 模型别名配置 ====================
 [models]
-# grok-composer-2.5-fast 的实际 Console Responses 底层模型。
-# 上游不直接暴露 grok-composer-2.5-fast 模型 ID，因此通过可用 Console 模型
+# grok-composer-2.5 的实际 Console Responses 底层模型。
+# 上游不直接暴露 grok-composer-2.5 模型 ID，因此通过可用 Console 模型
 # 加输入触发词实现；如账号明确具备 multi-agent 权限，可改为 grok-4.20-multi-agent。
 composer_fast_upstream_model = "grok-4.3"
 
@@ -175,7 +175,7 @@ login_retry_cooldown_s = 300
 # ChatGPT GPT 图片生成总超时秒数；上游经常异步出图，默认给足轮询窗口
 timeout = 180
 # 每张 GPT 图片在同一个 HTTP 请求内最多尝试的账号数；调高会增加客户端等待时间
-max_account_attempts_per_image = 1
+max_account_attempts_per_image = 4
 
 
 # ==================== 视频配置 ====================

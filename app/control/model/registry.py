@@ -48,7 +48,7 @@ MODELS: tuple[ModelSpec, ...] = (
     ModelSpec("grok-4.3-medium",                        ModeId.CONSOLE,  Tier.BASIC, Capability.CHAT,       True, "Grok 4.3 Medium",        upstream_profile="console_responses", upstream_model="grok-4.3", console_fixed_effort="medium"),
     ModelSpec("grok-4.3-low",                           ModeId.CONSOLE,  Tier.BASIC, Capability.CHAT,       True, "Grok 4.3 Low",           upstream_profile="console_responses", upstream_model="grok-4.3", console_fixed_effort="low"),
     ModelSpec("grok-build-console",                     ModeId.CONSOLE,  Tier.BASIC, Capability.CHAT,       True, "Grok Build Console",     upstream_profile="console_responses", upstream_model="grok-build-0.1"),
-    ModelSpec("grok-composer-2.5-fast",                 ModeId.CONSOLE,  Tier.BASIC, Capability.CHAT,       True, "Grok Composer 2.5 Fast", upstream_profile="console_responses", upstream_model="grok-4.3", upstream_model_config_key="models.composer_fast_upstream_model", console_input_prefix="grok-composer-2.5-fast"),
+    ModelSpec("grok-composer-2.5",                      ModeId.CONSOLE,  Tier.BASIC, Capability.CHAT,       True, "Grok Composer 2.5",      upstream_profile="console_responses", upstream_model="grok-4.3", upstream_model_config_key="models.composer_fast_upstream_model", console_input_prefix="grok-composer-2.5"),
 
     # === grok-4.3 (grok-420-computer-use-sa) ==================================
     # Super+（basic 池不支持此模式）
@@ -62,7 +62,7 @@ MODELS: tuple[ModelSpec, ...] = (
     ModelSpec("grok-imagine-image",                     ModeId.AUTO,     Tier.SUPER, Capability.IMAGE,      True, "Grok Imagine Image"),
     ModelSpec("grok-imagine-image-pro",                 ModeId.AUTO,     Tier.SUPER, Capability.IMAGE,      True, "Grok Imagine Image Pro"),
     # ChatGPT image accounts
-    ModelSpec("gpt-image-1",                             ModeId.CONSOLE,  Tier.BASIC, Capability.IMAGE,      True, "GPT Image 1",            upstream_profile="chatgpt_image", upstream_model="gpt-image-1"),
+    ModelSpec("gpt-image-1",                             ModeId.CONSOLE,  Tier.BASIC, Capability.IMAGE,      True, "GPT Image 1",            upstream_profile="chatgpt_image", upstream_model="gpt-image-2"),
     ModelSpec("gpt-image-2",                             ModeId.CONSOLE,  Tier.BASIC, Capability.IMAGE,      True, "GPT Image 2",            upstream_profile="chatgpt_image", upstream_model="gpt-image-2"),
 
     # === Image Edit =========================================================

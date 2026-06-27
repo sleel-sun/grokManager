@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -10,7 +11,7 @@ from app.control.account.commands import AccountPatch, AccountUpsert
 from app.control.account.enums import AccountStatus
 from app.control.account.models import AccountRecord
 from app.control.model.registry import resolve
-from app.platform.errors import UpstreamError
+from app.platform.errors import RateLimitError, UpstreamError
 from app.products.openai import gpt_image
 from app.products.web.admin.gpt_accounts import gpt_account_credential_record_token
 from app.products.web.admin.gpt_image_accounts import (
@@ -30,6 +31,7 @@ def test_gpt_image_models_are_registered_as_image_models() -> None:
     assert one.is_image()
     assert two.is_image()
     assert one.upstream_profile == "chatgpt_image"
+    assert one.upstream_model_name() == "gpt-image-2"
     assert two.upstream_model_name() == "gpt-image-2"
 
 
@@ -38,11 +40,11 @@ def test_gpt_image_account_record_token_is_stable_and_non_secret() -> None:
     second = account_record_token("token-a")
 
     assert first == second
-    assert first.startswith("gptimg_")
+    assert first.startswith("gpt_")
     assert "token-a" not in first
 
 
-def test_gpt_image_account_ext_marks_unchecked_image_account() -> None:
+def test_gpt_image_account_ext_uses_unified_gpt_account_shape() -> None:
     item = GPTImageAccountItem(
         access_token="Bearer abc123",
         email="user@example.test",
@@ -53,13 +55,14 @@ def test_gpt_image_account_ext_marks_unchecked_image_account() -> None:
     ext = _ext_for_item(item)
 
     assert item.access_token == "abc123"
-    assert ext["gpt_image"] is True
-    assert ext["gpt_image_access_token"] == "abc123"
+    assert ext["gpt"] is True
+    assert ext["gpt_access_token"] == "abc123"
+    assert ext["gpt_plan_type"] == "free"
     assert ext["gpt_image_is_free"] is True
-    assert ext["gpt_image_status"] == "unchecked"
+    assert ext["gpt_status"] == "unchecked"
 
 
-def test_gpt_image_account_credentials_can_register_without_access_token() -> None:
+def test_gpt_image_account_credentials_map_to_unified_gpt_record() -> None:
     item = GPTImageAccountItem(
         email=" Image@Example.test ",
         password="chat-pass",
@@ -70,28 +73,29 @@ def test_gpt_image_account_credentials_can_register_without_access_token() -> No
     ext = _ext_for_item(item)
     record_token = account_credential_record_token(item.email or "")
 
-    assert record_token.startswith("gptimgcred_")
+    assert record_token.startswith("gptcred_")
     assert "Image@Example" not in record_token
-    assert ext["gpt_image_access_token"] is None
-    assert ext["gpt_image_email"] == "Image@Example.test"
-    assert ext["gpt_image_password"] == "chat-pass"
-    assert ext["gpt_image_mail_token"] == "mail-token"
-    assert ext["gpt_image_email_provider"] == "DuckMail"
-    assert ext["gpt_image_status"] == "login_required"
+    assert ext["gpt_access_token"] is None
+    assert ext["gpt_email"] == "Image@Example.test"
+    assert ext["gpt_password"] == "chat-pass"
+    assert ext["gpt_mail_token"] == "mail-token"
+    assert ext["gpt_email_provider"] == "DuckMail"
+    assert ext["gpt_status"] == "login_required"
 
 
 def test_gpt_image_account_summary_and_secret_export() -> None:
     record = AccountRecord(
-        token="gptimg_123",
-        tags=["gpt-image"],
+        token="gpt_123",
+        tags=["gpt"],
         ext={
-            "gpt_image": True,
-            "gpt_image_access_token": "image-access-secret",
-            "gpt_image_email": "image@example.test",
-            "gpt_image_password": "password-secret",
-            "gpt_image_mail_token": "mail-secret",
+            "gpt": True,
+            "gpt_access_token": "image-access-secret",
+            "gpt_email": "image@example.test",
+            "gpt_password": "password-secret",
+            "gpt_mail_token": "mail-secret",
+            "gpt_plan_type": "free",
             "gpt_image_is_free": True,
-            "gpt_image_status": "available",
+            "gpt_status": "available",
         },
     )
 
@@ -150,10 +154,35 @@ def test_gpt_image_no_image_error_sanitizes_processing_queue_text() -> None:
 
 
 def test_gpt_image_upstream_model_uses_gpt5_for_paid_image2() -> None:
-    assert gpt_image._upstream_model("gpt-image-1", is_free=True) == "gpt-5-3"
-    assert gpt_image._upstream_model("gpt-image-1", is_free=False) == "gpt-5-3"
+    assert gpt_image._normalize_image_model("gpt-image-1") == "gpt-image-2"
+    assert gpt_image._normalize_image_model("gpt-image-2") == "gpt-image-2"
     assert gpt_image._upstream_model("gpt-image-2", is_free=True) == "gpt-5-3"
     assert gpt_image._upstream_model("gpt-image-2", is_free=False) == "gpt-5-3"
+
+
+def test_gpt_image_generate_routes_compat_model_to_image2(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    async def fake_run_generation(prompt: str, model: str, n: int):
+        captured.update({"prompt": prompt, "model": model, "n": n})
+        return [
+            gpt_image._GeneratedImage(
+                b64_json=base64.b64encode(b"image").decode("ascii"),
+            )
+        ]
+
+    monkeypatch.setattr(gpt_image, "_run_generation", fake_run_generation)
+
+    result = asyncio.run(
+        gpt_image.generate(
+            model="gpt-image-1",
+            prompt="draw a cube",
+            response_format="b64_json",
+        )
+    )
+
+    assert captured == {"prompt": "draw a cube", "model": "gpt-image-2", "n": 1}
+    assert result["data"][0]["b64_json"] == base64.b64encode(b"image").decode("ascii")
 
 
 def test_gpt_image_account_import_uses_disabled_status_patch_shape() -> None:
@@ -161,16 +190,16 @@ def test_gpt_image_account_import_uses_disabled_status_patch_shape() -> None:
     upsert = AccountUpsert(
         token=account_record_token(access_token),
         pool="basic",
-        tags=["gpt-image"],
+        tags=["gpt"],
         ext=_ext_for_item(GPTImageAccountItem(access_token=access_token)),
     )
     patch = AccountPatch(
         token=upsert.token,
         status=AccountStatus.DISABLED,
-        state_reason="GPT image-only account; excluded from Grok SSO pool",
+        state_reason="GPT account record; excluded from Grok SSO pool",
     )
 
-    assert upsert.ext["gpt_image_access_token"] == access_token
+    assert upsert.ext["gpt_access_token"] == access_token
     assert patch.status == AccountStatus.DISABLED
 
 
@@ -211,6 +240,30 @@ def test_gpt_image_accounts_accepts_unchecked_access_token() -> None:
     assert account.access_token == "unchecked-access-token"
     assert account.status_key == "gpt_image_status"
     assert account.error_key == "gpt_image_error"
+
+
+def test_gpt_image_accounts_prefer_unified_fields_on_migrated_record() -> None:
+    record = AccountRecord(
+        token="gptimg_123",
+        tags=["gpt-image", "gpt"],
+        ext={
+            "gpt_image": True,
+            "gpt_image_access_token": "legacy-access-token",
+            "gpt_image_status": "invalid",
+            "gpt": True,
+            "gpt_access_token": "unified-access-token",
+            "gpt_status": "available",
+            "gpt_plan_type": "plus",
+        },
+    )
+
+    account = asyncio.run(gpt_image._account_from_record(record))
+
+    assert account is not None
+    assert account.access_token == "unified-access-token"
+    assert account.status_key == "gpt_status"
+    assert account.error_key == "gpt_registration_error"
+    assert account.is_free is False
 
 
 def test_gpt_image_accounts_skip_invalid_access_token() -> None:
@@ -281,7 +334,7 @@ def test_gpt_image_accounts_skip_recent_image_search_failure() -> None:
     assert account is None
 
 
-def test_gpt_image_accounts_dedupe_tokens_and_prioritize_image_records(monkeypatch) -> None:
+def test_gpt_image_accounts_dedupe_tokens_and_prioritize_unified_gpt_records(monkeypatch) -> None:
     class FakeRepo:
         async def list_accounts(self, query):
             return SimpleNamespace(
@@ -321,7 +374,7 @@ def test_gpt_image_accounts_dedupe_tokens_and_prioritize_image_records(monkeypat
 
     accounts = asyncio.run(gpt_image._gpt_image_accounts())
 
-    assert [item.record_token for item in accounts] == ["gptimg_1", "gptimg_2"]
+    assert [item.record_token for item in accounts] == ["gpt_1", "gptimg_1"]
 
 
 def test_gpt_image_accounts_block_duplicate_token_after_image_timeout(monkeypatch) -> None:
@@ -548,7 +601,7 @@ def test_gpt_image_run_generation_defaults_to_single_account_attempt(monkeypatch
     async def fake_accounts():
         return accounts
 
-    async def fail_generate(account, prompt, model):
+    async def fail_generate(account, prompt, model, *, timeout_s=None):
         attempts.append(account.record_token)
         raise UpstreamError("ChatGPT image generation timed out after 180s", status=504)
 
@@ -565,7 +618,71 @@ def test_gpt_image_run_generation_defaults_to_single_account_attempt(monkeypatch
     assert attempts == ["gptimg_1"]
 
 
-def test_account_admin_page_exposes_gpt_image_account_panel() -> None:
+def test_gpt_image_run_generation_uses_single_request_timeout_budget(monkeypatch) -> None:
+    accounts = [
+        gpt_image.GPTImageAccount(record_token="gptimg_1", access_token="token-1"),
+        gpt_image.GPTImageAccount(record_token="gptimg_2", access_token="token-2"),
+    ]
+    attempts: list[tuple[str, float | None]] = []
+
+    async def fake_accounts():
+        return accounts
+
+    async def slow_fail_generate(account, prompt, model, *, timeout_s=None):
+        attempts.append((account.record_token, timeout_s))
+        await asyncio.sleep(0.25)
+        raise UpstreamError("You've hit the Free plan limit for image generations requests.", status=429)
+
+    async def mark_failure(account, exc):
+        return None
+
+    monkeypatch.setattr(gpt_image, "_gpt_image_accounts", fake_accounts)
+    monkeypatch.setattr(gpt_image, "_generation_timeout_s", lambda: 1.1)
+    monkeypatch.setattr(gpt_image, "_max_account_attempts_per_image", lambda count: 2)
+    monkeypatch.setattr(gpt_image, "_generate_one", slow_fail_generate)
+    monkeypatch.setattr(gpt_image, "_mark_account_failure", mark_failure)
+
+    with pytest.raises(UpstreamError) as excinfo:
+        asyncio.run(gpt_image._run_generation("draw", "gpt-image-2", 1))
+
+    assert excinfo.value.status == 504
+    assert [item[0] for item in attempts] == ["gptimg_1"]
+    assert attempts[0][1] is not None
+    assert attempts[0][1] <= 1.1
+
+
+def test_gpt_image_run_generation_prefers_quota_failure_detail(monkeypatch) -> None:
+    accounts = [
+        gpt_image.GPTImageAccount(record_token="gpt_1", access_token="token-1"),
+        gpt_image.GPTImageAccount(record_token="gpt_2", access_token="token-2"),
+    ]
+    attempts: list[str] = []
+
+    async def fake_accounts():
+        return accounts
+
+    async def fake_generate(account, prompt, model, *, timeout_s=None):
+        attempts.append(account.record_token)
+        if account.record_token == "gpt_1":
+            raise UpstreamError("You've hit the Free plan limit for image generations requests.", status=429)
+        raise UpstreamError('ChatGPT image generation failed: upstream returned 401: {"detail":"Unauthorized"}', status=401)
+
+    async def mark_failure(account, exc):
+        return None
+
+    monkeypatch.setattr(gpt_image, "_gpt_image_accounts", fake_accounts)
+    monkeypatch.setattr(gpt_image, "_max_account_attempts_per_image", lambda count: 2)
+    monkeypatch.setattr(gpt_image, "_generate_one", fake_generate)
+    monkeypatch.setattr(gpt_image, "_mark_account_failure", mark_failure)
+
+    with pytest.raises(RateLimitError) as excinfo:
+        asyncio.run(gpt_image._run_generation("draw", "gpt-image-2", 1))
+
+    assert attempts == ["gpt_1", "gpt_2"]
+    assert "Free plan limit" in str(excinfo.value)
+
+
+def test_account_admin_page_uses_unified_gptchat_account_panel() -> None:
     html = (
         Path(__file__).resolve().parent.parent
         / "app"
@@ -574,15 +691,19 @@ def test_account_admin_page_exposes_gpt_image_account_panel() -> None:
         / "account.html"
     ).read_text(encoding="utf-8")
 
-    assert 'id="modal-gpt-image"' in html
-    assert 'id="gpt-image-tbody"' in html
-    assert "_api('GET', '/gpt-image/accounts')" in html
-    assert "_api('POST', '/gpt-image/accounts'" in html
-    assert "_api('POST', '/gpt-image/accounts/test'" in html
-    assert "_api('DELETE', '/gpt-image/accounts'" in html
+    assert "GPTChat 账号池" in html
+    assert 'id="gpt-account-tbody"' in html
+    assert 'id="modal-gpt-account-add"' in html
+    assert "_api('GET', '/gpt/accounts')" in html
+    assert "_api('POST', '/gpt/accounts'" in html
+    assert "_api('POST', '/gpt/accounts/test'" in html
+    assert "_api('DELETE', '/gpt/accounts'" in html
+    assert 'id="modal-gpt-image"' not in html
+    assert 'id="gpt-image-tbody"' not in html
+    assert "/gpt-image/accounts" not in html
 
 
-def test_maintainer_page_exposes_gpt_image_registration_panel() -> None:
+def test_maintainer_page_uses_unified_gptchat_registration_panel() -> None:
     html = (
         Path(__file__).resolve().parent.parent
         / "app"
@@ -591,12 +712,14 @@ def test_maintainer_page_exposes_gpt_image_registration_panel() -> None:
         / "maintainer.html"
     ).read_text(encoding="utf-8")
 
-    assert 'id="gpt-image-form"' in html
-    assert 'id="gpt-image-email"' in html
-    assert 'id="gpt-image-access-tokens"' in html
-    assert 'id="gpt-image-bulk-credentials"' in html
-    assert 'id="gpt-image-test-btn"' in html
-    assert "readGPTImagePayload()" in html
-    assert "parseGPTImageBulkCredentials(" in html
-    assert "api('POST', '/gpt-image/accounts'" in html
-    assert "runGPTAccountTest('/gpt-image/accounts/test'" in html
+    assert "GPTChat 账号批量注册" in html
+    assert 'id="gpt-account-form"' in html
+    assert 'id="gpt-account-oauth-tokens"' in html
+    assert 'id="gpt-account-bulk-credentials"' in html
+    assert 'id="gpt-account-test-btn"' in html
+    assert "parseGPTAccountBulkCredentials(" in html
+    assert "api('POST', '/gpt/accounts'" in html
+    assert "runGPTAccountTest('/gpt/accounts/test'" in html
+    assert 'id="gpt-image-form"' not in html
+    assert "readGPTImagePayload()" not in html
+    assert "/gpt-image/accounts" not in html

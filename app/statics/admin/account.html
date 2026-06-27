@@ -604,7 +604,7 @@
     /* Dialogs */
     #modal-import .modal,
     #modal-import-file .modal,
-    #modal-gpt-image .modal,
+    #modal-gpt-account-add .modal,
     #modal-gpt-login .modal { width:min(440px,92vw) }
     #modal-export .modal {
       width:min(440px,92vw);
@@ -928,10 +928,10 @@
     <div class="gpt-image-head">
       <div>
         <div class="gpt-image-title-row">
-          <div class="gpt-image-title">普通 GPT 账号</div>
+          <div class="gpt-image-title">GPTChat 账号池</div>
           <span class="section-count-badge" id="gpt-account-count">0</span>
         </div>
-        <div class="gpt-image-sub">用于 ChatGPT/Codex 普通账号的 OAuth access token，可在此测试、登录获取 token 和删除。</div>
+        <div class="gpt-image-sub">统一管理 ChatGPT access token 和登录凭据，普通 GPT 与 gpt-image-2 生图共用这一组账号。</div>
       </div>
       <div class="gpt-image-actions">
         <button type="button" onclick="testAllGptAccounts()" class="page-action-btn">
@@ -942,6 +942,9 @@
         </button>
         <button type="button" onclick="openGptAccountLogin()" class="page-action-btn page-action-btn-primary">
           <span>登录返回 Token</span>
+        </button>
+        <button type="button" onclick="openGptAccountAdd()" class="page-action-btn page-action-btn-primary">
+          <span>新增账号</span>
         </button>
       </div>
     </div>
@@ -958,47 +961,7 @@
           </tr>
         </thead>
         <tbody id="gpt-account-tbody">
-          <tr><td colspan="6" class="gpt-image-empty">尚未导入普通 GPT 账号。</td></tr>
-        </tbody>
-      </table>
-    </div>
-  </div>
-
-  <div class="gpt-image-card">
-    <div class="gpt-image-head">
-      <div>
-        <div class="gpt-image-title-row">
-          <div class="gpt-image-title" data-i18n="account.gptImageTitle">GPT 图片账号</div>
-          <span class="section-count-badge" id="gpt-image-count">0</span>
-        </div>
-        <div class="gpt-image-sub" data-i18n="account.gptImageSubtitle">用于 gpt-image-1 / gpt-image-2 的 ChatGPT access token，独立于 xAI 账户池。</div>
-      </div>
-      <div class="gpt-image-actions">
-        <button type="button" onclick="testAllGptImageAccounts()" class="page-action-btn">
-          <span>测试全部</span>
-        </button>
-        <button type="button" onclick="loadGptImageAccounts()" class="page-action-btn">
-          <span data-i18n="account.gptImageRefresh">刷新</span>
-        </button>
-        <button type="button" onclick="openGptImageAdd()" class="page-action-btn page-action-btn-primary">
-          <span data-i18n="account.gptImageAdd">新增 GPT</span>
-        </button>
-      </div>
-    </div>
-    <div class="gpt-image-table-wrap">
-      <table class="gpt-image-table">
-        <thead>
-          <tr>
-            <th data-i18n="account.gptImageColToken">Access Token</th>
-            <th data-i18n="account.gptImageColAccount">账号</th>
-            <th data-i18n="account.gptImageColType">类型</th>
-            <th data-i18n="account.gptImageColStatus">状态</th>
-            <th data-i18n="account.gptImageColUpdated">更新时间</th>
-            <th data-i18n="account.colActions">操作</th>
-          </tr>
-        </thead>
-        <tbody id="gpt-image-tbody">
-          <tr><td colspan="6" class="gpt-image-empty" data-i18n="account.gptImageEmpty">尚未导入 GPT 图片账号。</td></tr>
+          <tr><td colspan="6" class="gpt-image-empty">尚未导入 GPTChat 账号。</td></tr>
         </tbody>
       </table>
     </div>
@@ -1344,7 +1307,7 @@
 <!-- ── GPT Account Login Modal ──────────────────────────────────────────── -->
 <div class="modal-overlay" id="modal-gpt-login">
   <div class="modal">
-    <div class="modal-title">普通 GPT 账号登录</div>
+    <div class="modal-title">GPTChat 账号登录</div>
     <div class="dialog-body">
       <div class="dialog-help">使用 OAuth 跳转登录获取 token；也可用已保存账号或手工填写邮箱、密码、mailToken 自动登录。</div>
       <div class="dialog-field">
@@ -1397,26 +1360,19 @@
   </div>
 </div>
 
-<!-- ── GPT Image Account Modal ───────────────────────────────────────────── -->
-<div class="modal-overlay" id="modal-gpt-image">
+<!-- ── GPTChat Account Add Modal ─────────────────────────────────────────── -->
+<div class="modal-overlay" id="modal-gpt-account-add">
   <div class="modal">
-    <div class="modal-title" data-i18n="account.gptImageModalTitle">新增 GPT 图片账号</div>
+    <div class="modal-title">新增 GPTChat 账号</div>
     <div class="dialog-body">
       <div>
-        <div class="dialog-help" data-i18n="account.gptImageModalHelp">每行一个 ChatGPT access token；也支持每行一个 JSON 对象，字段可包含 access_token、email、alias、is_free。</div>
-        <textarea class="input dialog-textarea" id="gpt-image-tokens" rows="8" placeholder="Bearer eyJ...&#10;{&quot;access_token&quot;:&quot;eyJ...&quot;,&quot;email&quot;:&quot;user@example.com&quot;}" data-i18n-placeholder="account.gptImagePlaceholder"></textarea>
-      </div>
-      <div class="dialog-field" style="margin-top:12px">
-        <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
-          <input type="checkbox" id="gpt-image-is-free" style="margin:0">
-          <span data-i18n="account.gptImageFree">按免费账号导入</span>
-        </label>
-        <div style="font-size:12px;color:var(--fg-muted);margin-top:4px" data-i18n="account.gptImageFreeHint">免费账号会使用保守的 ChatGPT 图片模型路由。</div>
+        <div class="dialog-help">每行一个 ChatGPT access token；也支持每行一个 JSON 对象，字段可包含 access_token、email、alias、plan_type，或 email/password/mail_token 凭据。</div>
+        <textarea class="input dialog-textarea" id="gpt-account-add-lines" rows="8" placeholder="Bearer eyJ...&#10;{&quot;access_token&quot;:&quot;eyJ...&quot;,&quot;email&quot;:&quot;user@example.com&quot;,&quot;plan_type&quot;:&quot;plus&quot;}"></textarea>
       </div>
     </div>
     <div class="dialog-actions">
-      <button onclick="closeModal('modal-gpt-image')" class="dialog-btn" data-i18n="account.cancel">取消</button>
-      <button onclick="doAddGptImageAccounts()" class="dialog-btn dialog-btn-primary" data-i18n="account.gptImageAdd">新增 GPT</button>
+      <button onclick="closeModal('modal-gpt-account-add')" class="dialog-btn" data-i18n="account.cancel">取消</button>
+      <button onclick="doAddGptAccounts()" class="dialog-btn dialog-btn-primary">新增账号</button>
     </div>
   </div>
 </div>
@@ -1489,10 +1445,8 @@ const PAGE_SIZE_OPTIONS = [50, 100, 200, 500, 1000, 2000];
 
 let allTokens = [], curStatus = 'all', curNsfw = 'all', curPool = 'all', curPage = 1, pageSize = loadSavedPageSize();
 let gptAccounts = [], gptAccountLoadError = null;
-let gptImageAccounts = [], gptImageLoadError = null;
 let gptOAuthSession = null;
 const gptAccountTesting = new Set();
-const gptImageTesting = new Set();
 const sel = new Set();
 const refreshingTokens = new Set();
 let _cb = null;
@@ -1539,7 +1493,6 @@ function applyAccountI18n() {
   if (pageSizeSel) pageSizeSel.value = String(pageSize);
   updateImportFileState();
   renderGptAccounts();
-  renderGptImageAccounts();
   render();
 }
 
@@ -1583,11 +1536,10 @@ let selectionStrategy = 'quota';
 // ── Load ───────────────────────────────────────────────────────────────────
 async function load() {
   try {
-    const [data, status, gptAccountData, gptImageData] = await Promise.all([
+    const [data, status, gptAccountData] = await Promise.all([
       _api('GET', '/tokens'),
       _api('GET', '/status').catch(() => null),
       _api('GET', '/gpt/accounts').catch((error) => ({ accounts: [], error })),
-      _api('GET', '/gpt-image/accounts').catch((error) => ({ accounts: [], error })),
     ]);
     if (status && typeof status.selection_strategy === 'string') {
       selectionStrategy = status.selection_strategy;
@@ -1599,8 +1551,6 @@ async function load() {
     allTokens = tokenItems.filter(t => !isExternalGptToken(t));
     gptAccounts = Array.isArray(gptAccountData.accounts) ? gptAccountData.accounts : [];
     gptAccountLoadError = gptAccountData.error || null;
-    gptImageAccounts = Array.isArray(gptImageData.accounts) ? gptImageData.accounts : [];
-    gptImageLoadError = gptImageData.error || null;
     applyStrategyUI();
     invalidateTokenView();
     render();
@@ -1621,7 +1571,6 @@ function applyStrategyUI() {
 function render() {
   const view = getTokenView();
   renderGptAccounts();
-  renderGptImageAccounts();
   renderStats(view);
   renderFilters(view);
   renderTable(view);
@@ -1648,7 +1597,7 @@ async function loadGptAccounts() {
   } catch (e) {
     gptAccountLoadError = e;
     renderGptAccounts();
-    showToast(`普通 GPT 账号加载失败: ${e.message}`, 'error');
+    showToast(`GPTChat 账号加载失败: ${e.message}`, 'error');
   }
 }
 
@@ -1658,11 +1607,11 @@ function renderGptAccounts() {
   const tbody = document.getElementById('gpt-account-tbody');
   if (!tbody) return;
   if (gptAccountLoadError) {
-    tbody.innerHTML = `<tr><td colspan="6" class="gpt-image-empty">普通 GPT 账号加载失败: ${xh(gptAccountLoadError.message || gptAccountLoadError)}</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="6" class="gpt-image-empty">GPTChat 账号加载失败: ${xh(gptAccountLoadError.message || gptAccountLoadError)}</td></tr>`;
     return;
   }
   if (!gptAccounts.length) {
-    tbody.innerHTML = '<tr><td colspan="6" class="gpt-image-empty">尚未导入普通 GPT 账号。</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="6" class="gpt-image-empty">尚未导入 GPTChat 账号。</td></tr>';
     return;
   }
   tbody.innerHTML = gptAccounts.map(gptAccountRowHtml).join('');
@@ -1706,35 +1655,6 @@ function gptAccountRowHtml(account) {
   </tr>`;
 }
 
-async function loadGptImageAccounts() {
-  try {
-    const data = await _api('GET', '/gpt-image/accounts');
-    gptImageAccounts = Array.isArray(data.accounts) ? data.accounts : [];
-    gptImageLoadError = null;
-    renderGptImageAccounts();
-  } catch (e) {
-    gptImageLoadError = e;
-    renderGptImageAccounts();
-    showToast(`${tr('account.gptImageLoadFailed', null, 'GPT 图片账号加载失败')}: ${e.message}`, 'error');
-  }
-}
-
-function renderGptImageAccounts() {
-  const count = document.getElementById('gpt-image-count');
-  if (count) count.textContent = gptImageAccounts.length;
-  const tbody = document.getElementById('gpt-image-tbody');
-  if (!tbody) return;
-  if (gptImageLoadError) {
-    tbody.innerHTML = `<tr><td colspan="6" class="gpt-image-empty">${xh(tr('account.gptImageLoadFailed', null, 'GPT 图片账号加载失败'))}: ${xh(gptImageLoadError.message || gptImageLoadError)}</td></tr>`;
-    return;
-  }
-  if (!gptImageAccounts.length) {
-    tbody.innerHTML = `<tr><td colspan="6" class="gpt-image-empty">${xh(tr('account.gptImageEmpty', null, '尚未导入 GPT 图片账号。'))}</td></tr>`;
-    return;
-  }
-  tbody.innerHTML = gptImageAccounts.map(gptImageRowHtml).join('');
-}
-
 function gptImageStatusMeta(status) {
   const s = String(status || 'unknown');
   const map = {
@@ -1749,42 +1669,6 @@ function gptImageStatusMeta(status) {
     unknown: ['badge-disabled', tr('account.unknown', null, '未知')],
   };
   return map[s] || ['badge-disabled', s];
-}
-
-function gptImageRowHtml(account) {
-  const id = String(account.id || '');
-  const token = account.access_token_masked || mask(id);
-  const label = account.alias || account.email || id;
-  const email = account.email || '';
-  const typeLabel = account.is_free
-    ? tr('account.gptImageTypeFree', null, '免费')
-    : tr('account.gptImageTypePaid', null, '付费');
-  const status = account.capability_status || account.status || tr('account.unknown', null, '未知');
-  const [statusClass, statusLabel] = gptImageStatusMeta(status);
-  const statusDetail = account.capability_error
-    ? `<div class="gpt-image-account-meta" title="${xe(account.capability_error)}">${xh(account.capability_error)}</div>`
-    : '';
-  const isTesting = gptImageTesting.has(id);
-  return `<tr>
-    <td><span class="tok">${xh(token)}</span></td>
-    <td>
-      <div class="gpt-image-account-main">
-        <span class="gpt-image-account-name">${xh(label)}</span>
-        <span class="gpt-image-account-meta">${xh(email && email !== label ? email : id)}</span>
-      </div>
-    </td>
-    <td><span class="badge badge-basic">${xh(typeLabel)}</span></td>
-    <td><span class="badge ${statusClass}" title="${xe(status)}">${xh(statusLabel)}</span>${statusDetail}</td>
-    <td style="color:#9a9a9a">${xh(fmtDate(account.updated_at))}</td>
-    <td>
-      <button onclick="testGptImageAccount('${xe(id)}')" class="row-icon-btn" data-tip="${xe(isTesting ? '测试中' : '测试')}" aria-label="${xe(isTesting ? '测试中' : '测试')}" ${isTesting ? 'disabled' : ''}>
-        <svg viewBox="0 0 24 24" stroke-width="1.8"><path d="M20 6 9 17l-5-5"/></svg>
-      </button>
-      <button onclick="deleteGptImageAccount('${xe(id)}')" class="row-icon-btn row-icon-danger" data-tip="${xe(tr('account.actionDelete', null, '删除'))}" aria-label="${xe(tr('account.actionDelete', null, '删除'))}">
-        <svg viewBox="0 0 24 24" stroke-width="1.8"><path d="M5 7h14"/><path d="M9 7V4h6v3"/><path d="M8 10v7"/><path d="M12 10v7"/><path d="M16 10v7"/><path d="M7 7l1 13h8l1-13"/></svg>
-      </button>
-    </td>
-  </tr>`;
 }
 
 function getTokenView() {
@@ -2244,10 +2128,9 @@ function openImport() {
   openModal('modal-import-file');
 }
 
-function openGptImageAdd() {
-  document.getElementById('gpt-image-tokens').value = '';
-  document.getElementById('gpt-image-is-free').checked = false;
-  openModal('modal-gpt-image');
+function openGptAccountAdd() {
+  document.getElementById('gpt-account-add-lines').value = '';
+  openModal('modal-gpt-account-add');
 }
 
 function openGptAccountLogin(accountId = '') {
@@ -2379,7 +2262,7 @@ async function saveTokens(pool, newToks, autoNsfw, modalId, pendingMessage, succ
   } catch (e) { showToast(`${errorPrefix}: ${e.message}`, 'error'); }
 }
 
-function parseGptImageAccountLines(raw, defaultIsFree) {
+function parseGptAccountLines(raw) {
   const lines = raw.split(/\r?\n/).map(s => s.trim()).filter(Boolean);
   const accounts = [];
   const seen = new Set();
@@ -2391,12 +2274,20 @@ function parseGptImageAccountLines(raw, defaultIsFree) {
       } catch {
         throw new Error(tr('account.jsonInvalid', null, 'JSON 格式错误'));
       }
+      if (item && typeof item === 'object') {
+        item = {
+          ...item,
+          access_token: String(item.access_token || item.accessToken || '').trim(),
+          mail_token: String(item.mail_token || item.mailToken || '').trim(),
+          email_provider: String(item.email_provider || item.emailProvider || '').trim(),
+          plan_type: String(item.plan_type || item.planType || '').trim(),
+        };
+      }
       const hasToken = item && typeof item === 'object' && item.access_token;
       const hasCredentials = item && typeof item === 'object' && item.email && item.password && item.mail_token;
       if (!hasToken && !hasCredentials) {
-        throw new Error(tr('account.gptImageJsonInvalid', null, 'GPT 图片账号 JSON 必须包含 access_token，或同时包含 email、password、mail_token'));
+        throw new Error('GPTChat 账号 JSON 必须包含 access_token，或同时包含 email、password、mail_token');
       }
-      if (item.is_free == null) item.is_free = defaultIsFree;
     }
     const token = typeof item === 'string' ? item : item.access_token;
     const key = String(token || (item && item.email) || '').replace(/^Bearer\s+/i, '').trim().toLowerCase();
@@ -2415,12 +2306,12 @@ async function doGptAccountLogin() {
   const timeout = Number(document.getElementById('gpt-login-timeout').value || 90);
   const save = !!document.getElementById('gpt-login-save').checked;
   if (!account && (!email || !password || !mailToken)) {
-    return showToast('请选择已保存普通 GPT 账号，或填写邮箱、密码和 mailToken', 'error');
+    return showToast('请选择已保存 GPTChat 账号，或填写邮箱、密码和 mailToken', 'error');
   }
   const btn = document.getElementById('gpt-login-submit');
   btn.disabled = true;
   try {
-    showToast('普通 GPT 账号登录中…', 'info');
+    showToast('GPTChat 账号登录中…', 'info');
     const data = await _api('POST', '/gpt/accounts/login', {
       account,
       email,
@@ -2430,10 +2321,10 @@ async function doGptAccountLogin() {
       save,
     });
     document.getElementById('gpt-login-token-result').value = data.access_token || '';
-    showToast('普通 GPT 登录成功，已返回 token', 'success');
+    showToast('GPTChat 登录成功，已返回 token', 'success');
     await loadGptAccounts();
   } catch (e) {
-    showToast(`普通 GPT 登录失败: ${e.message}`, 'error');
+    showToast(`GPTChat 登录失败: ${e.message}`, 'error');
   } finally {
     btn.disabled = false;
   }
@@ -2463,7 +2354,7 @@ async function startGptAccountOAuthLogin() {
   const btn = document.getElementById('gpt-oauth-start');
   btn.disabled = true;
   try {
-    showToast('正在生成普通 GPT OAuth 授权链接…', 'info');
+    showToast('正在生成 GPTChat OAuth 授权链接…', 'info');
     const data = await _api('POST', '/gpt/accounts/oauth/start', {
       account,
       email_hint: email,
@@ -2489,7 +2380,7 @@ async function finishGptAccountOAuthLogin() {
   const btn = document.getElementById('gpt-oauth-finish');
   btn.disabled = true;
   try {
-    showToast('正在用 callback 换取普通 GPT token…', 'info');
+    showToast('正在用 callback 换取 GPTChat token…', 'info');
     const data = await _api('POST', '/gpt/accounts/oauth/finish', {
       session_id: gptOAuthSession.session_id,
       callback,
@@ -2500,10 +2391,10 @@ async function finishGptAccountOAuthLogin() {
     document.getElementById('gpt-login-token-result').value = data.access_token || '';
     gptOAuthSession = null;
     updateGptOAuthSessionUI();
-    showToast('普通 GPT OAuth 登录成功，已返回 token', 'success');
+    showToast('GPTChat OAuth 登录成功，已返回 token', 'success');
     await loadGptAccounts();
   } catch (e) {
-    showToast(`普通 GPT OAuth 换 token 失败: ${e.message}`, 'error');
+    showToast(`GPTChat OAuth 换 token 失败: ${e.message}`, 'error');
   } finally {
     btn.disabled = false;
     updateGptOAuthSessionUI();
@@ -2522,33 +2413,24 @@ async function copyGptLoginToken() {
   return copy(token);
 }
 
-async function doAddGptImageAccounts() {
-  const raw = document.getElementById('gpt-image-tokens').value;
-  const isFree = !!document.getElementById('gpt-image-is-free').checked;
+async function doAddGptAccounts() {
+  const raw = document.getElementById('gpt-account-add-lines').value;
   let accounts;
   try {
-    accounts = parseGptImageAccountLines(raw, isFree);
+    accounts = parseGptAccountLines(raw);
   } catch (e) {
     return showToast(e.message, 'error');
   }
-  if (!accounts.length) return showToast(tr('account.gptImageEnterToken', null, '请输入 GPT 图片 access token'), 'error');
+  if (!accounts.length) return showToast('请输入 GPTChat access token 或账号凭据', 'error');
   try {
-    showToast(tr('account.gptImageAdding', { n: accounts.length }, `正在添加 ${accounts.length} 个 GPT 图片账号…`), 'info');
-    const d = await _api('POST', '/gpt-image/accounts', { accounts, is_free: isFree });
-    closeModal('modal-gpt-image');
-    showToast(tr('account.gptImageAddDone', { n: d.count || accounts.length }, `GPT 图片账号已添加：${d.count || accounts.length} 个`), 'success');
+    showToast(`正在添加 ${accounts.length} 个 GPTChat 账号…`, 'info');
+    const d = await _api('POST', '/gpt/accounts', { accounts });
+    closeModal('modal-gpt-account-add');
+    showToast(`GPTChat 账号已添加：${d.count || accounts.length} 个`, 'success');
     load();
   } catch (e) {
-    showToast(`${tr('account.gptImageAddFailed', null, 'GPT 图片账号添加失败')}: ${e.message}`, 'error');
+    showToast(`GPTChat 账号添加失败: ${e.message}`, 'error');
   }
-}
-
-function gptImageTestSummary(data) {
-  const summary = (data && data.summary) || {};
-  const total = Number(summary.total) || 0;
-  const ok = Number(summary.ok) || 0;
-  const fail = Number(summary.fail) || Math.max(0, total - ok);
-  return `GPT 图片账号测试完成：可用 ${ok} / ${total}，失败 ${fail}`;
 }
 
 function gptAccountTestSummary(data) {
@@ -2556,7 +2438,7 @@ function gptAccountTestSummary(data) {
   const total = Number(summary.total) || 0;
   const ok = Number(summary.ok) || 0;
   const fail = Number(summary.fail) || Math.max(0, total - ok);
-  return `普通 GPT 账号测试完成：可用 ${ok} / ${total}，失败 ${fail}`;
+  return `GPTChat 账号测试完成：可用 ${ok} / ${total}，失败 ${fail}`;
 }
 
 async function testGptAccount(id) {
@@ -2564,13 +2446,13 @@ async function testGptAccount(id) {
   gptAccountTesting.add(id);
   renderGptAccounts();
   try {
-    showToast('正在测试普通 GPT 账号…', 'info');
+    showToast('正在测试 GPTChat 账号…', 'info');
     const data = await _api('POST', '/gpt/accounts/test', { accounts: [id] });
     const fail = Number((data.summary || {}).fail) || 0;
     showToast(gptAccountTestSummary(data), fail ? 'error' : 'success');
     await loadGptAccounts();
   } catch (e) {
-    showToast(`普通 GPT 账号测试失败: ${e.message}`, 'error');
+    showToast(`GPTChat 账号测试失败: ${e.message}`, 'error');
   } finally {
     gptAccountTesting.delete(id);
     renderGptAccounts();
@@ -2579,19 +2461,19 @@ async function testGptAccount(id) {
 
 async function testAllGptAccounts() {
   if (!gptAccounts.length) {
-    return showToast('尚未导入普通 GPT 账号', 'error');
+    return showToast('尚未导入 GPTChat 账号', 'error');
   }
   const ids = gptAccounts.map(item => item.id).filter(Boolean);
   ids.forEach(id => gptAccountTesting.add(id));
   renderGptAccounts();
   try {
-    showToast(`正在测试 ${ids.length} 个普通 GPT 账号…`, 'info');
+    showToast(`正在测试 ${ids.length} 个 GPTChat 账号…`, 'info');
     const data = await _api('POST', '/gpt/accounts/test', { accounts: ids });
     const fail = Number((data.summary || {}).fail) || 0;
     showToast(gptAccountTestSummary(data), fail ? 'error' : 'success');
     await loadGptAccounts();
   } catch (e) {
-    showToast(`普通 GPT 账号测试失败: ${e.message}`, 'error');
+    showToast(`GPTChat 账号测试失败: ${e.message}`, 'error');
   } finally {
     gptAccountTesting.clear();
     renderGptAccounts();
@@ -2602,74 +2484,16 @@ function deleteGptAccount(id) {
   const account = gptAccounts.find(item => item.id === id) || {};
   const label = account.email || account.access_token_masked || mask(id);
   openConfirm(
-    '删除普通 GPT 账号',
-    `确认删除普通 GPT 账号 <code>${xh(label)}</code>？<br><small style="color:var(--error)">此操作不可撤销。</small>`,
+    '删除 GPTChat 账号',
+    `确认删除 GPTChat 账号 <code>${xh(label)}</code>？<br><small style="color:var(--error)">此操作不可撤销。</small>`,
     async () => {
       try {
-        showToast('正在删除普通 GPT 账号…', 'info');
+        showToast('正在删除 GPTChat 账号…', 'info');
         await _api('DELETE', '/gpt/accounts', [id]);
-        showToast('普通 GPT 账号已删除', 'success');
+        showToast('GPTChat 账号已删除', 'success');
         load();
       } catch (e) {
-        showToast(`普通 GPT 账号删除失败: ${e.message}`, 'error');
-      }
-    },
-  );
-}
-
-async function testGptImageAccount(id) {
-  if (!id || gptImageTesting.has(id)) return;
-  gptImageTesting.add(id);
-  renderGptImageAccounts();
-  try {
-    showToast('正在测试 GPT 图片账号…', 'info');
-    const data = await _api('POST', '/gpt-image/accounts/test', { accounts: [id] });
-    const fail = Number((data.summary || {}).fail) || 0;
-    showToast(gptImageTestSummary(data), fail ? 'error' : 'success');
-    await loadGptImageAccounts();
-  } catch (e) {
-    showToast(`GPT 图片账号测试失败: ${e.message}`, 'error');
-  } finally {
-    gptImageTesting.delete(id);
-    renderGptImageAccounts();
-  }
-}
-
-async function testAllGptImageAccounts() {
-  if (!gptImageAccounts.length) {
-    return showToast('尚未导入 GPT 图片账号', 'error');
-  }
-  const ids = gptImageAccounts.map(item => item.id).filter(Boolean);
-  ids.forEach(id => gptImageTesting.add(id));
-  renderGptImageAccounts();
-  try {
-    showToast(`正在测试 ${ids.length} 个 GPT 图片账号…`, 'info');
-    const data = await _api('POST', '/gpt-image/accounts/test', { accounts: ids });
-    const fail = Number((data.summary || {}).fail) || 0;
-    showToast(gptImageTestSummary(data), fail ? 'error' : 'success');
-    await loadGptImageAccounts();
-  } catch (e) {
-    showToast(`GPT 图片账号测试失败: ${e.message}`, 'error');
-  } finally {
-    gptImageTesting.clear();
-    renderGptImageAccounts();
-  }
-}
-
-function deleteGptImageAccount(id) {
-  const account = gptImageAccounts.find(item => item.id === id) || {};
-  const label = account.access_token_masked || mask(id);
-  openConfirm(
-    tr('account.gptImageDeleteTitle', null, '删除 GPT 图片账号'),
-    tr('account.gptImageDeleteBody', { token: `<code>${xh(label)}</code>` }, `确认删除 GPT 图片账号 <code>${xh(label)}</code>？<br><small style="color:var(--error)">此操作不可撤销。</small>`),
-    async () => {
-      try {
-        showToast(tr('account.gptImageDeleting', null, '正在删除 GPT 图片账号…'), 'info');
-        await _api('DELETE', '/gpt-image/accounts', [id]);
-        showToast(tr('account.gptImageDeleteDone', null, 'GPT 图片账号已删除'), 'success');
-        load();
-      } catch (e) {
-        showToast(`${tr('account.gptImageDeleteFailed', null, 'GPT 图片账号删除失败')}: ${e.message}`, 'error');
+        showToast(`GPTChat 账号删除失败: ${e.message}`, 'error');
       }
     },
   );
