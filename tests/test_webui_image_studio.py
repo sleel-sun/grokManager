@@ -37,6 +37,9 @@ def test_image_studio_page_route_and_header_entry_exist() -> None:
     assert "HISTORY_ENDPOINT" in js
     assert "|| 'gpt-image-2'" in js
     assert "payload.edits.filter((item) => GPT_MODELS.has" in js
+    assert "function clearPromptInput()" in js
+    assert "clearPromptInput();" in js
+    assert "restorePromptInput(prompt);" in js
 
 
 def test_webui_image_generation_uses_webui_wrapper(monkeypatch, tmp_path) -> None:

@@ -1,5 +1,7 @@
 import asyncio
 import base64
+import importlib
+import json
 from io import BytesIO
 from types import SimpleNamespace
 import unittest
@@ -10,6 +12,7 @@ from PIL import Image
 from app.control.account.enums import FeedbackKind
 from app.platform.errors import UpstreamError, ValidationError
 from app.products.openai.images import _prepare_edit_reference, _prepare_edit_references
+from app.products.openai.schemas import ImageGenerationRequest
 
 
 class _FakeConfig:
@@ -146,6 +149,55 @@ class ImageGenerationErrorTests(unittest.TestCase):
 
 
 class ImageGenerationOutputTests(unittest.TestCase):
+    def test_standalone_generation_defaults_to_b64_json(self) -> None:
+        router_module = importlib.import_module("app.products.openai.router")
+
+        captured: dict[str, object] = {}
+
+        async def fake_generate(**kwargs):
+            captured.update(kwargs)
+            return {"created": 1, "data": [{"b64_json": "aW1hZ2U="}]}
+
+        req = ImageGenerationRequest(model="gpt-image-2", prompt="draw a cat")
+        with patch("app.products.openai.images.generate", side_effect=fake_generate):
+            response = asyncio.run(router_module.image_generations(req))
+
+        body = json.loads(response.body)
+        self.assertEqual(captured["response_format"], "b64_json")
+        self.assertEqual(body["data"][0]["b64_json"], "aW1hZ2U=")
+
+    def test_standalone_generation_preserves_explicit_url_format(self) -> None:
+        router_module = importlib.import_module("app.products.openai.router")
+
+        captured: dict[str, object] = {}
+
+        async def fake_generate(**kwargs):
+            captured.update(kwargs)
+            return {"created": 1, "data": [{"url": "/v1/files/image?id=abc"}]}
+
+        req = ImageGenerationRequest(
+            model="gpt-image-2",
+            prompt="draw a cat",
+            response_format="url",
+        )
+        with patch("app.products.openai.images.generate", side_effect=fake_generate):
+            response = asyncio.run(router_module.image_generations(req))
+
+        body = json.loads(response.body)
+        self.assertEqual(captured["response_format"], "url")
+        self.assertEqual(body["data"][0]["url"], "/v1/files/image?id=abc")
+
+    def test_standalone_generation_accepts_camel_case_response_format(self) -> None:
+        req = ImageGenerationRequest.model_validate(
+            {
+                "model": "gpt-image-2",
+                "prompt": "draw a cat",
+                "responseFormat": "b64_json",
+            }
+        )
+
+        self.assertEqual(req.response_format, "b64_json")
+
     def test_content_asset_url_file_id_falls_back_to_route_safe_hash(self) -> None:
         from app.products.openai import images
 
