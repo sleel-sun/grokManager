@@ -9,7 +9,7 @@ def test_single_gpt_registration_pushes_available_account(monkeypatch) -> None:
     class FakeClient:
         def run_register(self, email: str, password: str, mail_token: str, **_kwargs):
             assert email == "user@example.com"
-            assert password
+            assert password == "FixedGPT!123"
             assert mail_token == "mail-token"
             return False, "123456"
 
@@ -24,7 +24,7 @@ def test_single_gpt_registration_pushes_available_account(monkeypatch) -> None:
     )
 
     result = gpt.run_single_gpt_registration(
-        {"api": {}},
+        {"api": {}, "gpt": {"fixed_password": "FixedGPT!123"}},
         client_factory=FakeClient,
         push_account=lambda _conf, item: pushed.append(item),
     )
@@ -189,6 +189,91 @@ def test_chatgpt_session_logout_url_does_not_wrap_login_endpoint() -> None:
     assert "auth%2Flogin" not in url
     assert "next=https%3A%2F%2Fchatgpt.com%2F" in url
     assert "callbackUrl=https%3A%2F%2Fchatgpt.com%2F" in url
+
+
+def test_register_flow_sends_otp_with_password_continue_url(monkeypatch) -> None:
+    events: list[tuple[str, str]] = []
+
+    class FakeRegisterClient(gpt.ChatGPTRegistrationClient):
+        def __init__(self) -> None:
+            pass
+
+        def visit_homepage(self) -> None:
+            events.append(("visit", ""))
+
+        def get_csrf(self) -> str:
+            return "csrf"
+
+        def signin(self, email: str, csrf: str) -> str:
+            return "authorize-url"
+
+        def authorize(self, url: str) -> str:
+            return "https://auth.openai.com/create-account/password"
+
+        def register_password(self, email: str, password: str) -> str:
+            events.append(("register_password", email))
+            return "/email-verification"
+
+        def send_otp(self, *, referer: str | None = None) -> None:
+            events.append(("send_otp", referer or ""))
+
+        def validate_otp(self, code: str) -> str:
+            events.append(("validate_otp", code))
+            return "/about-you"
+
+        def create_account(self, name: str, birthdate: str) -> bool:
+            events.append(("create_account", name))
+            return False
+
+        def perform_callback(self, url: str = "") -> str:
+            events.append(("callback", url))
+            return "https://chatgpt.com/"
+
+    monkeypatch.setattr(gpt, "_wait_for_code", lambda *_args, **_kwargs: "123456")
+
+    result = FakeRegisterClient().run_register("user@example.test", "pw", "mail-token")
+
+    assert result == (False, "123456")
+    assert ("send_otp", "/email-verification") in events
+
+
+def test_register_flow_sends_otp_when_authorize_starts_on_verification(monkeypatch) -> None:
+    send_refs: list[str] = []
+
+    class FakeRegisterClient(gpt.ChatGPTRegistrationClient):
+        def __init__(self) -> None:
+            pass
+
+        def visit_homepage(self) -> None:
+            return None
+
+        def get_csrf(self) -> str:
+            return "csrf"
+
+        def signin(self, email: str, csrf: str) -> str:
+            return "authorize-url"
+
+        def authorize(self, url: str) -> str:
+            return "https://auth.openai.com/email-verification"
+
+        def send_otp(self, *, referer: str | None = None) -> None:
+            send_refs.append(referer or "")
+
+        def validate_otp(self, code: str) -> str:
+            return "/about-you"
+
+        def create_account(self, name: str, birthdate: str) -> bool:
+            return False
+
+        def perform_callback(self, url: str = "") -> str:
+            return "https://chatgpt.com/"
+
+    monkeypatch.setattr(gpt, "_wait_for_code", lambda *_args, **_kwargs: "654321")
+
+    result = FakeRegisterClient().run_register("user@example.test", "pw", "mail-token")
+
+    assert result == (False, "654321")
+    assert send_refs == ["https://auth.openai.com/email-verification"]
 
 
 def test_chatgpt_session_text_parser_reads_access_token_and_email() -> None:

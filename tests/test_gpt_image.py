@@ -286,6 +286,66 @@ def test_gpt_image_send_conversation_uses_direct_backend_api(monkeypatch) -> Non
     assert captured["released"] is True
 
 
+def test_gpt_image_edit_reference_upload_adds_azure_blob_header(monkeypatch) -> None:
+    requests: list[dict[str, object]] = []
+
+    class FakeResponse:
+        ok = True
+        status = 200
+
+        def __init__(self, payload: dict[str, object] | None = None) -> None:
+            self._payload = payload or {}
+
+        async def json(self, content_type=None):
+            return self._payload
+
+        def release(self) -> None:
+            pass
+
+    async def fake_request(_session, method: str, url: str, **kwargs):
+        requests.append({"method": method, "url": url, **kwargs})
+        if method == "POST" and url.endswith("/backend-api/files"):
+            return FakeResponse(
+                {
+                    "file_id": "file_ref_1",
+                    "upload_url": (
+                        "https://account.blob.core.windows.net/container/ref.png?sig=test"
+                    ),
+                    "requiredHeaders": {"x-ms-meta-origin": "chatgpt"},
+                }
+            )
+        if method == "PUT":
+            return FakeResponse()
+        if method == "POST" and url.endswith("/backend-api/files/file_ref_1/uploaded"):
+            return FakeResponse()
+        raise AssertionError(f"unexpected request {method} {url}")
+
+    monkeypatch.setattr(gpt_image, "_request", fake_request)
+    context = gpt_image._ChatGPTContext(
+        access_token="access-token",
+        device_id="device-id",
+        script="sdk.js",
+        dpl="build",
+    )
+
+    reference = asyncio.run(
+        gpt_image._upload_edit_reference(
+            None,
+            context,
+            "data:image/png;base64,aW1hZ2U=",
+            0,
+        )
+    )
+
+    put_request = next(request for request in requests if request["method"] == "PUT")
+    headers = put_request["headers"]
+    assert reference.file_id == "file_ref_1"
+    assert put_request["data"] == b"image"
+    assert headers["content-type"] == "image/png"
+    assert headers["x-ms-blob-type"] == "BlockBlob"
+    assert headers["x-ms-meta-origin"] == "chatgpt"
+
+
 def test_gpt_image_send_edit_conversation_uses_gpt_image_2(monkeypatch) -> None:
     captured: dict[str, object] = {}
 

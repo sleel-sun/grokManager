@@ -208,7 +208,8 @@
     .filter-chip-count.is-green,
     .filter-chip-count.is-orange,
     .filter-chip-count.is-red,
-    .filter-chip-count.is-purple { color:inherit }
+    .filter-chip-count.is-purple,
+    .filter-chip-count.is-blue { color:inherit }
 
     /* Toolbar row above table */
     .table-toolbar {
@@ -606,7 +607,26 @@
     #modal-import-file .modal,
     #modal-gpt-account-add .modal,
     #modal-gpt-login .modal { width:min(440px,92vw) }
-    #modal-gpt-account-detail .modal { width:min(620px,94vw) }
+    #modal-gpt-account-detail {
+      align-items:flex-start;
+      overflow:auto;
+      padding:18px 0;
+    }
+    #modal-gpt-account-detail .modal {
+      width:min(620px,94vw);
+      max-height:calc(100vh - 36px);
+      display:flex;
+      flex-direction:column;
+      overflow:hidden;
+    }
+    #modal-gpt-account-detail .dialog-body {
+      min-height:0;
+      overflow:auto;
+      padding-right:2px;
+    }
+    #modal-gpt-account-detail .dialog-actions {
+      flex:0 0 auto;
+    }
     #modal-export .modal {
       width:min(440px,92vw);
       padding-top:14px;
@@ -843,7 +863,7 @@
     }
     .gpt-overview-grid {
       display:grid;
-      grid-template-columns:repeat(6, minmax(0, 1fr));
+      grid-template-columns:repeat(7, minmax(0, 1fr));
       gap:8px;
       margin-top:14px;
     }
@@ -875,8 +895,74 @@
     .gpt-overview-value.is-orange { color:#b47a3d }
     .gpt-overview-value.is-red { color:#b66a63 }
     .gpt-overview-value.is-blue { color:#4c76b2 }
-    .gpt-image-table-wrap {
+    .gpt-account-toolbar {
+      display:flex;
+      align-items:center;
+      justify-content:space-between;
+      gap:10px;
       margin-top:14px;
+      color:#8f8f8f;
+      font-size:12px;
+      font-weight:500;
+      flex-wrap:wrap;
+    }
+    .gpt-account-toolbar-left,
+    .gpt-account-toolbar-actions {
+      display:flex;
+      align-items:center;
+      gap:6px;
+    }
+    .gpt-account-filter-summary {
+      white-space:nowrap;
+      color:#aaa;
+    }
+    .gpt-account-batch-btn {
+      height:28px;
+      padding:0 10px;
+      border-radius:999px;
+      display:inline-flex;
+      align-items:center;
+      justify-content:center;
+      font:inherit;
+      color:#8f8f8f;
+      background:#fafafa;
+      border:1px solid transparent;
+      white-space:nowrap;
+    }
+    .gpt-account-batch-btn:hover {
+      color:#555;
+      background:#f3f3f3;
+    }
+    .gpt-account-batch-btn:disabled {
+      opacity:.4;
+      pointer-events:none;
+    }
+    .gpt-account-batch-danger {
+      color:#b7726a;
+    }
+    .gpt-account-batch-danger:hover {
+      color:#92514b;
+      background:#fbf3f2;
+    }
+    .gpt-account-selection-count {
+      min-width:56px;
+      color:#aaa;
+      white-space:nowrap;
+    }
+    .gpt-account-search {
+      width:220px !important;
+      height:28px;
+      border-radius:999px;
+      font:inherit;
+      color:#555;
+      background:#fafafa;
+      border-color:transparent;
+    }
+    .gpt-account-search::placeholder {
+      color:#aaa;
+    }
+    .gpt-image-table-wrap {
+      margin-top:8px;
       border-radius:12px;
       overflow:auto;
       background:#fdfcf9;
@@ -992,6 +1078,12 @@
       grid-column:1 / -1;
     }
     @media (max-width: 720px) {
+      #modal-gpt-account-detail {
+        padding:10px 0;
+      }
+      #modal-gpt-account-detail .modal {
+        max-height:calc(100vh - 20px);
+      }
       .gpt-image-head {
         flex-direction:column;
       }
@@ -1003,6 +1095,19 @@
       }
       .gpt-overview-grid {
         grid-template-columns:repeat(2, minmax(0, 1fr));
+      }
+      .gpt-account-toolbar {
+        align-items:flex-start;
+        flex-direction:column;
+      }
+      .gpt-account-toolbar-actions {
+        width:100%;
+      }
+      .gpt-account-selection-count {
+        min-width:0;
+      }
+      .gpt-account-search {
+        width:min(220px, 100%) !important;
       }
       .gpt-detail-hero {
         flex-direction:column;
@@ -1076,6 +1181,10 @@
         <div class="gpt-overview-value is-green" id="gpt-overview-available">0</div>
       </div>
       <div class="gpt-overview-cell">
+        <div class="gpt-overview-label">总可用额度</div>
+        <div class="gpt-overview-value is-green" id="gpt-overview-quota">0</div>
+      </div>
+      <div class="gpt-overview-cell">
         <div class="gpt-overview-label">待处理</div>
         <div class="gpt-overview-value is-orange" id="gpt-overview-pending">0</div>
       </div>
@@ -1092,10 +1201,115 @@
         <div class="gpt-overview-value" id="gpt-overview-credentials">0</div>
       </div>
     </div>
+    <div class="gpt-account-toolbar">
+      <div class="gpt-account-toolbar-left">
+        <button onclick="prevGptAccountPage()" class="pagi-btn" id="gpt-btn-prev">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="15 18 9 12 15 6"/></svg>
+        </button>
+        <div class="pagi-meta">
+          <span class="pagi-page" id="gpt-pagi-page">0 / 0</span>
+        </div>
+        <button onclick="nextGptAccountPage()" class="pagi-btn" id="gpt-btn-next">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"/></svg>
+        </button>
+        <span class="gpt-account-selection-count" id="gpt-account-selection-count">已选 0</span>
+        <button type="button" onclick="selectGptAccountPage()" class="gpt-account-batch-btn" id="gpt-select-page-btn">选中本页</button>
+        <button type="button" onclick="selectGptAccountFiltered()" class="gpt-account-batch-btn" id="gpt-select-filtered-btn">选中筛选结果</button>
+        <button type="button" onclick="clearGptAccountSelection()" class="gpt-account-batch-btn" id="gpt-clear-selection-btn" disabled>清空选择</button>
+        <button type="button" onclick="deleteSelectedGptAccounts()" class="gpt-account-batch-btn gpt-account-batch-danger" id="gpt-delete-selected-btn" disabled>删除选中</button>
+      </div>
+      <div class="gpt-account-toolbar-actions">
+        <span class="gpt-account-filter-summary" id="gpt-account-filter-summary">全部账号</span>
+        <input
+          class="input gpt-account-search"
+          id="gpt-account-search"
+          type="search"
+          placeholder="搜索邮箱 / 别名 / ID"
+          autocomplete="off"
+          oninput="switchGptAccountQuery(this.value)"
+        >
+        <div class="toolbar-dropdown" id="gpt-account-filter-menu">
+          <button type="button" id="gpt-account-filter-btn" class="toolbar-icon-btn" aria-haspopup="menu" aria-expanded="false" data-tip="筛选 GPT 账号" aria-label="筛选 GPT 账号">
+            <svg viewBox="0 0 24 24" stroke-width="1.8"><path d="M4 6h16"/><path d="M7 12h10"/><path d="M10 18h4"/></svg>
+          </button>
+          <div class="toolbar-dropdown-panel" id="gpt-account-filter-panel" role="menu" aria-labelledby="gpt-account-filter-btn">
+            <div class="filter-bar">
+              <div class="filter-group">
+                <span class="filter-label">状态</span>
+                <div class="filter-chip-list">
+                  <button type="button" class="filter-chip active" data-gpt-status="all" onclick="switchGptAccountStatus('all')">
+                    <span>全部</span>
+                    <span class="filter-chip-count" id="gpt-fc-status-all">0</span>
+                  </button>
+                  <button type="button" class="filter-chip" data-gpt-status="available" onclick="switchGptAccountStatus('available')">
+                    <span>可用</span>
+                    <span class="filter-chip-count is-green" id="gpt-fc-status-available">0</span>
+                  </button>
+                  <button type="button" class="filter-chip" data-gpt-status="pending" onclick="switchGptAccountStatus('pending')">
+                    <span>待处理</span>
+                    <span class="filter-chip-count is-orange" id="gpt-fc-status-pending">0</span>
+                  </button>
+                  <button type="button" class="filter-chip" data-gpt-status="invalid" onclick="switchGptAccountStatus('invalid')">
+                    <span>异常</span>
+                    <span class="filter-chip-count is-red" id="gpt-fc-status-invalid">0</span>
+                  </button>
+                </div>
+              </div>
+              <div class="filter-group">
+                <span class="filter-label">套餐</span>
+                <div class="filter-chip-list" id="gpt-plan-filter-chips"></div>
+              </div>
+              <div class="filter-group">
+                <span class="filter-label">登录</span>
+                <div class="filter-chip-list">
+                  <button type="button" class="filter-chip active" data-gpt-login="all" onclick="switchGptAccountLogin('all')">
+                    <span>全部</span>
+                    <span class="filter-chip-count" id="gpt-fc-login-all">0</span>
+                  </button>
+                  <button type="button" class="filter-chip" data-gpt-login="token" onclick="switchGptAccountLogin('token')">
+                    <span>有 Token</span>
+                    <span class="filter-chip-count is-green" id="gpt-fc-login-token">0</span>
+                  </button>
+                  <button type="button" class="filter-chip" data-gpt-login="credentials" onclick="switchGptAccountLogin('credentials')">
+                    <span>可登录</span>
+                    <span class="filter-chip-count is-blue" id="gpt-fc-login-credentials">0</span>
+                  </button>
+                  <button type="button" class="filter-chip" data-gpt-login="missing_token" onclick="switchGptAccountLogin('missing_token')">
+                    <span>未登录</span>
+                    <span class="filter-chip-count" id="gpt-fc-login-missing-token">0</span>
+                  </button>
+                  <button type="button" class="filter-chip" data-gpt-login="legacy" onclick="switchGptAccountLogin('legacy')">
+                    <span>历史</span>
+                    <span class="filter-chip-count" id="gpt-fc-login-legacy">0</span>
+                  </button>
+                </div>
+              </div>
+              <div class="filter-group">
+                <span class="filter-label"></span>
+                <div class="filter-chip-list">
+                  <button type="button" class="filter-chip" onclick="resetGptAccountFilters()">
+                    <span>重置筛选</span>
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <select class="input toolbar-page-size" id="gpt-page-size-sel" onchange="changeGptAccountPageSize(this.value)">
+          <option value="10">10 / 页</option>
+          <option value="20">20 / 页</option>
+          <option value="50">50 / 页</option>
+          <option value="100">100 / 页</option>
+          <option value="200">200 / 页</option>
+          <option value="500">500 / 页</option>
+        </select>
+      </div>
+    </div>
     <div class="gpt-image-table-wrap">
       <table class="gpt-image-table">
         <thead>
           <tr>
+            <th><input type="checkbox" id="gpt-account-cb-all" onchange="toggleGptAccountPageSelection(this.checked)"></th>
             <th>Access Token</th>
             <th>账号</th>
             <th>计划</th>
@@ -1105,7 +1319,7 @@
           </tr>
         </thead>
         <tbody id="gpt-account-tbody">
-          <tr><td colspan="6" class="gpt-image-empty">尚未导入 GPTChat 账号。</td></tr>
+          <tr><td colspan="7" class="gpt-image-empty">尚未导入 GPTChat 账号。</td></tr>
         </tbody>
       </table>
     </div>
@@ -1530,6 +1744,7 @@
       <div class="dialog-help">请选择一个 GPTChat 账号查看详情。</div>
     </div>
     <div class="dialog-actions">
+      <button onclick="copyOpenGptAccountToken()" id="gpt-account-detail-copy-token" class="dialog-btn" disabled>复制 Token</button>
       <button onclick="refreshOpenGptAccountDetail()" id="gpt-account-detail-refresh" class="dialog-btn">刷新远端详情</button>
       <button onclick="closeModal('modal-gpt-account-detail')" class="dialog-btn">关闭</button>
     </div>
@@ -1601,17 +1816,23 @@
 // ── State ──────────────────────────────────────────────────────────────────
 const PAGE_SIZE_KEY = 'admin.account.page_size';
 const PAGE_SIZE_OPTIONS = [50, 100, 200, 500, 1000, 2000];
+const GPT_ACCOUNT_PAGE_SIZE_KEY = 'admin.account.gpt_page_size';
+const GPT_ACCOUNT_PAGE_SIZE_OPTIONS = [10, 20, 50, 100, 200, 500];
 
 let allTokens = [], curStatus = 'all', curNsfw = 'all', curPool = 'all', curPage = 1, pageSize = loadSavedPageSize();
+let gptAccountPage = 1, gptAccountPageSize = loadSavedGptAccountPageSize();
+let gptAccountStatus = 'all', gptAccountPlan = 'all', gptAccountLogin = 'all', gptAccountQuery = '';
 let gptAccounts = [], gptAccountLoadError = null;
 let gptOAuthSession = null;
 let _gptDetailAccountId = '';
 const gptAccountTesting = new Set();
+const gptAccountSelected = new Set();
 const sel = new Set();
 const refreshingTokens = new Set();
 let _cb = null;
 let _editingToken = '';
 let _filterMenuBound = false;
+let _gptAccountFilterMenuBound = false;
 let _tokenViewVersion = 0;
 let _tokenViewCacheKey = '';
 let _tokenViewCache = null;
@@ -1651,6 +1872,10 @@ function applyAccountI18n() {
   });
   const pageSizeSel = document.getElementById('page-size-sel');
   if (pageSizeSel) pageSizeSel.value = String(pageSize);
+  const gptPageSizeSel = document.getElementById('gpt-page-size-sel');
+  if (gptPageSizeSel) gptPageSizeSel.value = String(gptAccountPageSize);
+  const gptSearch = document.getElementById('gpt-account-search');
+  if (gptSearch) gptSearch.value = gptAccountQuery;
   updateImportFileState();
   renderGptAccounts();
   render();
@@ -1667,6 +1892,7 @@ function waitI18n() {
   if (typeof renderAdminHeader === 'function') await renderAdminHeader();
   if (typeof renderSiteFooter === 'function') await renderSiteFooter();
   initFilterMenu();
+  initGptAccountFilterMenu();
   const key = await adminKey.get();
   if (!key || !await verifyKey(ADMIN_API + '/verify', key).catch(() => false))
     return location.href = '/admin/login';
@@ -1762,20 +1988,124 @@ async function loadGptAccounts() {
 }
 
 function renderGptAccounts() {
+  const view = getGptAccountView();
+  pruneGptAccountSelection();
   const count = document.getElementById('gpt-account-count');
-  if (count) count.textContent = gptAccounts.length;
+  if (count) count.textContent = view.filteredItems.length;
+  renderGptAccountFilters(view);
   renderGptAccountOverview();
   const tbody = document.getElementById('gpt-account-tbody');
   if (!tbody) return;
   if (gptAccountLoadError) {
-    tbody.innerHTML = `<tr><td colspan="6" class="gpt-image-empty">GPTChat 账号加载失败: ${xh(gptAccountLoadError.message || gptAccountLoadError)}</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="7" class="gpt-image-empty">GPTChat 账号加载失败: ${xh(gptAccountLoadError.message || gptAccountLoadError)}</td></tr>`;
+    renderGptAccountPagination(0, 1);
+    updateGptAccountBatchControls(view, []);
     return;
   }
   if (!gptAccounts.length) {
-    tbody.innerHTML = '<tr><td colspan="6" class="gpt-image-empty">尚未导入 GPTChat 账号。</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="7" class="gpt-image-empty">尚未导入 GPTChat 账号。</td></tr>';
+    renderGptAccountPagination(0, 1);
+    updateGptAccountBatchControls(view, []);
     return;
   }
-  tbody.innerHTML = gptAccounts.map(gptAccountRowHtml).join('');
+  const total = view.filteredItems.length;
+  const pages = Math.max(1, Math.ceil(total / gptAccountPageSize));
+  if (gptAccountPage > pages) gptAccountPage = pages;
+  const slice = view.filteredItems.slice((gptAccountPage - 1) * gptAccountPageSize, gptAccountPage * gptAccountPageSize);
+  tbody.innerHTML = slice.length
+    ? slice.map(gptAccountRowHtml).join('')
+    : '<tr><td colspan="7" class="gpt-image-empty">没有符合筛选条件的 GPTChat 账号。</td></tr>';
+  renderGptAccountPagination(total, pages);
+  updateGptAccountBatchControls(view, slice);
+}
+
+function getGptAccountView() {
+  const statusCounts = { all: gptAccounts.length, available: 0, pending: 0, invalid: 0 };
+  const loginCounts = { all: gptAccounts.length, token: 0, credentials: 0, missing_token: 0, legacy: 0 };
+  const planCounts = new Map([['all', gptAccounts.length]]);
+  const plans = new Set();
+  const filteredItems = [];
+  const query = gptAccountQuery.trim().toLowerCase();
+
+  for (const account of gptAccounts) {
+    const statusGroup = gptAccountStatusGroup(account);
+    if (statusCounts[statusGroup] != null) statusCounts[statusGroup] += 1;
+
+    const plan = gptAccountPlanValue(account);
+    plans.add(plan);
+    planCounts.set(plan, (planCounts.get(plan) || 0) + 1);
+
+    if (account.has_access_token) loginCounts.token += 1;
+    if (account.has_credentials) loginCounts.credentials += 1;
+    if (!account.has_access_token) loginCounts.missing_token += 1;
+    if (account.legacy_image_account) loginCounts.legacy += 1;
+
+    if (gptAccountMatchesFilters(account, statusGroup, plan, query)) {
+      filteredItems.push(account);
+    }
+  }
+
+  if (gptAccountPlan !== 'all' && !plans.has(gptAccountPlan)) {
+    gptAccountPlan = 'all';
+    return getGptAccountView();
+  }
+
+  return {
+    filteredItems,
+    statusCounts,
+    loginCounts,
+    planCounts,
+    plans: Array.from(plans).sort(),
+    isFiltered: isGptAccountFiltered(),
+  };
+}
+
+function gptAccountMatchesFilters(account, statusGroup, plan, query) {
+  if (gptAccountStatus !== 'all' && statusGroup !== gptAccountStatus) return false;
+  if (gptAccountPlan !== 'all' && plan !== gptAccountPlan) return false;
+  if (!gptAccountMatchesLoginFilter(account)) return false;
+  if (query && !gptAccountSearchText(account).includes(query)) return false;
+  return true;
+}
+
+function gptAccountStatusGroup(account) {
+  const status = String((account && (account.capability_status || account.status)) || 'unknown');
+  if (status === 'available') return 'available';
+  if (['unchecked', 'login_required', 'rate_limited', 'phone_verification_required'].includes(status)) return 'pending';
+  if (['invalid', 'failed', 'timeout', 'login_failed'].includes(status)) return 'invalid';
+  return 'other';
+}
+
+function gptAccountPlanValue(account) {
+  return String((account && account.plan_type) || 'unknown').trim().toLowerCase() || 'unknown';
+}
+
+function gptAccountMatchesLoginFilter(account) {
+  if (gptAccountLogin === 'all') return true;
+  if (gptAccountLogin === 'token') return !!(account && account.has_access_token);
+  if (gptAccountLogin === 'credentials') return !!(account && account.has_credentials);
+  if (gptAccountLogin === 'missing_token') return !(account && account.has_access_token);
+  if (gptAccountLogin === 'legacy') return !!(account && account.legacy_image_account);
+  return true;
+}
+
+function gptAccountSearchText(account) {
+  return [
+    account.id,
+    account.email,
+    account.alias,
+    account.plan_type,
+    account.capability_status,
+    account.status,
+    account.capability_error,
+    account.registration_error,
+    account.remote_user_id,
+    account.default_model_slug,
+    account.email_provider,
+    account.source_type,
+    account.access_token_masked,
+    gptAccountSourceLabel(account),
+  ].filter(v => v != null && v !== '').join(' ').toLowerCase();
 }
 
 function gptAccountOverviewStats() {
@@ -1786,14 +2116,24 @@ function gptAccountOverviewStats() {
     invalid: 0,
     token: 0,
     credentials: 0,
+    quota: 0,
+    quotaUnknown: 0,
   };
-  const pendingStatuses = new Set(['unchecked', 'login_required', 'rate_limited']);
+  const pendingStatuses = new Set(['unchecked', 'login_required', 'rate_limited', 'phone_verification_required']);
   const invalidStatuses = new Set(['invalid', 'failed', 'timeout', 'login_failed']);
   for (const account of gptAccounts) {
     const status = String(account.capability_status || account.status || 'unknown');
     if (status === 'available') stats.available += 1;
     else if (pendingStatuses.has(status)) stats.pending += 1;
     else if (invalidStatuses.has(status)) stats.invalid += 1;
+    if (status === 'available') {
+      if (account.image_quota_unknown === true) {
+        stats.quotaUnknown += 1;
+      } else {
+        const quota = Number(account.image_quota);
+        if (Number.isFinite(quota)) stats.quota += quota;
+      }
+    }
     if (account.has_access_token) stats.token += 1;
     if (account.has_credentials) stats.credentials += 1;
   }
@@ -1804,10 +2144,212 @@ function renderGptAccountOverview() {
   const stats = gptAccountOverviewStats();
   $('gpt-overview-total', stats.total);
   $('gpt-overview-available', stats.available);
+  $('gpt-overview-quota', formatGptAccountTotalQuota(stats.quota, stats.quotaUnknown));
   $('gpt-overview-pending', stats.pending);
   $('gpt-overview-invalid', stats.invalid);
   $('gpt-overview-token', stats.token);
   $('gpt-overview-credentials', stats.credentials);
+}
+
+function formatGptAccountTotalQuota(quota, unknownCount) {
+  if (unknownCount && !quota) return '未知';
+  if (unknownCount) return `${fmt(quota)}+`;
+  return fmt(quota);
+}
+
+function renderGptAccountPagination(total, pages) {
+  $('gpt-pagi-page', `第 ${total ? gptAccountPage : 0} / ${pages} 页`);
+  const prev = document.getElementById('gpt-btn-prev');
+  const next = document.getElementById('gpt-btn-next');
+  if (prev) prev.disabled = gptAccountPage <= 1;
+  if (next) next.disabled = gptAccountPage >= pages;
+  const pageSizeSel = document.getElementById('gpt-page-size-sel');
+  if (pageSizeSel) pageSizeSel.value = String(gptAccountPageSize);
+}
+
+function pruneGptAccountSelection() {
+  const ids = new Set(gptAccounts.map(item => item.id).filter(Boolean));
+  for (const id of [...gptAccountSelected]) {
+    if (!ids.has(id)) gptAccountSelected.delete(id);
+  }
+}
+
+function updateGptAccountBatchControls(view = getGptAccountView(), pageItems = []) {
+  const selected = gptAccountSelected.size;
+  $('gpt-account-selection-count', `已选 ${selected}`);
+  const pageIds = pageItems.map(item => item.id).filter(Boolean);
+  const checkedOnPage = pageIds.filter(id => gptAccountSelected.has(id)).length;
+  const cbAll = document.getElementById('gpt-account-cb-all');
+  if (cbAll) {
+    cbAll.checked = pageIds.length > 0 && checkedOnPage === pageIds.length;
+    cbAll.indeterminate = checkedOnPage > 0 && checkedOnPage < pageIds.length;
+    cbAll.disabled = pageIds.length === 0;
+  }
+  const selectPage = document.getElementById('gpt-select-page-btn');
+  const selectFiltered = document.getElementById('gpt-select-filtered-btn');
+  const clear = document.getElementById('gpt-clear-selection-btn');
+  const del = document.getElementById('gpt-delete-selected-btn');
+  if (selectPage) selectPage.disabled = pageIds.length === 0;
+  if (selectFiltered) selectFiltered.disabled = !view.filteredItems.length;
+  if (clear) clear.disabled = selected === 0;
+  if (del) del.disabled = selected === 0;
+}
+
+function toggleGptAccountSelection(id, checked) {
+  if (!id) return;
+  checked ? gptAccountSelected.add(id) : gptAccountSelected.delete(id);
+  renderGptAccounts();
+}
+
+function toggleGptAccountPageSelection(checked) {
+  const view = getGptAccountView();
+  const pageItems = view.filteredItems.slice((gptAccountPage - 1) * gptAccountPageSize, gptAccountPage * gptAccountPageSize);
+  pageItems.forEach(item => {
+    if (!item.id) return;
+    checked ? gptAccountSelected.add(item.id) : gptAccountSelected.delete(item.id);
+  });
+  renderGptAccounts();
+}
+
+function selectGptAccountPage() {
+  toggleGptAccountPageSelection(true);
+}
+
+function selectGptAccountFiltered() {
+  getGptAccountView().filteredItems.forEach(item => {
+    if (item.id) gptAccountSelected.add(item.id);
+  });
+  renderGptAccounts();
+}
+
+function clearGptAccountSelection() {
+  gptAccountSelected.clear();
+  renderGptAccounts();
+}
+
+function renderGptAccountFilters(view = getGptAccountView()) {
+  setFilterCount('gpt-fc-status-all', view.statusCounts.all);
+  setFilterCount('gpt-fc-status-available', view.statusCounts.available);
+  setFilterCount('gpt-fc-status-pending', view.statusCounts.pending);
+  setFilterCount('gpt-fc-status-invalid', view.statusCounts.invalid);
+  setFilterCount('gpt-fc-login-all', view.loginCounts.all);
+  setFilterCount('gpt-fc-login-token', view.loginCounts.token);
+  setFilterCount('gpt-fc-login-credentials', view.loginCounts.credentials);
+  setFilterCount('gpt-fc-login-missing-token', view.loginCounts.missing_token);
+  setFilterCount('gpt-fc-login-legacy', view.loginCounts.legacy);
+
+  document.querySelectorAll('[data-gpt-status]').forEach(el => el.classList.toggle('active', el.dataset.gptStatus === gptAccountStatus));
+  document.querySelectorAll('[data-gpt-login]').forEach(el => el.classList.toggle('active', el.dataset.gptLogin === gptAccountLogin));
+  const search = document.getElementById('gpt-account-search');
+  if (search && document.activeElement !== search && search.value !== gptAccountQuery) {
+    search.value = gptAccountQuery;
+  }
+  $('gpt-account-filter-summary', view.isFiltered ? `筛选 ${view.filteredItems.length} / ${gptAccounts.length}` : '全部账号');
+  renderGptPlanFilters(view);
+  syncGptAccountFilterTrigger();
+}
+
+function renderGptPlanFilters(view = getGptAccountView()) {
+  const wrap = document.getElementById('gpt-plan-filter-chips');
+  if (!wrap) return;
+  wrap.innerHTML = [
+    `<button type="button" class="filter-chip${gptAccountPlan === 'all' ? ' active' : ''}" data-gpt-plan="all" onclick="switchGptAccountPlan('all')"><span>全部</span><span class="filter-chip-count">${view.planCounts.get('all') || 0}</span></button>`,
+    ...view.plans.map(plan => {
+      const count = view.planCounts.get(plan) || 0;
+      const planArg = xh(JSON.stringify(plan));
+      return `<button type="button" class="filter-chip${gptAccountPlan === plan ? ' active' : ''}" data-gpt-plan="${xh(plan)}" onclick="switchGptAccountPlan(${planArg})"><span>${xh(gptPlanLabel(plan))}</span><span class="filter-chip-count">${count}</span></button>`;
+    }),
+  ].join('');
+}
+
+function gptPlanLabel(plan) {
+  return plan === 'unknown' ? '未知' : plan;
+}
+
+function isGptAccountFiltered() {
+  return gptAccountStatus !== 'all'
+    || gptAccountPlan !== 'all'
+    || gptAccountLogin !== 'all'
+    || !!gptAccountQuery.trim();
+}
+
+function initGptAccountFilterMenu() {
+  if (_gptAccountFilterMenuBound) return;
+  const menu = document.getElementById('gpt-account-filter-menu');
+  const trigger = document.getElementById('gpt-account-filter-btn');
+  const panel = document.getElementById('gpt-account-filter-panel');
+  if (!menu || !trigger || !panel) return;
+  _gptAccountFilterMenuBound = true;
+
+  const close = () => {
+    menu.classList.remove('open');
+    trigger.setAttribute('aria-expanded', 'false');
+    syncGptAccountFilterTrigger();
+  };
+
+  trigger.addEventListener('click', (event) => {
+    event.stopPropagation();
+    const open = !menu.classList.contains('open');
+    menu.classList.toggle('open', open);
+    trigger.setAttribute('aria-expanded', open ? 'true' : 'false');
+    syncGptAccountFilterTrigger();
+  });
+
+  panel.addEventListener('click', (event) => event.stopPropagation());
+  document.addEventListener('click', (event) => {
+    const target = event.target;
+    if (!(target instanceof Node) || !menu.contains(target)) close();
+  });
+  document.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape') close();
+  });
+}
+
+function syncGptAccountFilterTrigger() {
+  const menu = document.getElementById('gpt-account-filter-menu');
+  const trigger = document.getElementById('gpt-account-filter-btn');
+  if (!menu || !trigger) return;
+  const active = isGptAccountFiltered() || menu.classList.contains('open');
+  trigger.classList.toggle('is-active', active);
+}
+
+function switchGptAccountStatus(status) {
+  gptAccountStatus = ['all', 'available', 'pending', 'invalid'].includes(status) ? status : 'all';
+  gptAccountPage = 1;
+  gptAccountSelected.clear();
+  renderGptAccounts();
+}
+
+function switchGptAccountPlan(plan) {
+  gptAccountPlan = String(plan || 'all').trim().toLowerCase() || 'all';
+  gptAccountPage = 1;
+  gptAccountSelected.clear();
+  renderGptAccounts();
+}
+
+function switchGptAccountLogin(mode) {
+  gptAccountLogin = ['all', 'token', 'credentials', 'missing_token', 'legacy'].includes(mode) ? mode : 'all';
+  gptAccountPage = 1;
+  gptAccountSelected.clear();
+  renderGptAccounts();
+}
+
+function switchGptAccountQuery(value) {
+  gptAccountQuery = String(value || '');
+  gptAccountPage = 1;
+  gptAccountSelected.clear();
+  renderGptAccounts();
+}
+
+function resetGptAccountFilters() {
+  gptAccountStatus = 'all';
+  gptAccountPlan = 'all';
+  gptAccountLogin = 'all';
+  gptAccountQuery = '';
+  gptAccountPage = 1;
+  const search = document.getElementById('gpt-account-search');
+  if (search) search.value = '';
+  renderGptAccounts();
 }
 
 function gptAccountRowHtml(account) {
@@ -1823,7 +2365,9 @@ function gptAccountRowHtml(account) {
     : '';
   const isTesting = gptAccountTesting.has(id);
   const canLogin = account.has_credentials || email;
+  const canCopyToken = !!account.has_access_token;
   return `<tr>
+    <td><input type="checkbox" class="gpt-account-row-cb" data-account-id="${xe(id)}" ${gptAccountSelected.has(id) ? 'checked' : ''} onchange="toggleGptAccountSelection('${xe(id)}', this.checked)"></td>
     <td><span class="tok">${xh(token)}</span></td>
     <td>
       <div class="gpt-image-account-main">
@@ -1837,6 +2381,9 @@ function gptAccountRowHtml(account) {
     <td>
       <button onclick="openGptAccountDetail('${xe(id)}')" class="row-icon-btn" data-tip="详情" aria-label="详情">
         <svg viewBox="0 0 24 24" stroke-width="1.8"><circle cx="12" cy="12" r="8"/><path d="M12 11v5"/><path d="M12 8h.01"/></svg>
+      </button>
+      <button onclick="copyGptAccountToken('${xe(id)}')" class="row-icon-btn" data-tip="${xe(canCopyToken ? '复制 Token' : '无 Token')}" aria-label="${xe(canCopyToken ? '复制 Token' : '无 Token')}" ${canCopyToken ? '' : 'disabled'}>
+        <svg viewBox="0 0 24 24" stroke-width="1.8"><rect x="9" y="9" width="10" height="10" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v1"/></svg>
       </button>
       <button onclick="testGptAccount('${xe(id)}')" class="row-icon-btn" data-tip="${xe(isTesting ? '测试中' : '测试')}" aria-label="${xe(isTesting ? '测试中' : '测试')}" ${isTesting ? 'disabled' : ''}>
         <svg viewBox="0 0 24 24" stroke-width="1.8"><path d="M20 6 9 17l-5-5"/></svg>
@@ -1862,6 +2409,7 @@ function gptImageStatusMeta(status) {
     failed: ['badge-invalid', tr('account.gptImageStatus.failed', null, '失败')],
     timeout: ['badge-invalid', tr('account.gptImageStatus.timeout', null, '超时')],
     rate_limited: ['badge-cooling', tr('account.gptImageStatus.rateLimited', null, '限流')],
+    phone_verification_required: ['badge-cooling', '需手机验证'],
     unknown: ['badge-disabled', tr('account.unknown', null, '未知')],
   };
   return map[s] || ['badge-disabled', s];
@@ -1914,6 +2462,11 @@ function gptImageQuotaText(account) {
 function renderGptAccountDetail(account, options = {}) {
   const body = document.getElementById('gpt-account-detail-body');
   if (!body) return;
+  const copyBtn = document.getElementById('gpt-account-detail-copy-token');
+  if (copyBtn) {
+    copyBtn.disabled = !account.has_access_token;
+    copyBtn.title = account.has_access_token ? '复制 Access Token' : '该账号尚无 Access Token';
+  }
   const status = account.capability_status || account.status || 'unknown';
   const [statusClass, statusLabel] = gptImageStatusMeta(status);
   const plan = account.plan_type || 'unknown';
@@ -2012,6 +2565,36 @@ async function refreshGptAccountDetail(accountId, options = {}) {
 
 function refreshOpenGptAccountDetail() {
   return refreshGptAccountDetail(_gptDetailAccountId);
+}
+
+async function copyGptAccountToken(accountId, buttonId) {
+  const id = accountId || _gptDetailAccountId;
+  if (!id) return showToast('请选择 GPTChat 账号', 'error');
+  const btn = buttonId ? document.getElementById(buttonId) : null;
+  if (btn) btn.disabled = true;
+  try {
+    const data = await _api('POST', '/gpt/accounts/token', { account: id });
+    if (data && data.account) {
+      const idx = gptAccounts.findIndex(item => item.id === data.account.id || item.id === id);
+      if (idx >= 0) gptAccounts[idx] = data.account;
+      renderGptAccounts();
+      if (_gptDetailAccountId === id) renderGptAccountDetail(data.account);
+    }
+    const token = data && data.access_token ? data.access_token : '';
+    if (!token) return showToast('该 GPTChat 账号没有可复制的 token', 'error');
+    return copy(token);
+  } catch (e) {
+    showToast(`复制 GPTChat token 失败: ${e.message}`, 'error');
+  } finally {
+    if (btn) {
+      const current = gptAccounts.find(item => item.id === id);
+      btn.disabled = !(current && current.has_access_token);
+    }
+  }
+}
+
+function copyOpenGptAccountToken() {
+  return copyGptAccountToken(_gptDetailAccountId, 'gpt-account-detail-copy-token');
 }
 
 function openGptAccountDetail(accountId) {
@@ -2384,6 +2967,26 @@ function changePageSize(v) {
   curPage = 1;
   renderTable();
 }
+function prevGptAccountPage() {
+  if (gptAccountPage > 1) {
+    gptAccountPage -= 1;
+    renderGptAccounts();
+  }
+}
+function nextGptAccountPage() {
+  const pages = Math.max(1, Math.ceil(getGptAccountView().filteredItems.length / gptAccountPageSize));
+  if (gptAccountPage < pages) {
+    gptAccountPage += 1;
+    renderGptAccounts();
+  }
+}
+function changeGptAccountPageSize(v) {
+  const next = Number(v);
+  gptAccountPageSize = GPT_ACCOUNT_PAGE_SIZE_OPTIONS.includes(next) ? next : 20;
+  localStorage.setItem(GPT_ACCOUNT_PAGE_SIZE_KEY, String(gptAccountPageSize));
+  gptAccountPage = 1;
+  renderGptAccounts();
+}
 
 function toggleAll(checked) {
   getTokenView().filteredItems.slice((curPage-1)*pageSize, curPage*pageSize).forEach(t => checked ? sel.add(t.token) : sel.delete(t.token));
@@ -2410,6 +3013,10 @@ function fmt(n) { return n >= 10000 ? (n/1000).toFixed(1)+'k' : n; }
 function loadSavedPageSize() {
   const raw = Number(localStorage.getItem(PAGE_SIZE_KEY) || 0);
   return PAGE_SIZE_OPTIONS.includes(raw) ? raw : 50;
+}
+function loadSavedGptAccountPageSize() {
+  const raw = Number(localStorage.getItem(GPT_ACCOUNT_PAGE_SIZE_KEY) || 0);
+  return GPT_ACCOUNT_PAGE_SIZE_OPTIONS.includes(raw) ? raw : 20;
 }
 function fmtRate(success, fail) {
   const total = success + fail;
@@ -2797,7 +3404,12 @@ async function doAddGptAccounts() {
     showToast(`正在添加 ${accounts.length} 个 GPTChat 账号…`, 'info');
     const d = await _api('POST', '/gpt/accounts', { accounts });
     closeModal('modal-gpt-account-add');
-    showToast(`GPTChat 账号已添加：${d.count || accounts.length} 个`, 'success');
+    const refreshed = Number(d.remote_refreshed || 0);
+    const failed = Number(d.remote_failed || 0);
+    const remoteText = refreshed || failed
+      ? `，远端详情刷新 ${refreshed} 个${failed ? `，失败 ${failed} 个` : ''}`
+      : '';
+    showToast(`GPTChat 账号已添加：${d.count || accounts.length} 个${remoteText}`, failed ? 'info' : 'success');
     load();
   } catch (e) {
     showToast(`GPTChat 账号添加失败: ${e.message}`, 'error');
@@ -2851,6 +3463,26 @@ async function testAllGptAccounts() {
   }
 }
 
+function deleteSelectedGptAccounts() {
+  const ids = [...gptAccountSelected].filter(Boolean);
+  if (!ids.length) return showToast('请先选择 GPTChat 账号', 'error');
+  openConfirm(
+    '批量删除 GPTChat 账号',
+    `确认删除选中的 <code>${ids.length}</code> 个 GPTChat 账号？<br><small style="color:var(--error)">此操作不可撤销。</small>`,
+    async () => {
+      try {
+        showToast(`正在删除 ${ids.length} 个 GPTChat 账号…`, 'info');
+        await _api('DELETE', '/gpt/accounts', ids);
+        ids.forEach(id => gptAccountSelected.delete(id));
+        showToast(`GPTChat 账号已删除：${ids.length} 个`, 'success');
+        load();
+      } catch (e) {
+        showToast(`GPTChat 账号批量删除失败: ${e.message}`, 'error');
+      }
+    },
+  );
+}
+
 function deleteGptAccount(id) {
   const account = gptAccounts.find(item => item.id === id) || {};
   const label = account.email || account.access_token_masked || mask(id);
@@ -2861,6 +3493,7 @@ function deleteGptAccount(id) {
       try {
         showToast('正在删除 GPTChat 账号…', 'info');
         await _api('DELETE', '/gpt/accounts', [id]);
+        gptAccountSelected.delete(id);
         showToast('GPTChat 账号已删除', 'success');
         load();
       } catch (e) {

@@ -49,6 +49,7 @@ _SECRET_KEYS = {
     "email_admin_password",
     "api_token",
     "admin_password",
+    "gpt_fixed_password",
     "token",
     "turnstile_solver_api_key",
 }
@@ -78,6 +79,7 @@ class MaintainerRunRequest(BaseModel):
     turnstile_solver_api_key: str = Field(default="", max_length=4096)
     turnstile_solver_timeout_sec: int = Field(default=150, ge=1, le=600)
     turnstile_solver_poll_sec: int = Field(default=5, ge=1, le=60)
+    gpt_fixed_password: str = Field(default="", max_length=4096)
     verify_ssl: bool = True
     extract_numbers: bool = False
 
@@ -120,6 +122,11 @@ class MaintainerRunRequest(BaseModel):
     @field_validator("turnstile_solver_api_key", mode="before")
     @classmethod
     def _coerce_turnstile_solver_api_key(cls, value: Any) -> str:
+        return "" if value is None else str(value)
+
+    @field_validator("gpt_fixed_password", mode="before")
+    @classmethod
+    def _coerce_gpt_fixed_password(cls, value: Any) -> str:
         return "" if value is None else str(value)
 
 
@@ -225,8 +232,14 @@ def build_runtime_config(
     turnstile_solver_api_key = (
         req.turnstile_solver_api_key or saved_turnstile_solver_api_key
     )
+    saved_gpt = (
+        existing_config.get("gpt", {})
+        if isinstance(existing_config, dict) and isinstance(existing_config.get("gpt"), dict)
+        else {}
+    )
+    gpt_fixed_password = req.gpt_fixed_password or str(saved_gpt.get("fixed_password") or "")
 
-    return {
+    runtime_config = {
         "email": {
             "worker_domain": req.email_worker_domain,
             "email_domains": list(req.email_domains),
@@ -255,6 +268,9 @@ def build_runtime_config(
             "extract_numbers": req.extract_numbers,
         },
     }
+    if gpt_fixed_password:
+        runtime_config["gpt"] = {"fixed_password": gpt_fixed_password}
+    return runtime_config
 
 
 def build_gpt_runtime_config(
@@ -277,6 +293,7 @@ def build_gpt_runtime_config(
         if isinstance(existing_config, dict) and isinstance(existing_config.get("gpt"), dict)
         else {}
     )
+    fixed_password = req.gpt_fixed_password or str(saved_gpt.get("fixed_password") or "")
 
     def _saved_gpt_int(key: str, default: int) -> int:
         try:
@@ -290,6 +307,7 @@ def build_gpt_runtime_config(
         "registration_attempts_per_account": _saved_gpt_int("registration_attempts_per_account", 2),
         "otp_timeout_s": _saved_gpt_int("otp_timeout_s", 90),
         "login_otp_timeout_s": _saved_gpt_int("login_otp_timeout_s", 90),
+        "fixed_password": fixed_password,
     }
     return runtime_config
 
@@ -346,6 +364,7 @@ def build_saved_config_response(payload: dict[str, Any]) -> dict[str, Any]:
     api_conf = payload.get("api") if isinstance(payload.get("api"), dict) else {}
     run_conf = payload.get("run") if isinstance(payload.get("run"), dict) else {}
     web_conf = payload.get("web") if isinstance(payload.get("web"), dict) else {}
+    gpt_conf = payload.get("gpt") if isinstance(payload.get("gpt"), dict) else {}
 
     domains = email_conf.get("email_domains", email_conf.get("domains", []))
     if isinstance(domains, str):
@@ -415,6 +434,7 @@ def build_saved_config_response(payload: dict[str, Any]) -> dict[str, Any]:
         "turnstile_solver_timeout_sec": turnstile_solver_timeout_sec,
         "turnstile_solver_poll_sec": turnstile_solver_poll_sec,
         "extract_numbers": bool(web_conf.get("extract_numbers", False)),
+        "has_gpt_fixed_password": bool(gpt_conf.get("fixed_password")),
     }
 
 
