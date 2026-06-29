@@ -581,12 +581,22 @@ def _summary(records: list["AccountRecord"]) -> dict[str, Any]:
     plan_counts: dict[str, int] = {}
     with_access_token = 0
     with_credentials = 0
+    total_available_quota = 0
+    available_quota_unknown = 0
     for record in records:
         ext = record.ext or {}
         status = _record_status(ext)
         plan = (_record_plan_type(ext) or "unknown").lower()
         status_counts[status] = status_counts.get(status, 0) + 1
         plan_counts[plan] = plan_counts.get(plan, 0) + 1
+        if status == "available":
+            if ext.get("gpt_image_quota_unknown") is True:
+                available_quota_unknown += 1
+            else:
+                try:
+                    total_available_quota += int(ext.get("gpt_image_quota") or 0)
+                except (TypeError, ValueError):
+                    available_quota_unknown += 1
         if _record_access_token(ext):
             with_access_token += 1
         if _record_password(ext) and _record_mail_token(ext):
@@ -598,6 +608,8 @@ def _summary(records: list["AccountRecord"]) -> dict[str, Any]:
         "unchecked": status_counts.get("unchecked", 0),
         "login_required": status_counts.get("login_required", 0),
         "invalid": status_counts.get("invalid", 0),
+        "total_available_quota": total_available_quota,
+        "available_quota_unknown": available_quota_unknown,
         "with_access_token": with_access_token,
         "with_credentials": with_credentials,
         "status": status_counts,
@@ -646,6 +658,50 @@ async def _list_all_gpt_records(repo: "AccountRepository") -> list["AccountRecor
             break
         page_num += 1
     return _dedupe_gpt_records(records)
+
+
+def _same_email(left: str, right: str) -> bool:
+    return _clean_text(left).lower() == _clean_text(right).lower()
+
+
+async def _find_gpt_record_by_email(
+    repo: "AccountRepository",
+    email: str,
+) -> "AccountRecord | None":
+    email = _clean_text(email)
+    if not email:
+        return None
+
+    preferred_tokens = [
+        gpt_account_credential_record_token(email),
+        _legacy_image_credential_record_token(email),
+    ]
+    preferred_records = await repo.get_accounts(preferred_tokens)
+    preferred_candidates = [
+        record
+        for record in preferred_records
+        if _is_gpt_record(record)
+        and not record.is_deleted()
+        and (
+            record.token in preferred_tokens
+            or _same_email(_record_email(record.ext or {}), email)
+        )
+    ]
+    for token in preferred_tokens:
+        match = next((record for record in preferred_candidates if record.token == token), None)
+        if match:
+            return match
+
+    records = await _list_all_gpt_records(repo)
+    return next(
+        (
+            record
+            for record in records
+            if not record.is_deleted()
+            and _same_email(_record_email(record.ext or {}), email)
+        ),
+        None,
+    )
 
 
 def _access_token_value(value: str) -> str:
@@ -709,6 +765,72 @@ async def _lookup_gpt_record(
     if not record:
         raise ValidationError("GPT account not found", param=param, code="account_not_found")
     return record
+
+
+async def _refresh_gpt_record_remote_detail(
+    repo: "AccountRepository",
+    record: "AccountRecord",
+) -> dict[str, Any]:
+    ext = record.ext or {}
+    access_token = _record_access_token(ext)
+    if not access_token:
+        message = "No access token is available; login this GPT account before refreshing remote details"
+        return {
+            "refreshed": False,
+            "error": message,
+            "account": _serialize(record),
+        }
+
+    try:
+        detail = await _fetch_gpt_remote_detail(access_token)
+        await repo.patch_accounts(
+            [
+                AccountPatch(
+                    token=record.token,
+                    ext_merge=_remote_detail_ext(detail, ext),
+                )
+            ]
+        )
+        refreshed = next(iter(await repo.get_accounts([record.token])), record)
+        return {"refreshed": True, "account": _serialize(refreshed)}
+    except ValidationError as exc:
+        message = str(exc)[:500]
+        now = _now_ms()
+        await repo.patch_accounts(
+            [
+                AccountPatch(
+                    token=record.token,
+                    last_fail_at=now,
+                    last_fail_reason=message,
+                    ext_merge={
+                        "gpt_status": "invalid",
+                        "gpt_registration_error": message,
+                        "gpt_remote_error": message,
+                        "gpt_last_remote_refresh_at": now,
+                    },
+                )
+            ]
+        )
+        refreshed = next(iter(await repo.get_accounts([record.token])), record)
+        return {"refreshed": False, "error": message, "account": _serialize(refreshed)}
+    except Exception as exc:
+        message = (str(exc) or exc.__class__.__name__)[:500]
+        now = _now_ms()
+        await repo.patch_accounts(
+            [
+                AccountPatch(
+                    token=record.token,
+                    last_fail_at=now,
+                    last_fail_reason=message,
+                    ext_merge={
+                        "gpt_remote_error": message,
+                        "gpt_last_remote_refresh_at": now,
+                    },
+                )
+            ]
+        )
+        refreshed = next(iter(await repo.get_accounts([record.token])), record)
+        return {"refreshed": False, "error": message, "account": _serialize(refreshed)}
 
 
 @router.get("/accounts")
@@ -783,7 +905,24 @@ async def add_gpt_accounts(
             for upsert in upserts
         ]
     )
-    return _json({"status": "success", "count": result.upserted or len(upserts)})
+    records = await repo.get_accounts([upsert.token for upsert in upserts])
+    refresh_results: list[dict[str, Any]] = []
+    for record in records:
+        if _record_access_token(record.ext or {}):
+            refresh_results.append(await _refresh_gpt_record_remote_detail(repo, record))
+
+    remote_refreshed = sum(1 for item in refresh_results if item.get("refreshed"))
+    remote_failed = sum(1 for item in refresh_results if not item.get("refreshed"))
+    return _json(
+        {
+            "status": "success",
+            "count": result.upserted or len(upserts),
+            "remote_refreshed": remote_refreshed,
+            "remote_failed": remote_failed,
+            "remote_skipped": max(0, len(upserts) - len(refresh_results)),
+            "accounts": [item.get("account") for item in refresh_results if item.get("account")],
+        }
+    )
 
 
 @router.delete("/accounts")
@@ -807,69 +946,33 @@ async def get_gpt_account_detail(
     if not account_ref:
         raise ValidationError("GPT account is required", param="account")
     record = await _lookup_gpt_record(repo, account_ref)
-    ext = record.ext or {}
-    access_token = _record_access_token(ext)
-    if not access_token:
-        message = "No access token is available; login this GPT account before refreshing remote details"
-        return _json(
-            {
-                "status": "success",
-                "refreshed": False,
-                "error": message,
-                "account": _serialize(record),
-            }
-        )
+    return _json({"status": "success", **await _refresh_gpt_record_remote_detail(repo, record)})
 
-    try:
-        detail = await _fetch_gpt_remote_detail(access_token)
-        await repo.patch_accounts(
-            [
-                AccountPatch(
-                    token=record.token,
-                    ext_merge=_remote_detail_ext(detail, ext),
-                )
-            ]
+
+@router.post("/accounts/token")
+async def get_gpt_account_token(
+    req: GPTAccountDetailRequest,
+    repo: "AccountRepository" = Depends(get_repo),
+):
+    account_ref = _clean_text(req.account)
+    if not account_ref:
+        raise ValidationError("GPT account is required", param="account")
+    record = await _lookup_gpt_record(repo, account_ref)
+    access_token = _record_access_token(record.ext or {})
+    if not access_token:
+        raise ValidationError(
+            "No access token is saved for this GPT account",
+            param="account",
+            code="missing_access_token",
         )
-        refreshed = next(iter(await repo.get_accounts([record.token])), record)
-        return _json({"status": "success", "refreshed": True, "account": _serialize(refreshed)})
-    except ValidationError as exc:
-        message = str(exc)[:500]
-        now = _now_ms()
-        await repo.patch_accounts(
-            [
-                AccountPatch(
-                    token=record.token,
-                    last_fail_at=now,
-                    last_fail_reason=message,
-                    ext_merge={
-                        "gpt_status": "invalid",
-                        "gpt_registration_error": message,
-                        "gpt_remote_error": message,
-                        "gpt_last_remote_refresh_at": now,
-                    },
-                )
-            ]
-        )
-        refreshed = next(iter(await repo.get_accounts([record.token])), record)
-        return _json({"status": "success", "refreshed": False, "error": message, "account": _serialize(refreshed)})
-    except Exception as exc:
-        message = (str(exc) or exc.__class__.__name__)[:500]
-        now = _now_ms()
-        await repo.patch_accounts(
-            [
-                AccountPatch(
-                    token=record.token,
-                    last_fail_at=now,
-                    last_fail_reason=message,
-                    ext_merge={
-                        "gpt_remote_error": message,
-                        "gpt_last_remote_refresh_at": now,
-                    },
-                )
-            ]
-        )
-        refreshed = next(iter(await repo.get_accounts([record.token])), record)
-        return _json({"status": "success", "refreshed": False, "error": message, "account": _serialize(refreshed)})
+    return _json(
+        {
+            "status": "success",
+            "access_token": access_token,
+            "access_token_masked": _mask(access_token),
+            "account": _serialize(record),
+        }
+    )
 
 
 @router.post("/accounts/oauth/start")
@@ -922,7 +1025,7 @@ async def finish_gpt_account_oauth(
     direct_email = ""
     if _looks_like_direct_access_token_payload(req.callback):
         access_token, direct_email = _access_token_from_login_result(req.callback)
-        email = email or direct_email
+        email = direct_email or email
 
     if not access_token:
         try:
@@ -947,6 +1050,8 @@ async def finish_gpt_account_oauth(
 
     saved_id = record.token if record else ""
     if req.save:
+        if record is None:
+            record = await _find_gpt_record_by_email(repo, email)
         if record:
             ext_merge: dict[str, Any] = {
                 "gpt": True,
@@ -996,6 +1101,7 @@ async def finish_gpt_account_oauth(
                     )
                 ]
             )
+    saved_id = record.token if record else saved_id
 
     return _json(
         {
@@ -1065,7 +1171,7 @@ async def login_gpt_account(
         ) from exc
 
     access_token, session_email = _access_token_from_login_result(login_result)
-    email = email or session_email
+    email = session_email or email
     if not access_token:
         raise AppError(
             "GPT account login did not return an access token",
@@ -1076,6 +1182,8 @@ async def login_gpt_account(
 
     saved_id = record.token if record else ""
     if req.save:
+        if record is None:
+            record = await _find_gpt_record_by_email(repo, email)
         if record:
             await repo.patch_accounts(
                 [
@@ -1130,6 +1238,7 @@ async def login_gpt_account(
                     )
                 ]
             )
+    saved_id = record.token if record else saved_id
 
     return _json(
         {
@@ -1199,6 +1308,7 @@ __all__ = [
     "_summary",
     "_export_record",
     "_delete_record_tokens",
+    "get_gpt_account_token",
     "gpt_account_record_token",
     "gpt_account_credential_record_token",
 ]

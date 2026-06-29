@@ -154,6 +154,19 @@ Subject: Your ChatGPT code
 
         self.assertEqual(extract_verification_code(content), "736251")
 
+    def test_extract_verification_code_from_mail_reads_common_content_fields(self) -> None:
+        code = extract_verification_code_from_mail(
+            {
+                "to": [{"address": "target@example.com"}],
+                "subject": "Your OpenAI verification code",
+                "text_content": "Use this code to continue: 918273",
+                "html_content": "<p>Use this code to continue: <b>918273</b></p>",
+            },
+            target_email="target@example.com",
+        )
+
+        self.assertEqual(code, "918273")
+
     def test_extract_verification_code_falls_back_to_numeric_in_chatgpt_context(self) -> None:
         content = """
 Subject: OpenAI verification

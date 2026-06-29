@@ -405,7 +405,17 @@ def extract_verification_code_from_mail(
         return None
 
     content_parts = []
-    for key in ("text", "html", "body", "subject"):
+    for key in (
+        "text",
+        "text_content",
+        "content",
+        "html",
+        "html_content",
+        "html_body",
+        "body",
+        "body_html",
+        "subject",
+    ):
         value = mail.get(key)
         if isinstance(value, str) and value.strip():
             content_parts.append(value)

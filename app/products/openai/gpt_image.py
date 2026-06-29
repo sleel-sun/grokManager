@@ -12,6 +12,7 @@ import re
 import time
 from dataclasses import dataclass
 from typing import Any, AsyncGenerator
+from urllib.parse import urlparse
 from uuid import uuid4
 
 import aiohttp
@@ -42,6 +43,12 @@ _FILE_ID_RE = re.compile(r"(file-service://|sediment://)([A-Za-z0-9_-]+)")
 _DATA_URI_RE = re.compile(r"^data:([^;,]+)?(;base64)?,(.*)$", re.S)
 _DATA_BUILD_RE = re.compile(r'data-build="([^"]*)"', re.I)
 _SCRIPT_RE = re.compile(r'<script[^>]+src="([^"]+)"', re.I)
+_AZURE_BLOB_HOST_SUFFIXES = (
+    "blob.core.windows.net",
+    "blob.core.chinacloudapi.cn",
+    "blob.core.usgovcloudapi.net",
+    "blob.core.cloudapi.de",
+)
 _DEFAULT_GENERATION_TIMEOUT_S = 360.0
 _INVALID_CREDENTIAL_MARKERS = (
     "invalidated auth token",
@@ -654,6 +661,57 @@ def _decode_data_uri(image_input: str) -> tuple[bytes, str]:
     return raw, mime_type
 
 
+def _is_azure_blob_url(url: str) -> bool:
+    try:
+        hostname = (urlparse(url).hostname or "").lower()
+    except ValueError:
+        return False
+    return any(
+        hostname == suffix or hostname.endswith(f".{suffix}")
+        for suffix in _AZURE_BLOB_HOST_SUFFIXES
+    )
+
+
+def _set_header(headers: dict[str, str], name: str, value: str) -> None:
+    existing = next((key for key in headers if key.lower() == name.lower()), None)
+    if existing and existing != name:
+        headers.pop(existing, None)
+    headers[name] = value
+
+
+def _merge_upload_headers(headers: dict[str, str], value: object) -> None:
+    if not isinstance(value, dict):
+        return
+    for key, item in value.items():
+        name = str(key or "").strip()
+        if not name or item is None:
+            continue
+        _set_header(headers, name, str(item))
+
+
+def _edit_reference_upload_headers(
+    payload: dict[str, Any],
+    upload_url: str,
+    mime_type: str,
+) -> dict[str, str]:
+    headers = {
+        "content-type": mime_type,
+        "user-agent": USER_AGENT,
+    }
+    for key in (
+        "requiredHeaders",
+        "required_headers",
+        "uploadHeaders",
+        "upload_headers",
+    ):
+        _merge_upload_headers(headers, payload.get(key))
+    if _is_azure_blob_url(upload_url) and not any(
+        key.lower() == "x-ms-blob-type" for key in headers
+    ):
+        headers["x-ms-blob-type"] = "BlockBlob"
+    return headers
+
+
 async def _upload_edit_reference(
     session: aiohttp.ClientSession,
     context: _ChatGPTContext,
@@ -698,10 +756,7 @@ async def _upload_edit_reference(
             session,
             "PUT",
             upload_url,
-            headers={
-                "content-type": mime_type,
-                "user-agent": USER_AGENT,
-            },
+            headers=_edit_reference_upload_headers(payload, upload_url, mime_type),
             data=raw,
             timeout_s=60.0,
             retries=2,

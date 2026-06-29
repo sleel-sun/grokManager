@@ -59,6 +59,7 @@ class MaintainerAdminTests(unittest.TestCase):
             email_worker_domain="mail.example.com",
             email_domains=["example.com"],
             email_admin_password="worker-secret",
+            gpt_fixed_password="FixedGPT!123",
         )
 
         cfg = build_gpt_runtime_config(
@@ -72,6 +73,7 @@ class MaintainerAdminTests(unittest.TestCase):
         self.assertEqual(cfg["run"], {"count": 2, "workers": 3})
         self.assertTrue(cfg["gpt"]["auto_oauth_after_register"])
         self.assertTrue(cfg["gpt"]["save_credentials_on_failure"])
+        self.assertEqual(cfg["gpt"]["fixed_password"], "FixedGPT!123")
 
     def test_redact_state_hides_secret_values(self) -> None:
         redacted = redact_state(
@@ -113,6 +115,9 @@ class MaintainerAdminTests(unittest.TestCase):
                     "turnstile_solver_poll_sec": 6,
                     "extract_numbers": True,
                 },
+                "gpt": {
+                    "fixed_password": "gpt-password-secret",
+                },
             }
         )
 
@@ -130,7 +135,9 @@ class MaintainerAdminTests(unittest.TestCase):
         self.assertTrue(response["has_turnstile_solver_api_key"])
         self.assertEqual(response["turnstile_solver_timeout_sec"], 180)
         self.assertEqual(response["turnstile_solver_poll_sec"], 6)
+        self.assertTrue(response["has_gpt_fixed_password"])
         self.assertNotIn("solver-secret", str(response))
+        self.assertNotIn("gpt-password-secret", str(response))
 
     def test_env_for_request_passes_manual_turnstile_wait(self) -> None:
         req = MaintainerRunRequest(

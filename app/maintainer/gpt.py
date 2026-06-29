@@ -511,7 +511,7 @@ class ChatGPTRegistrationClient:
             raise GPTRegistrationError(f"OpenAI authorize 失败: HTTP {response.status_code}")
         return response.url
 
-    def register_password(self, email: str, password: str) -> None:
+    def register_password(self, email: str, password: str) -> str:
         headers = {
             **self._trace_headers(),
             "Content-Type": "application/json",
@@ -529,6 +529,7 @@ class ChatGPTRegistrationClient:
         )
         if response.status_code != 200:
             raise GPTRegistrationError(f"注册密码失败: HTTP {response.status_code} {response.text[:240]}")
+        return self._continue_url(response)
 
     def submit_login_password(self, email: str, password: str) -> str:
         headers = {
@@ -554,17 +555,26 @@ class ChatGPTRegistrationClient:
         return self._continue_url(response)
 
     def send_otp(self, *, referer: str | None = None) -> None:
+        referer_url = referer or f"{AUTH_BASE}/create-account/password"
+        if referer_url.startswith("/"):
+            referer_url = f"{AUTH_BASE}{referer_url}"
         response = self._request(
             "GET",
             f"{AUTH_BASE}/api/accounts/email-otp/send",
             headers={
                 "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-                "Referer": referer or f"{AUTH_BASE}/create-account/password",
+                "Referer": referer_url,
                 "Upgrade-Insecure-Requests": "1",
             },
         )
         if response.status_code >= 400:
-            raise GPTRegistrationError(f"发送邮箱 OTP 失败: HTTP {response.status_code}")
+            raise GPTRegistrationError(f"发送邮箱 OTP 失败: HTTP {response.status_code} {response.text[:240]}")
+        data = self._response_json(response)
+        error = data.get("error") if isinstance(data.get("error"), dict) else {}
+        message = str(error.get("message") or data.get("message") or "").strip()
+        success_value = str(data.get("success", "true")).lower()
+        if message and (error or success_value in {"false", "0", "no"}):
+            raise GPTRegistrationError(f"发送邮箱 OTP 失败: {message[:240]}")
 
     def validate_otp(self, code: str) -> str:
         headers = {
@@ -815,18 +825,19 @@ class ChatGPTRegistrationClient:
             need_otp = False
 
             if "create-account/password" in final_url:
-                self.register_password(email, password)
-                self.send_otp()
+                continue_url = self.register_password(email, password)
+                self.send_otp(referer=continue_url or final_url)
                 need_otp = True
             elif "email-verification" in final_url or "email-otp" in final_url:
+                self.send_otp(referer=final_url)
                 need_otp = True
             elif "about-you" in final_url:
                 return self.create_account(_random_name(), _random_birthdate()), None
             elif "callback" in final_url or "chatgpt.com" in final_url:
                 return False, None
             else:
-                self.register_password(email, password)
-                self.send_otp()
+                continue_url = self.register_password(email, password)
+                self.send_otp(referer=continue_url or final_url)
                 need_otp = True
 
             used_otp: str | None = None
@@ -843,7 +854,7 @@ class ChatGPTRegistrationClient:
                 continue_url = self.validate_otp(code)
 
             if "create-account/password" in continue_url:
-                self.register_password(email, password)
+                continue_url = self.register_password(email, password) or continue_url
 
             phone_required = self.create_account(_random_name(), _random_birthdate())
             if not phone_required:
@@ -1015,7 +1026,8 @@ def run_single_gpt_registration(
                 "email_created",
                 {"attempt": attempt_index + 1, "attempts": attempts, "email": email},
             )
-        password = _random_password()
+        fixed_password = str(gpt_conf.get("fixed_password") or "").strip()
+        password = fixed_password or _random_password()
         client = client_factory()
         try:
             phone_required, used_otp = client.run_register(
