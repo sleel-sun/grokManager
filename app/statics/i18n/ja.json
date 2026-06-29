@@ -21,8 +21,12 @@
   "webui": {
     "header": {
       "chat": "Chat",
+      "draw": "画像",
       "masonry": "Masonry",
       "chatkit": "ChatKit"
+    },
+    "imageStudio": {
+      "pageTitle": "grokManager - 画像"
     },
     "chat": {
       "pageTitle": "grokManager - WebChat",
@@ -338,6 +342,7 @@
       "displayName": "表示名",
       "enabled": "有効",
       "allowNsfw": "NSFW を許可",
+      "allowGpt": "GPT",
       "remove": "削除"
     },
     "loadFailed": "構成の読み込みに失敗しました: {message}",

@@ -3,328 +3,814 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>grokManager - Image Studio</title>
+  <title data-i18n="webui.imageStudio.pageTitle">grokManager - 画图</title>
   <link rel="icon" href="/favicon.ico?v={{APP_VERSION}}">
   <link href="https://cdn.jsdelivr.net/npm/geist@1.0.0/dist/fonts/geist-sans/style.css" rel="stylesheet">
   <link href="https://cdn.jsdelivr.net/npm/geist@1.0.0/dist/fonts/geist-mono/style.css" rel="stylesheet">
   <link href="/static/css/app.css?v={{APP_VERSION}}" rel="stylesheet">
   <style>
     .image-studio-page {
-      --studio-ink:#191714;
-      --studio-muted:#81776a;
-      --studio-paper:#fffaf0;
-      --studio-panel:#fffdf8;
-      --studio-line:#eadfce;
-      --studio-accent:#cc5a24;
-      --studio-accent-2:#143f3a;
+      --studio-ink:#181714;
+      --studio-muted:#746f66;
+      --studio-soft:#a39b90;
+      --studio-border:#e6dfd4;
+      --studio-panel:rgba(255,255,255,.72);
+      --studio-panel-solid:#fffdf9;
+      --studio-chip:#f0ede7;
+      --studio-accent:#11100e;
+      --studio-warm:#f7f0e3;
+      --studio-blue:rgba(113,145,205,.28);
+      --studio-gold:rgba(217,181,104,.24);
+      min-height:100vh;
+      overflow:hidden;
       background:
-        radial-gradient(circle at 12% 12%, rgba(204,90,36,.16), transparent 28rem),
-        radial-gradient(circle at 84% 4%, rgba(20,63,58,.12), transparent 24rem),
-        linear-gradient(135deg, #f7efe0 0%, #fbf6ea 48%, #efe2ce 100%);
+        radial-gradient(circle at 10% 15%, var(--studio-blue), transparent 34rem),
+        radial-gradient(circle at 88% 78%, var(--studio-gold), transparent 30rem),
+        linear-gradient(180deg, #fbfaf7 0%, #f7f3eb 100%);
+      color:var(--studio-ink);
+    }
+    .image-studio-page::before {
+      content:"";
+      position:fixed;
+      inset:54px 0 0;
+      pointer-events:none;
+      opacity:.34;
+      background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='160' height='160'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0.35 0'/></filter><rect width='100%25' height='100%25' filter='url(%23n)'/></svg>");
+      background-size:160px 160px;
+      mix-blend-mode:multiply;
     }
     .studio-main {
-      width:100%;
-      max-width:1360px;
-      margin:0 auto;
-      padding:24px 22px 34px;
-    }
-    .studio-hero {
-      min-height:154px;
-      border:1px solid rgba(54,43,30,.12);
-      border-radius:28px;
-      padding:26px;
-      display:grid;
-      grid-template-columns:minmax(0,1fr) auto;
-      gap:20px;
-      align-items:end;
-      background:
-        linear-gradient(120deg, rgba(255,253,248,.94), rgba(255,247,231,.78)),
-        repeating-linear-gradient(90deg, rgba(25,23,20,.04) 0 1px, transparent 1px 18px);
-      box-shadow:0 20px 60px rgba(71,48,25,.08);
-      overflow:hidden;
-      position:relative;
-    }
-    .studio-hero::after {
-      content:"";
-      position:absolute;
-      right:-70px;
-      top:-90px;
-      width:280px;
-      height:280px;
-      border-radius:38% 62% 44% 56%;
-      background:linear-gradient(135deg, rgba(204,90,36,.2), rgba(20,63,58,.12));
-      filter:blur(1px);
-      transform:rotate(18deg);
-    }
-    .studio-kicker {
-      font-size:12px;
-      font-weight:800;
-      letter-spacing:.13em;
-      text-transform:uppercase;
-      color:var(--studio-accent);
-    }
-    .studio-title {
-      margin-top:8px;
-      max-width:760px;
-      font-size:clamp(34px, 6vw, 78px);
-      line-height:.9;
-      letter-spacing:-.07em;
-      color:var(--studio-ink);
-    }
-    .studio-sub {
-      margin-top:14px;
-      max-width:720px;
-      color:var(--studio-muted);
-      font-size:14px;
-    }
-    .studio-health {
       position:relative;
       z-index:1;
-      min-width:220px;
-      padding:14px;
-      border-radius:18px;
-      background:rgba(255,253,248,.72);
-      border:1px solid rgba(234,223,206,.8);
-      color:var(--studio-muted);
-      font-size:12px;
+      width:100%;
+      height:calc(100vh - 54px);
+      min-height:0;
+      padding:0;
+      overflow:hidden;
     }
-    .studio-health strong {
-      display:block;
-      margin-bottom:3px;
-      color:var(--studio-ink);
-      font-size:22px;
-      letter-spacing:-.04em;
-    }
-    .studio-grid {
-      margin-top:18px;
+    .studio-shell {
+      height:100%;
+      min-height:0;
       display:grid;
-      grid-template-columns:minmax(320px, 420px) minmax(0,1fr);
-      gap:18px;
-      align-items:start;
+      grid-template-columns:286px minmax(0,1fr);
+      overflow:hidden;
     }
-    .studio-card {
-      border:1px solid var(--studio-line);
-      border-radius:24px;
-      background:rgba(255,253,248,.9);
-      box-shadow:0 18px 48px rgba(71,48,25,.07);
-    }
-    .studio-control {
-      padding:18px;
-      position:sticky;
-      top:70px;
-    }
-    .studio-field {
+    .studio-sidebar {
+      min-height:0;
       display:grid;
-      gap:8px;
-      margin-top:14px;
+      grid-template-rows:auto auto minmax(0,1fr) auto;
+      gap:12px;
+      padding:18px 14px 16px 18px;
+      border-right:1px solid rgba(190,181,166,.42);
+      background:rgba(250,249,245,.62);
+      backdrop-filter:blur(22px);
     }
-    .studio-label {
+    .studio-side-top {
+      display:grid;
+      gap:6px;
+      padding:0 2px;
+    }
+    .studio-kicker {
       display:flex;
       align-items:center;
-      justify-content:space-between;
-      gap:10px;
-      font-size:12px;
+      gap:9px;
+      color:#81786c;
+      font-size:10px;
       font-weight:800;
-      color:#4a3c2f;
+      letter-spacing:.28em;
+      text-transform:uppercase;
     }
-    .studio-label span:last-child {
-      font-weight:600;
+    .studio-kicker::before {
+      content:"";
+      width:28px;
+      height:1px;
+      background:#bfb5a5;
+    }
+    .studio-side-title {
+      font-family:"Palatino Linotype","Book Antiqua","URW Palladio L","Times New Roman",serif;
+      font-size:30px;
+      line-height:1;
+      letter-spacing:-.055em;
+    }
+    .studio-side-copy {
       color:var(--studio-muted);
+      font-size:12px;
+      line-height:1.7;
     }
-    .studio-textarea {
-      min-height:154px;
-      padding:14px;
-      border-radius:18px;
-      border:1px solid var(--studio-line);
-      resize:vertical;
-      background:#fffaf2;
-      color:var(--studio-ink);
-      font-size:14px;
-      line-height:1.55;
-    }
-    .studio-textarea:focus,
-    .studio-select:focus {
-      border-color:rgba(204,90,36,.55);
-      box-shadow:0 0 0 3px rgba(204,90,36,.1);
-    }
-    .studio-row {
+    .studio-side-actions {
       display:grid;
-      grid-template-columns:1fr 1fr;
-      gap:10px;
-    }
-    .studio-select,
-    .studio-file {
-      width:100%;
-      height:40px;
-      border:1px solid var(--studio-line);
-      border-radius:14px;
-      padding:0 12px;
-      background:#fffaf2;
-      color:var(--studio-ink);
-      font-size:13px;
-    }
-    .studio-toggle {
-      display:grid;
-      grid-template-columns:1fr 1fr;
+      grid-template-columns:minmax(0,1fr) auto;
       gap:8px;
-      padding:5px;
-      border-radius:18px;
-      background:#efe3d1;
     }
-    .studio-toggle button {
-      height:36px;
+    .studio-new-btn,
+    .studio-clear-btn {
+      height:38px;
       border-radius:14px;
-      color:#6d6256;
-      font-size:13px;
-      font-weight:800;
-    }
-    .studio-toggle button.is-active {
-      background:var(--studio-panel);
-      color:var(--studio-ink);
-      box-shadow:0 8px 22px rgba(71,48,25,.08);
-    }
-    .studio-submit {
-      width:100%;
-      height:46px;
-      margin-top:18px;
-      border-radius:16px;
       display:inline-flex;
       align-items:center;
       justify-content:center;
       gap:8px;
-      background:var(--studio-ink);
-      color:#fff9ef;
-      font-size:14px;
-      font-weight:900;
-      letter-spacing:-.01em;
+      font-size:13px;
+      font-weight:800;
+      transition:background .16s ease,color .16s ease,transform .16s ease;
     }
-    .studio-submit:disabled {
-      cursor:default;
-      opacity:.55;
+    .studio-new-btn {
+      background:#171511;
+      color:#fffaf2;
+      box-shadow:0 10px 24px rgba(23,21,17,.12);
     }
-    .studio-status {
-      min-height:20px;
-      margin-top:12px;
-      color:var(--studio-muted);
-      font-size:12px;
+    .studio-new-btn:hover {
+      background:#050505;
+      transform:translateY(-1px);
     }
-    .studio-results {
-      min-height:520px;
-      padding:18px;
+    .studio-clear-btn {
+      width:42px;
+      background:var(--studio-chip);
+      color:#5f594f;
     }
-    .studio-results-head {
+    .studio-clear-btn:hover {
+      background:#e8e2d8;
+      color:#221f1a;
+    }
+    .studio-side-list-wrap {
+      min-height:0;
+      display:grid;
+      grid-template-rows:auto minmax(0,1fr);
+      gap:8px;
+    }
+    .studio-side-list-head {
       display:flex;
       align-items:center;
       justify-content:space-between;
-      gap:12px;
-      margin-bottom:14px;
-    }
-    .studio-results-title {
-      font-size:18px;
-      font-weight:900;
-      color:var(--studio-ink);
-      letter-spacing:-.04em;
-    }
-    .studio-link-btn {
-      height:30px;
-      padding:0 11px;
-      border-radius:999px;
-      background:#f0e5d4;
-      color:#5b4b3c;
-      font-size:12px;
+      gap:8px;
+      padding:0 2px;
+      color:#8a8378;
+      font-size:11px;
       font-weight:800;
     }
-    .studio-output-grid {
+    .studio-session-list {
+      min-height:0;
+      overflow:auto;
       display:grid;
-      grid-template-columns:repeat(auto-fill, minmax(210px, 1fr));
+      align-content:start;
+      gap:3px;
+      padding-right:4px;
+      scrollbar-width:thin;
+      scrollbar-color:rgba(74,68,60,.2) transparent;
+    }
+    .studio-session-list::-webkit-scrollbar,
+    .studio-results-viewport::-webkit-scrollbar {
+      width:8px;
+    }
+    .studio-session-list::-webkit-scrollbar-thumb,
+    .studio-results-viewport::-webkit-scrollbar-thumb {
+      border-radius:999px;
+      background:rgba(74,68,60,.18);
+    }
+    .studio-session-list:empty::before {
+      content:attr(data-empty);
+      padding:8px 10px;
+      color:#a29a90;
+      font-size:12px;
+      line-height:1.6;
+    }
+    .studio-side-session {
+      width:100%;
+      min-height:62px;
+      border-left:2px solid transparent;
+      padding:9px 9px 9px 11px;
+      display:grid;
+      gap:4px;
+      text-align:left;
+      color:#5d574f;
+      transition:background .16s ease,border-color .16s ease,color .16s ease;
+    }
+    .studio-side-session:hover {
+      background:rgba(255,255,255,.5);
+      border-color:#c9beb0;
+      color:#1f1c18;
+    }
+    .studio-side-session.is-active {
+      background:rgba(17,16,14,.045);
+      border-color:#171511;
+      color:#181714;
+    }
+    .studio-side-session-title {
+      overflow:hidden;
+      white-space:nowrap;
+      text-overflow:ellipsis;
+      font-size:13px;
+      font-weight:800;
+    }
+    .studio-side-session-meta {
+      overflow:hidden;
+      white-space:nowrap;
+      text-overflow:ellipsis;
+      color:#9a9287;
+      font-size:11px;
+      font-weight:600;
+    }
+    .studio-side-health {
+      display:grid;
+      grid-template-columns:auto minmax(0,1fr);
+      gap:10px;
+      align-items:center;
+      padding:10px;
+      border:1px solid rgba(213,204,190,.72);
+      border-radius:18px;
+      background:rgba(255,255,255,.46);
+    }
+    .studio-side-health strong {
+      width:44px;
+      height:44px;
+      border-radius:14px;
+      display:grid;
+      place-items:center;
+      background:#171511;
+      color:#fffaf2;
+      font-size:18px;
+      letter-spacing:-.04em;
+    }
+    .studio-side-health span {
+      min-width:0;
+      color:var(--studio-muted);
+      font-size:12px;
+      line-height:1.55;
+    }
+    .studio-workbench {
+      position:relative;
+      min-height:0;
+      display:grid;
+      grid-template-rows:minmax(0,1fr) auto;
+      overflow:hidden;
+    }
+    .studio-workbench::before {
+      content:"";
+      position:absolute;
+      inset:0;
+      pointer-events:none;
+      background:
+        radial-gradient(circle at 18% 24%, rgba(125,151,202,.18), transparent 26rem),
+        radial-gradient(circle at 78% 72%, rgba(216,188,130,.18), transparent 24rem),
+        conic-gradient(from 110deg at 50% 50%, transparent 0deg, rgba(126,151,203,.08) 68deg, transparent 150deg, rgba(217,184,111,.08) 246deg, transparent 330deg);
+      filter:blur(.2px);
+    }
+    .studio-results-viewport {
+      position:relative;
+      z-index:1;
+      min-height:0;
+      overflow:auto;
+      padding:54px 28px 30px;
+      scrollbar-width:thin;
+      scrollbar-color:rgba(74,68,60,.2) transparent;
+    }
+    .studio-thread {
+      width:min(100%,980px);
+      margin:0 auto;
+      display:grid;
+      gap:34px;
+      align-content:start;
+    }
+    .studio-empty {
+      min-height:100%;
+      display:grid;
+      place-items:center;
+      padding:34px 18px 140px;
+      text-align:center;
+    }
+    .studio-empty-inner {
+      position:relative;
+      width:min(100%,760px);
+      display:grid;
+      justify-items:center;
+      gap:14px;
+      padding:34px 16px;
+    }
+    .studio-empty-orb {
+      position:absolute;
+      inset:auto;
+      width:min(86vw,760px);
+      height:min(72vw,520px);
+      border-radius:999px;
+      pointer-events:none;
+      opacity:.72;
+      filter:blur(70px);
+      background:
+        radial-gradient(circle at 18% 22%, rgba(112,142,199,.34), transparent 38%),
+        radial-gradient(circle at 82% 76%, rgba(220,188,111,.32), transparent 38%),
+        radial-gradient(circle at 52% 48%, rgba(255,255,255,.48), transparent 48%);
+      animation:studioAurora 22s ease-in-out infinite;
+    }
+    .studio-empty-kicker {
+      position:relative;
+      display:flex;
+      align-items:center;
+      gap:12px;
+      color:#777166;
+      font-size:10px;
+      font-weight:900;
+      letter-spacing:.32em;
+      text-transform:uppercase;
+    }
+    .studio-empty-kicker::before,
+    .studio-empty-kicker::after {
+      content:"";
+      width:42px;
+      height:1px;
+      background:#c5baaa;
+    }
+    .studio-empty strong {
+      position:relative;
+      font-family:"Palatino Linotype","Book Antiqua","URW Palladio L","Times New Roman",serif;
+      max-width:760px;
+      color:#12110f;
+      font-size:clamp(34px, 7vw, 72px);
+      line-height:.95;
+      letter-spacing:-.075em;
+      font-weight:700;
+    }
+    .studio-empty span {
+      position:relative;
+      max-width:520px;
+      color:#716b62;
+      font-family:"Palatino Linotype","Book Antiqua","URW Palladio L","Times New Roman",serif;
+      font-size:15px;
+      font-style:italic;
+      line-height:1.7;
+    }
+    .studio-turn {
+      display:grid;
+      gap:14px;
+      animation:studioRise .34s cubic-bezier(.16,1,.3,1) both;
+    }
+    .studio-turn-user {
+      justify-self:end;
+      max-width:min(78%,760px);
+      display:grid;
+      justify-items:end;
+      gap:6px;
+    }
+    .studio-turn-meta {
+      display:flex;
+      flex-wrap:wrap;
+      justify-content:flex-end;
+      gap:9px;
+      padding-right:4px;
+      color:#9d968c;
+      font-size:11px;
+      font-weight:700;
+    }
+    .studio-user-bubble {
+      border:1px solid rgba(222,214,201,.86);
+      border-radius:26px 8px 26px 26px;
+      padding:14px 17px;
+      background:rgba(255,255,255,.88);
+      box-shadow:0 1px 2px rgba(15,23,42,.04),0 16px 38px -28px rgba(15,23,42,.28);
+      color:#171511;
+      font-size:15px;
+      line-height:1.7;
+      white-space:pre-wrap;
+      overflow-wrap:anywhere;
+    }
+    .studio-result-wrap {
+      justify-self:start;
+      width:100%;
+      display:grid;
+      gap:12px;
+    }
+    .studio-result-toolbar {
+      display:flex;
+      flex-wrap:wrap;
+      align-items:center;
+      justify-content:space-between;
+      gap:10px;
+      color:#777064;
+      font-size:12px;
+      font-weight:700;
+    }
+    .studio-result-tags {
+      display:flex;
+      flex-wrap:wrap;
+      gap:6px;
+    }
+    .studio-tag {
+      min-height:26px;
+      padding:5px 10px;
+      border-radius:999px;
+      background:rgba(255,255,255,.62);
+      color:#6d655a;
+      font-size:11px;
+      font-weight:800;
+      line-height:1.2;
+    }
+    .studio-delete-btn {
+      height:28px;
+      padding:0 10px;
+      border-radius:999px;
+      background:rgba(255,255,255,.62);
+      color:#8f493e;
+      font-size:12px;
+      font-weight:900;
+      transition:background .16s ease,color .16s ease;
+    }
+    .studio-delete-btn:hover {
+      background:#fff;
+      color:#b42318;
+    }
+    .studio-session-images {
+      display:grid;
+      grid-template-columns:repeat(3,minmax(0,1fr));
       gap:12px;
     }
     .studio-output {
-      overflow:hidden;
-      border-radius:18px;
-      background:#f4ead9;
-      border:1px solid rgba(234,223,206,.9);
-      animation:studioRise .42s cubic-bezier(.16,1,.3,1) both;
+      min-width:0;
+      display:grid;
+      gap:8px;
     }
-    .studio-output a {
+    .studio-image-link {
       display:block;
-      background:#eadfcc;
+      aspect-ratio:1 / 1;
+      overflow:hidden;
+      border-radius:22px;
+      background:#ece6dc;
+      box-shadow:0 1px 2px rgba(15,23,42,.04),0 20px 46px -34px rgba(15,23,42,.44);
     }
-    .studio-output img {
+    .studio-image-link img {
       display:block;
       width:100%;
-      aspect-ratio:1 / 1;
+      height:100%;
       object-fit:cover;
+      transition:transform .22s ease,filter .22s ease;
+    }
+    .studio-image-link:hover img {
+      transform:scale(1.025);
+      filter:brightness(.94);
     }
     .studio-output-body {
-      padding:11px;
-      display:grid;
-      gap:5px;
-    }
-    .studio-output-title {
-      color:var(--studio-ink);
-      font-size:12px;
-      font-weight:800;
-      overflow:hidden;
-      text-overflow:ellipsis;
-      white-space:nowrap;
-    }
-    .studio-output-meta {
-      color:var(--studio-muted);
+      display:flex;
+      min-width:0;
+      align-items:center;
+      justify-content:space-between;
+      gap:8px;
+      padding:0 3px;
+      color:#9b948a;
       font-size:11px;
+      font-weight:700;
+    }
+    .studio-output-title,
+    .studio-output-meta {
+      min-width:0;
       overflow:hidden;
       text-overflow:ellipsis;
       white-space:nowrap;
     }
-    .studio-empty {
-      min-height:420px;
+    .studio-download-link {
+      flex:0 0 auto;
+      color:#716a60;
+      transition:color .16s ease;
+    }
+    .studio-download-link:hover {
+      color:#171511;
+    }
+    .studio-composer-wrap {
+      position:relative;
+      z-index:2;
+      width:100%;
+      padding:0 24px 24px;
+      display:grid;
+      justify-items:center;
+      gap:8px;
+    }
+    .studio-composer-wrap::before {
+      content:"";
+      position:absolute;
+      left:0;
+      right:0;
+      bottom:100%;
+      height:56px;
+      pointer-events:none;
+      background:linear-gradient(180deg, rgba(250,248,243,0), rgba(250,248,243,.86));
+    }
+    .studio-composer {
+      width:min(100%,980px);
+      position:relative;
+      overflow:hidden;
+      border:1px solid rgba(227,220,208,.72);
+      border-radius:32px;
+      background:rgba(255,255,255,.88);
+      box-shadow:0 1px 2px rgba(15,23,42,.04),0 10px 34px -20px rgba(15,23,42,.34);
+      backdrop-filter:blur(18px);
+      transition:box-shadow .22s ease,border-color .22s ease,transform .22s ease;
+    }
+    .studio-composer.is-dragging {
+      border-color:rgba(23,21,17,.7);
+      box-shadow:0 0 0 3px rgba(23,21,17,.08),0 22px 54px -30px rgba(15,23,42,.4);
+    }
+    .studio-composer.is-running {
+      animation:studioComposerBreathe 2.7s ease-in-out infinite;
+    }
+    .studio-mode-row {
+      display:flex;
+      align-items:center;
+      justify-content:space-between;
+      gap:10px;
+      padding:12px 16px 0;
+    }
+    .studio-toggle {
+      display:inline-flex;
+      align-items:center;
+      gap:4px;
+      padding:4px;
+      border-radius:999px;
+      background:#f2efe9;
+    }
+    .studio-toggle button {
+      height:30px;
+      padding:0 12px;
+      border-radius:999px;
+      color:#746c61;
+      font-size:12px;
+      font-weight:900;
+      transition:background .16s ease,color .16s ease,box-shadow .16s ease;
+    }
+    .studio-toggle button.is-active {
+      background:#fff;
+      color:#171511;
+      box-shadow:0 8px 20px rgba(29,25,20,.08);
+    }
+    .studio-prompt-count {
+      color:#a19a90;
+      font-size:11px;
+      font-weight:800;
+    }
+    .studio-textarea {
+      width:100%;
+      min-height:96px;
+      max-height:300px;
+      padding:16px 20px 10px;
+      resize:none;
+      overflow:auto;
+      border:0;
+      background:transparent;
+      color:#171511;
+      font-size:15px;
+      line-height:1.7;
+    }
+    .studio-textarea::placeholder {
+      color:#9d968c;
+    }
+    .studio-toolbar {
+      display:flex;
+      align-items:flex-end;
+      justify-content:space-between;
+      gap:12px;
+      padding:10px 16px 16px;
+      border-top:1px solid rgba(236,230,219,.75);
+    }
+    .studio-controls {
+      min-width:0;
+      display:flex;
+      flex-wrap:wrap;
+      align-items:center;
+      gap:8px;
+    }
+    .studio-field {
+      min-width:0;
+      display:flex;
+      align-items:center;
+      gap:7px;
+      min-height:38px;
+      padding:0 11px;
+      border-radius:999px;
+      background:#f2efe9;
+      color:#625b51;
+    }
+    .studio-label {
+      display:flex;
+      align-items:center;
+      gap:6px;
+      color:#7c7468;
+      font-size:12px;
+      font-weight:900;
+      white-space:nowrap;
+    }
+    .studio-label span:last-child {
+      color:#9a9286;
+      font-weight:800;
+    }
+    .studio-select,
+    .studio-file {
+      min-width:0;
+      height:32px;
+      border:0;
+      border-radius:999px;
+      padding:0 24px 0 0;
+      background:transparent;
+      color:#171511;
+      font-size:12px;
+      font-weight:900;
+    }
+    .studio-select:focus {
+      box-shadow:none;
+      outline:none;
+    }
+    .studio-file {
+      display:none;
+    }
+    .studio-upload-btn {
+      height:38px;
+      padding:0 13px;
+      border-radius:999px;
+      display:inline-flex;
+      align-items:center;
+      gap:7px;
+      background:#f2efe9;
+      color:#625b51;
+      font-size:12px;
+      font-weight:900;
+      transition:background .16s ease,color .16s ease;
+    }
+    .studio-upload-btn:hover {
+      background:#e8e2d8;
+      color:#171511;
+    }
+    .studio-upload-btn svg,
+    .studio-submit svg,
+    .studio-clear-btn svg,
+    .studio-new-btn svg {
+      width:15px;
+      height:15px;
+      stroke:currentColor;
+      stroke-width:2;
+      stroke-linecap:round;
+      stroke-linejoin:round;
+      fill:none;
+    }
+    .studio-submit {
+      width:42px;
+      min-width:42px;
+      height:42px;
+      border-radius:999px;
       display:grid;
       place-items:center;
-      border:1px dashed rgba(25,23,20,.16);
-      border-radius:20px;
-      color:#8d8173;
-      text-align:center;
-      padding:24px;
+      background:#171511;
+      color:#fffaf2;
+      box-shadow:0 1px 2px rgba(15,23,42,.1),0 8px 20px -8px rgba(15,23,42,.45);
+      transition:background .16s ease,transform .16s ease,box-shadow .16s ease;
     }
-    .studio-empty strong {
-      display:block;
-      color:var(--studio-ink);
-      font-size:24px;
-      letter-spacing:-.05em;
-      margin-bottom:6px;
+    .studio-submit:hover {
+      background:#050505;
+      transform:translateY(-1px);
+    }
+    .studio-submit:disabled {
+      cursor:not-allowed;
+      transform:none;
+      background:#d8d2c8;
+      color:#9b948a;
+      box-shadow:none;
+    }
+    .studio-reference-preview {
+      width:min(100%,980px);
+      display:flex;
+      gap:9px;
+      overflow-x:auto;
+      padding:0 4px 2px;
+      scrollbar-width:none;
+    }
+    .studio-reference-preview:empty {
+      display:none;
+    }
+    .studio-reference-preview::-webkit-scrollbar {
+      display:none;
+    }
+    .studio-reference-item {
+      position:relative;
+      width:64px;
+      height:64px;
+      flex:0 0 auto;
+    }
+    .studio-reference-item img {
+      width:100%;
+      height:100%;
+      object-fit:cover;
+      border:1px solid rgba(226,218,205,.9);
+      border-radius:18px;
+      background:#ece6dc;
+      box-shadow:0 8px 20px -16px rgba(15,23,42,.45);
+    }
+    .studio-reference-more {
+      width:64px;
+      height:64px;
+      flex:0 0 auto;
+      border-radius:18px;
+      display:grid;
+      place-items:center;
+      background:rgba(255,255,255,.74);
+      color:#81786c;
+      font-size:12px;
+      font-weight:900;
+    }
+    .studio-status {
+      width:min(100%,980px);
+      min-height:18px;
+      padding:0 4px;
+      color:#746f66;
+      font-size:12px;
+      font-weight:700;
+      text-align:left;
+    }
+    .studio-status[data-state="running"] {
+      color:#5b5a54;
+    }
+    .studio-status[data-state="completed"] {
+      color:#28724f;
+    }
+    .studio-status[data-state="failed"] {
+      color:#b42318;
     }
     .studio-hidden {
       display:none !important;
     }
     @keyframes studioRise {
-      from { opacity:0; transform:translateY(14px) scale(.98) }
+      from { opacity:0; transform:translateY(14px) scale(.99) }
       to { opacity:1; transform:none }
     }
-    @media (max-width: 900px) {
-      .studio-hero,
-      .studio-grid {
-        grid-template-columns:1fr;
+    @keyframes studioAurora {
+      0%,100% { transform:translate3d(-2%,0,0) scale(1) rotate(0deg) }
+      50% { transform:translate3d(3%,-2%,0) scale(1.06) rotate(6deg) }
+    }
+    @keyframes studioComposerBreathe {
+      0%,100% {
+        box-shadow:0 1px 2px rgba(15,23,42,.04),0 10px 34px -20px rgba(15,23,42,.34),0 0 0 0 rgba(23,21,17,.08);
       }
-      .studio-control {
-        position:static;
-      }
-      .studio-health {
-        min-width:0;
+      50% {
+        box-shadow:0 1px 2px rgba(15,23,42,.04),0 20px 48px -26px rgba(15,23,42,.4),0 0 32px rgba(23,21,17,.08);
       }
     }
-    @media (max-width: 560px) {
+    @media (max-width: 1000px) {
+      .studio-shell {
+        grid-template-columns:1fr;
+      }
+      .studio-sidebar {
+        display:none;
+      }
+      .studio-results-viewport {
+        padding:34px 18px 28px;
+      }
+    }
+    @media (max-width: 720px) {
+      .image-studio-page {
+        overflow:auto;
+      }
       .studio-main {
-        padding:14px 12px 26px;
+        min-height:calc(100vh - 88px);
+        height:calc(100vh - 88px);
       }
-      .studio-hero {
-        border-radius:22px;
-        padding:20px;
+      .studio-results-viewport {
+        padding:18px 12px 22px;
       }
-      .studio-row {
+      .studio-turn-user {
+        max-width:92%;
+      }
+      .studio-session-images {
         grid-template-columns:1fr;
+        gap:10px;
       }
-      .studio-output-grid {
-        grid-template-columns:1fr;
+      .studio-composer-wrap {
+        padding:0 10px 14px;
+      }
+      .studio-composer {
+        border-radius:24px;
+      }
+      .studio-mode-row {
+        padding:10px 12px 0;
+      }
+      .studio-textarea {
+        min-height:86px;
+        padding:13px 14px 8px;
+      }
+      .studio-toolbar {
+        display:grid;
+        gap:10px;
+        padding:8px 12px 12px;
+      }
+      .studio-controls {
+        flex-wrap:nowrap;
+        overflow-x:auto;
+        padding-bottom:2px;
+        scrollbar-width:none;
+      }
+      .studio-controls::-webkit-scrollbar {
+        display:none;
+      }
+      .studio-submit {
+        justify-self:end;
+      }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      .studio-empty-orb,
+      .studio-composer.is-running {
+        animation:none;
       }
     }
   </style>
@@ -333,99 +819,142 @@
   <div id="webui-header" data-active="/webui/image-studio"></div>
 
   <main class="studio-main">
-    <section class="studio-hero">
-      <div>
-        <div class="studio-kicker">GPT Image Studio</div>
-        <h1 class="studio-title">把提示词直接变成可交付图片</h1>
-        <p class="studio-sub">参考 ChatGPT2API 的在线画图工作台思路，使用本机已接入的 GPT 图片号池和现有 Grok 图像编辑通道。</p>
-      </div>
-      <div class="studio-health">
-        <strong id="studioModelCount">0</strong>
-        <span id="studioModelHint">正在读取图片模型...</span>
-      </div>
-    </section>
-
-    <section class="studio-grid">
-      <form id="studioForm" class="studio-card studio-control">
-        <div class="studio-toggle" id="studioModeToggle">
-          <button type="button" class="is-active" data-mode="generate">文生图</button>
-          <button type="button" data-mode="edit">图像编辑</button>
+    <section class="studio-shell" aria-label="在线画图工作台">
+      <aside class="studio-sidebar">
+        <div class="studio-side-top">
+          <div class="studio-kicker">Generative Atelier</div>
+          <h1 class="studio-side-title">画图</h1>
+          <p class="studio-side-copy">参考 ChatGPT2API 的画图工作台布局：左侧保留历史，中间查看结果，底部输入提示词和参考图。</p>
         </div>
 
-        <div class="studio-field">
-          <label class="studio-label" for="studioPrompt">
-            <span>提示词</span>
-            <span id="studioPromptCount">0 字</span>
-          </label>
-          <textarea id="studioPrompt" class="studio-textarea" placeholder="例如：一张低角度电影海报，雨夜霓虹街道，黑猫穿过发光的斑马线，胶片颗粒，高对比光影"></textarea>
+        <div class="studio-side-actions">
+          <button id="studioNewSession" class="studio-new-btn" type="button">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M12 5v14"></path>
+              <path d="M5 12h14"></path>
+            </svg>
+            新建画图
+          </button>
+          <button id="studioClearHistory" class="studio-clear-btn" type="button" aria-label="清空历史" title="清空历史">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M3 6h18"></path>
+              <path d="M8 6V4h8v2"></path>
+              <path d="M19 6l-1 14H6L5 6"></path>
+            </svg>
+          </button>
         </div>
 
-        <div class="studio-field" id="studioGenerateModelField">
-          <label class="studio-label" for="studioModel">
-            <span>图片模型</span>
-            <span>GPT 号池</span>
-          </label>
-          <select id="studioModel" class="studio-select"></select>
-        </div>
-
-        <div class="studio-field studio-hidden" id="studioEditModelField">
-          <label class="studio-label" for="studioEditModel">
-            <span>编辑模型</span>
-            <span>参考图</span>
-          </label>
-          <select id="studioEditModel" class="studio-select"></select>
-        </div>
-
-        <div class="studio-field studio-hidden" id="studioImageField">
-          <label class="studio-label" for="studioImages">
-            <span>参考图</span>
-            <span id="studioImageCount">未选择</span>
-          </label>
-          <input id="studioImages" class="studio-file" type="file" accept="image/*" multiple>
-        </div>
-
-        <div class="studio-row">
-          <div class="studio-field">
-            <label class="studio-label" for="studioSize">
-              <span>画幅</span>
-            </label>
-            <select id="studioSize" class="studio-select">
-              <option value="1024x1024">1:1</option>
-              <option value="1280x720">16:9</option>
-              <option value="720x1280">9:16</option>
-              <option value="1792x1024">3:2</option>
-              <option value="1024x1792">2:3</option>
-            </select>
+        <section class="studio-side-list-wrap">
+          <div class="studio-side-list-head">
+            <span>最近会话</span>
+            <span id="studioHistoryHint">服务端历史加载中...</span>
           </div>
-          <div class="studio-field">
-            <label class="studio-label" for="studioCount">
-              <span>张数</span>
-            </label>
-            <select id="studioCount" class="studio-select">
-              <option value="1">1</option>
-              <option value="2">2</option>
-              <option value="3">3</option>
-              <option value="4">4</option>
-            </select>
+          <div id="studioSessionList" class="studio-session-list" data-empty="还没有图片记录，输入提示词后会在这里显示。"></div>
+        </section>
+
+        <div class="studio-side-health">
+          <strong id="studioModelCount">0</strong>
+          <span id="studioModelHint">正在读取图片模型...</span>
+        </div>
+      </aside>
+
+      <section class="studio-workbench">
+        <div id="studioResultsViewport" class="studio-results-viewport">
+          <div id="studioOutput" class="studio-thread"></div>
+          <div id="studioEmpty" class="studio-empty">
+            <div class="studio-empty-inner">
+              <div class="studio-empty-orb" aria-hidden="true"></div>
+              <div class="studio-empty-kicker">Sketch to Render</div>
+              <strong>Turn ideas into images</strong>
+              <span>输入提示词开始新的画图任务；上传或粘贴参考图后会切换到图像编辑模式。</span>
+            </div>
           </div>
         </div>
 
-        <button id="studioSubmit" class="studio-submit" type="submit">开始生成</button>
-        <div id="studioStatus" class="studio-status" aria-live="polite">就绪</div>
-      </form>
+        <form id="studioForm" class="studio-composer-wrap">
+          <div id="studioReferencePreview" class="studio-reference-preview" aria-live="polite"></div>
+          <div id="studioComposer" class="studio-composer">
+            <div class="studio-mode-row">
+              <div class="studio-toggle" id="studioModeToggle" role="tablist" aria-label="画图模式">
+                <button type="button" class="is-active" data-mode="generate" aria-pressed="true">文生图</button>
+                <button type="button" data-mode="edit" aria-pressed="false">图像编辑</button>
+              </div>
+              <span id="studioPromptCount" class="studio-prompt-count">0 字</span>
+            </div>
 
-      <section class="studio-card studio-results">
-        <div class="studio-results-head">
-          <div class="studio-results-title">生成结果</div>
-          <button id="studioClearHistory" class="studio-link-btn" type="button">清空历史</button>
-        </div>
-        <div id="studioOutput" class="studio-output-grid"></div>
-        <div id="studioEmpty" class="studio-empty">
-          <div>
-            <strong>还没有图片</strong>
-            <span>提交一次任务后，结果和最近历史会显示在这里。</span>
+            <textarea
+              id="studioPrompt"
+              class="studio-textarea"
+              placeholder="输入你想要生成的画面，也可直接粘贴图片"
+              rows="3"
+            ></textarea>
+
+            <div class="studio-toolbar">
+              <div class="studio-controls">
+                <input id="studioImages" class="studio-file" type="file" accept="image/*" multiple>
+                <button id="studioPickImages" class="studio-upload-btn" type="button">
+                  <svg viewBox="0 0 24 24" aria-hidden="true">
+                    <path d="M12 5v14"></path>
+                    <path d="M5 12h14"></path>
+                  </svg>
+                  <span id="studioImageCount">上传参考图</span>
+                </button>
+
+                <div class="studio-field" id="studioGenerateModelField">
+                  <label class="studio-label" for="studioModel">
+                    <span>模型</span>
+                  </label>
+                  <select id="studioModel" class="studio-select"></select>
+                </div>
+
+                <div class="studio-field studio-hidden" id="studioEditModelField">
+                  <label class="studio-label" for="studioEditModel">
+                    <span>编辑</span>
+                  </label>
+                  <select id="studioEditModel" class="studio-select"></select>
+                </div>
+
+                <label class="studio-field" for="studioSize">
+                  <span class="studio-label">比例</span>
+                  <select id="studioSize" class="studio-select">
+                    <option value="1024x1024">1:1</option>
+                    <option value="1280x720">16:9</option>
+                    <option value="720x1280">9:16</option>
+                    <option value="1792x1024">3:2</option>
+                    <option value="1024x1792">2:3</option>
+                  </select>
+                </label>
+
+                <label class="studio-field" for="studioQuality">
+                  <span class="studio-label">清晰度 <span id="studioQualityHint">1K</span></span>
+                  <select id="studioQuality" class="studio-select">
+                    <option value="1k">1K</option>
+                    <option value="2k">2K</option>
+                    <option value="4k">4K</option>
+                  </select>
+                </label>
+
+                <label class="studio-field" for="studioCount">
+                  <span class="studio-label">张数</span>
+                  <select id="studioCount" class="studio-select">
+                    <option value="1">1</option>
+                    <option value="2">2</option>
+                    <option value="3">3</option>
+                    <option value="4">4</option>
+                  </select>
+                </label>
+              </div>
+
+              <button id="studioSubmit" class="studio-submit" type="submit" aria-label="开始生成" title="开始生成">
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M12 19V5"></path>
+                  <path d="m6 11 6-6 6 6"></path>
+                </svg>
+              </button>
+            </div>
           </div>
-        </div>
+          <div id="studioStatus" class="studio-status" aria-live="polite">就绪</div>
+        </form>
       </section>
     </section>
   </main>
@@ -433,8 +962,8 @@
   <script src="/static/js/i18n.js?v={{APP_VERSION}}"></script>
   <script src="/static/js/auth.js?v={{APP_VERSION}}-usernsfw1"></script>
   <script src="/static/js/toast.js?v={{APP_VERSION}}"></script>
-  <script src="/static/js/webui-header.js?v={{APP_VERSION}}-studio1"></script>
+  <script src="/static/js/webui-header.js?v={{APP_VERSION}}-studio2"></script>
   <script src="/static/js/footer.js?v={{APP_VERSION}}"></script>
-  <script src="/static/js/webui/image-studio.js?v={{APP_VERSION}}-studio1"></script>
+  <script src="/static/js/webui/image-studio.js?v={{APP_VERSION}}-studio2"></script>
 </body>
 </html>

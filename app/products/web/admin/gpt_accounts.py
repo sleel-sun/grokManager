@@ -2,9 +2,14 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
+import re
+import time
 from typing import TYPE_CHECKING, Any
+from urllib.parse import urlparse
 
+import aiohttp
 import orjson
 from fastapi import APIRouter, Body, Depends, Query
 from fastapi.responses import Response
@@ -27,6 +32,13 @@ router = APIRouter(prefix="/gpt", tags=["Admin - GPT Accounts"])
 _TAG = "gpt"
 _LEGACY_IMAGE_TAG = "gpt-image"
 _MAX_TEST_CONCURRENCY = 10
+_CHATGPT_BASE_URL = "https://chatgpt.com"
+_CHATGPT_USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36 Edg/143.0.0.0"
+)
+_CHATGPT_CLIENT_VERSION = "prod-be885abbfcfe7b1f511e88b3003d9ee44757fbad"
+_CHATGPT_CLIENT_BUILD_NUMBER = "5955942"
 
 
 def _clean_text(value: Any) -> str:
@@ -55,7 +67,245 @@ def _legacy_image_credential_record_token(email: str) -> str:
 
 def _mask(value: str) -> str:
     value = str(value or "")
-    return f"{value[:8]}...{value[-8:]}" if len(value) > 20 else value
+    if not value:
+        return ""
+    if len(value) <= 8:
+        return "*" * len(value)
+    if len(value) <= 20:
+        return f"{value[:3]}...{value[-3:]}"
+    return f"{value[:8]}...{value[-8:]}"
+
+
+def _access_token_from_login_result(value: Any) -> tuple[str, str]:
+    """Accept ChatGPT session JSON, a CodexManager-style snapshot, or a raw token."""
+    if isinstance(value, dict):
+        data = value
+        token = _clean_text(data.get("accessToken") or data.get("access_token"))
+        user = data.get("user") if isinstance(data.get("user"), dict) else {}
+        email = _clean_text((user or {}).get("email") or data.get("email"))
+        return token, email
+    attr_token = _clean_text(getattr(value, "access_token", ""))
+    if attr_token:
+        return attr_token, _clean_text(getattr(value, "email", ""))
+    raw = _clean_text(value)
+    if not raw:
+        return "", ""
+    token = raw[7:].strip() if raw.lower().startswith("bearer ") else raw
+    if not token.startswith(("{", "[")):
+        match = re.search(r'"access(?:Token|_token)"\s*:\s*"([^"]+)"', raw)
+        if match:
+            return _clean_text(match.group(1)), ""
+    if token and not token.startswith(("http://", "https://", "{", "[")) and "\n" not in token:
+        return token, ""
+    try:
+        data = orjson.loads(raw)
+    except orjson.JSONDecodeError:
+        match = re.search(r'"access(?:Token|_token)"\s*:\s*"([^"]+)"', raw)
+        return (_clean_text(match.group(1)), "") if match else ("", "")
+    if not isinstance(data, dict):
+        return "", ""
+    href = _clean_text(data.get("href"))
+    text = _clean_text(data.get("text"))
+    if href and text:
+        parsed = urlparse(href)
+        if parsed.scheme == "https" and parsed.netloc.lower() == "chatgpt.com" and parsed.path == "/api/auth/session":
+            return _access_token_from_login_result(text)
+        return "", ""
+    token = _clean_text(data.get("accessToken") or data.get("access_token"))
+    user = data.get("user") if isinstance(data.get("user"), dict) else {}
+    email = _clean_text((user or {}).get("email") or data.get("email"))
+    return token, email
+
+
+def _looks_like_direct_access_token_payload(value: Any) -> bool:
+    raw = _clean_text(value)
+    if not raw:
+        return False
+    lower = raw.lower()
+    return (
+        lower.startswith("bearer ")
+        or raw.startswith(("{", "["))
+        or "accesstoken" in lower
+        or "access_token" in lower
+        or "chatgpt.com/api/auth/session" in lower
+    )
+
+
+def _now_ms() -> int:
+    return int(time.time() * 1000)
+
+
+def _decode_jwt_payload(token: str) -> dict[str, Any]:
+    parts = str(token or "").split(".")
+    if len(parts) < 2:
+        return {}
+    payload = parts[1] + "=" * (-len(parts[1]) % 4)
+    try:
+        import base64
+
+        data = orjson.loads(base64.urlsafe_b64decode(payload.encode("ascii")))
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def _chatgpt_account_id(access_token: str) -> str:
+    auth = _decode_jwt_payload(access_token).get("https://api.openai.com/auth")
+    if isinstance(auth, dict):
+        return _clean_text(auth.get("chatgpt_account_id"))
+    return ""
+
+
+def _chatgpt_headers(access_token: str, path: str, extra: dict[str, str] | None = None) -> dict[str, str]:
+    headers = {
+        "user-agent": _CHATGPT_USER_AGENT,
+        "authorization": f"Bearer {access_token}",
+        "origin": _CHATGPT_BASE_URL,
+        "referer": f"{_CHATGPT_BASE_URL}/",
+        "accept": "application/json",
+        "accept-language": "zh-CN,zh;q=0.9,en;q=0.8,en-US;q=0.7",
+        "cache-control": "no-cache",
+        "pragma": "no-cache",
+        "oai-language": "zh-CN",
+        "oai-client-version": _CHATGPT_CLIENT_VERSION,
+        "oai-client-build-number": _CHATGPT_CLIENT_BUILD_NUMBER,
+        "x-openai-target-path": path,
+        "x-openai-target-route": path,
+    }
+    account_id = _chatgpt_account_id(access_token)
+    if account_id:
+        headers["chatgpt-account-id"] = account_id
+    if extra:
+        headers.update(extra)
+    return headers
+
+
+async def _chatgpt_json(
+    session: aiohttp.ClientSession,
+    method: str,
+    path: str,
+    access_token: str,
+    *,
+    json_body: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    url = f"{_CHATGPT_BASE_URL}{path}"
+    target_path = path.split("?", 1)[0]
+    headers = _chatgpt_headers(
+        access_token,
+        target_path,
+        {"content-type": "application/json"} if json_body is not None else None,
+    )
+    async with session.request(
+        method,
+        url,
+        headers=headers,
+        json=json_body,
+        timeout=aiohttp.ClientTimeout(total=20),
+    ) as response:
+        text = await response.text()
+        if response.status == 401:
+            raise ValidationError("GPT access token is invalid or expired", param="account", code="invalid_access_token")
+        if response.status >= 400:
+            raise AppError(
+                f"ChatGPT account detail request failed: {path} HTTP {response.status}",
+                kind=ErrorKind.UPSTREAM,
+                status=502,
+                details={"body": text[:500]},
+            )
+        try:
+            data = orjson.loads(text)
+        except orjson.JSONDecodeError as exc:
+            raise AppError(
+                f"ChatGPT account detail request returned invalid JSON: {path}",
+                kind=ErrorKind.UPSTREAM,
+                status=502,
+            ) from exc
+        return data if isinstance(data, dict) else {}
+
+
+def _extract_image_quota(limits_progress: list[Any]) -> tuple[int, str | None, bool]:
+    for item in limits_progress:
+        if isinstance(item, dict) and item.get("feature_name") == "image_gen":
+            try:
+                remaining = int(item.get("remaining") or 0)
+            except (TypeError, ValueError):
+                remaining = 0
+            return remaining, _clean_text(item.get("reset_after")) or None, False
+    return 0, None, True
+
+
+async def _fetch_gpt_remote_detail(access_token: str) -> dict[str, Any]:
+    async with aiohttp.ClientSession(cookie_jar=aiohttp.CookieJar()) as session:
+        me_future = _chatgpt_json(session, "GET", "/backend-api/me", access_token)
+        init_future = _chatgpt_json(
+            session,
+            "POST",
+            "/backend-api/conversation/init",
+            access_token,
+            json_body={
+                "gizmo_id": None,
+                "requested_default_model": None,
+                "conversation_id": None,
+                "timezone_offset_min": -480,
+            },
+        )
+        account_future = _chatgpt_json(
+            session,
+            "GET",
+            "/backend-api/accounts/check/v4-2023-04-27?timezone_offset_min=-480",
+            access_token,
+        )
+        me_payload, init_payload, account_payload = await asyncio.gather(
+            me_future,
+            init_future,
+            account_future,
+        )
+
+    default_account = ((account_payload.get("accounts") or {}).get("default") or {}).get("account") or {}
+    if not isinstance(default_account, dict):
+        default_account = {}
+    limits_progress = init_payload.get("limits_progress")
+    limits_progress = limits_progress if isinstance(limits_progress, list) else []
+    image_quota, image_restore_at, image_quota_unknown = _extract_image_quota(limits_progress)
+    return {
+        "email": _clean_text(me_payload.get("email")) or None,
+        "user_id": _clean_text(me_payload.get("id")) or None,
+        "plan_type": _clean_text(default_account.get("plan_type")) or "free",
+        "default_model_slug": _clean_text(init_payload.get("default_model_slug")) or None,
+        "limits_progress": limits_progress,
+        "image_quota": image_quota,
+        "image_restore_at": image_restore_at,
+        "image_quota_unknown": image_quota_unknown,
+        "account": default_account,
+    }
+
+
+def _remote_detail_ext(detail: dict[str, Any], existing_ext: dict[str, Any]) -> dict[str, Any]:
+    now = _now_ms()
+    plan_type = _clean_text(detail.get("plan_type"))
+    email = _clean_text(detail.get("email"))
+    ext_merge: dict[str, Any] = {
+        "gpt": True,
+        "gpt_status": "available",
+        "gpt_registration_error": None,
+        "gpt_last_checked_at": now,
+        "gpt_last_remote_refresh_at": now,
+        "gpt_remote_error": None,
+        "gpt_remote_user_id": _clean_text(detail.get("user_id")) or None,
+        "gpt_default_model_slug": _clean_text(detail.get("default_model_slug")) or None,
+        "gpt_limits_progress": detail.get("limits_progress") if isinstance(detail.get("limits_progress"), list) else [],
+        "gpt_image_quota": int(detail.get("image_quota") or 0),
+        "gpt_image_quota_unknown": bool(detail.get("image_quota_unknown")),
+        "gpt_image_restore_at": _clean_text(detail.get("image_restore_at")) or None,
+        "gpt_remote_account": detail.get("account") if isinstance(detail.get("account"), dict) else {},
+    }
+    if email:
+        ext_merge["gpt_email"] = email
+    if plan_type:
+        ext_merge["gpt_plan_type"] = plan_type
+    if existing_ext.get("gpt_image") and plan_type:
+        ext_merge["gpt_image_is_free"] = plan_type.lower() in {"", "free", "basic"}
+    return ext_merge
 
 
 class GPTAccountItem(BaseModel):
@@ -102,6 +352,10 @@ class GPTDeleteRequest(RootModel[list[str]]):
 
 class GPTAccountsTestRequest(BaseModel):
     accounts: list[str] = Field(default_factory=list)
+
+
+class GPTAccountDetailRequest(BaseModel):
+    account: str = ""
 
 
 class GPTAccountLoginRequest(BaseModel):
@@ -228,6 +482,18 @@ def _record_last_checked_at(ext: dict[str, Any]) -> Any:
     return ext.get("gpt_last_checked_at") or ext.get("gpt_image_last_checked_at")
 
 
+def _record_login_attempt_at(ext: dict[str, Any]) -> Any:
+    return ext.get("gpt_login_attempt_at") or ext.get("gpt_image_login_attempt_at")
+
+
+def _record_cooldown_until(ext: dict[str, Any]) -> Any:
+    return ext.get("gpt_cooldown_until") or ext.get("gpt_image_cooldown_until")
+
+
+def _record_last_remote_refresh_at(ext: dict[str, Any]) -> Any:
+    return ext.get("gpt_last_remote_refresh_at") or ext.get("gpt_image_last_remote_refresh_at")
+
+
 def _record_identity(record: "AccountRecord") -> str:
     ext = record.ext or {}
     access_token = _record_access_token(ext)
@@ -269,6 +535,9 @@ def _serialize(record: "AccountRecord") -> dict[str, Any]:
     alias = _record_alias(ext) or None
     plan_type = _record_plan_type(ext) or None
     error = _record_error(ext) or None
+    password = _record_password(ext)
+    mail_token = _record_mail_token(ext)
+    legacy_image_account = bool(ext.get("gpt_image") or _LEGACY_IMAGE_TAG in (record.tags or []))
     return {
         "id": record.token,
         "status": record.status,
@@ -279,13 +548,31 @@ def _serialize(record: "AccountRecord") -> dict[str, Any]:
         "capability_status": _record_status(ext),
         "capability_error": error,
         "last_checked_at": _record_last_checked_at(ext),
+        "last_login_attempt_at": _record_login_attempt_at(ext),
+        "last_remote_refresh_at": _record_last_remote_refresh_at(ext),
+        "cooldown_until": _record_cooldown_until(ext),
         "access_token_masked": _mask(access_token),
         "has_access_token": bool(access_token),
-        "has_credentials": bool(_record_password(ext) and _record_mail_token(ext)),
+        "has_credentials": bool(password and mail_token),
+        "has_password": bool(password),
+        "has_mail_token": bool(mail_token),
         "registration_error": error,
-        "legacy_image_account": bool(ext.get("gpt_image") or _LEGACY_IMAGE_TAG in (record.tags or [])),
+        "legacy_image_account": legacy_image_account,
+        "source_type": "legacy_image" if legacy_image_account else "gpt",
+        "created_at": record.created_at,
         "updated_at": record.updated_at,
+        "last_used_at": record.last_use_at,
+        "last_fail_at": record.last_fail_at,
         "last_fail_reason": record.last_fail_reason,
+        "use_count": record.usage_use_count,
+        "fail_count": record.usage_fail_count,
+        "remote_user_id": ext.get("gpt_remote_user_id") or ext.get("gpt_image_remote_user_id"),
+        "default_model_slug": ext.get("gpt_default_model_slug") or ext.get("gpt_image_default_model_slug"),
+        "limits_progress": ext.get("gpt_limits_progress") or ext.get("gpt_image_limits_progress") or [],
+        "image_quota": ext.get("gpt_image_quota"),
+        "image_quota_unknown": ext.get("gpt_image_quota_unknown"),
+        "image_restore_at": ext.get("gpt_image_restore_at"),
+        "remote_error": ext.get("gpt_remote_error") or ext.get("gpt_image_remote_error"),
     }
 
 
@@ -511,6 +798,80 @@ async def delete_gpt_accounts(
     return _json({"status": "success", "deleted": result.deleted})
 
 
+@router.post("/accounts/detail")
+async def get_gpt_account_detail(
+    req: GPTAccountDetailRequest,
+    repo: "AccountRepository" = Depends(get_repo),
+):
+    account_ref = _clean_text(req.account)
+    if not account_ref:
+        raise ValidationError("GPT account is required", param="account")
+    record = await _lookup_gpt_record(repo, account_ref)
+    ext = record.ext or {}
+    access_token = _record_access_token(ext)
+    if not access_token:
+        message = "No access token is available; login this GPT account before refreshing remote details"
+        return _json(
+            {
+                "status": "success",
+                "refreshed": False,
+                "error": message,
+                "account": _serialize(record),
+            }
+        )
+
+    try:
+        detail = await _fetch_gpt_remote_detail(access_token)
+        await repo.patch_accounts(
+            [
+                AccountPatch(
+                    token=record.token,
+                    ext_merge=_remote_detail_ext(detail, ext),
+                )
+            ]
+        )
+        refreshed = next(iter(await repo.get_accounts([record.token])), record)
+        return _json({"status": "success", "refreshed": True, "account": _serialize(refreshed)})
+    except ValidationError as exc:
+        message = str(exc)[:500]
+        now = _now_ms()
+        await repo.patch_accounts(
+            [
+                AccountPatch(
+                    token=record.token,
+                    last_fail_at=now,
+                    last_fail_reason=message,
+                    ext_merge={
+                        "gpt_status": "invalid",
+                        "gpt_registration_error": message,
+                        "gpt_remote_error": message,
+                        "gpt_last_remote_refresh_at": now,
+                    },
+                )
+            ]
+        )
+        refreshed = next(iter(await repo.get_accounts([record.token])), record)
+        return _json({"status": "success", "refreshed": False, "error": message, "account": _serialize(refreshed)})
+    except Exception as exc:
+        message = (str(exc) or exc.__class__.__name__)[:500]
+        now = _now_ms()
+        await repo.patch_accounts(
+            [
+                AccountPatch(
+                    token=record.token,
+                    last_fail_at=now,
+                    last_fail_reason=message,
+                    ext_merge={
+                        "gpt_remote_error": message,
+                        "gpt_last_remote_refresh_at": now,
+                    },
+                )
+            ]
+        )
+        refreshed = next(iter(await repo.get_accounts([record.token])), record)
+        return _json({"status": "success", "refreshed": False, "error": message, "account": _serialize(refreshed)})
+
+
 @router.post("/accounts/oauth/start")
 async def start_gpt_account_oauth(
     req: GPTAccountOAuthStartRequest,
@@ -525,11 +886,19 @@ async def start_gpt_account_oauth(
     try:
         from app.maintainer.gpt_oauth import GPTAccountOAuthError, gpt_oauth_login_service
 
-        payload = await run_in_threadpool(gpt_oauth_login_service.start, email_hint)
+        data = await run_in_threadpool(gpt_oauth_login_service.start, email_hint)
     except GPTAccountOAuthError as exc:
-        raise ValidationError(str(exc), param="oauth", code="oauth_start_failed") from exc
+        raise ValidationError(str(exc), param="login", code="oauth_start_failed") from exc
+    except Exception as exc:
+        raise ValidationError(str(exc), param="login", code="oauth_start_failed") from exc
 
-    return _json({"status": "success", **payload, "email_hint": email_hint})
+    return _json(
+        {
+            "status": "success",
+            **data,
+            "email_hint": email_hint,
+        }
+    )
 
 
 @router.post("/accounts/oauth/finish")
@@ -549,18 +918,25 @@ async def finish_gpt_account_oauth(
         alias = alias or _record_alias(ext)
         plan_type = plan_type or _record_plan_type(ext)
 
-    try:
-        from app.maintainer.gpt_oauth import GPTAccountOAuthError, gpt_oauth_login_service
+    access_token = ""
+    direct_email = ""
+    if _looks_like_direct_access_token_payload(req.callback):
+        access_token, direct_email = _access_token_from_login_result(req.callback)
+        email = email or direct_email
 
-        tokens = await run_in_threadpool(
-            gpt_oauth_login_service.finish,
-            req.session_id,
-            req.callback,
-        )
-    except GPTAccountOAuthError as exc:
-        raise ValidationError(str(exc), param="callback", code="oauth_finish_failed") from exc
+    if not access_token:
+        try:
+            from app.maintainer.gpt_oauth import GPTAccountOAuthError, gpt_oauth_login_service
 
-    access_token = _clean_text(tokens.get("access_token"))
+            tokens = await run_in_threadpool(
+                gpt_oauth_login_service.finish,
+                req.session_id,
+                req.callback,
+            )
+        except GPTAccountOAuthError as exc:
+            raise ValidationError(str(exc), param="callback", code="oauth_finish_failed") from exc
+
+        access_token = _clean_text(tokens.get("access_token"))
     if not access_token:
         raise AppError(
             "GPT OAuth login did not return an access token",
@@ -671,7 +1047,7 @@ async def login_gpt_account(
     try:
         from app.maintainer import gpt as gpt_module
 
-        access_token = await run_in_threadpool(
+        login_result = await run_in_threadpool(
             gpt_module.login_gpt_credentials,
             email=email,
             password=password,
@@ -688,7 +1064,8 @@ async def login_gpt_account(
             status=502,
         ) from exc
 
-    access_token = _clean_text(access_token)
+    access_token, session_email = _access_token_from_login_result(login_result)
+    email = email or session_email
     if not access_token:
         raise AppError(
             "GPT account login did not return an access token",
@@ -814,6 +1191,7 @@ __all__ = [
     "router",
     "GPTAccountItem",
     "GPTAccountsTestRequest",
+    "GPTAccountDetailRequest",
     "GPTAccountLoginRequest",
     "GPTAccountOAuthStartRequest",
     "GPTAccountOAuthFinishRequest",

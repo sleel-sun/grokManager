@@ -1500,6 +1500,19 @@ async def edit(
 
     prompt, image_inputs = _extract_edit_prompt_and_inputs(messages)
 
+    if spec.upstream_profile == "chatgpt_image":
+        from .gpt_image import edit as gpt_image_edit
+
+        return await gpt_image_edit(
+            model=spec.upstream_model_name(),
+            prompt=prompt,
+            image_inputs=image_inputs,
+            n=n,
+            response_format=response_format,
+            stream=stream,
+            chat_format=chat_format,
+        )
+
     from app.dataplane.account import _directory as _acct_dir
     if _acct_dir is None:
         raise RateLimitError("Account directory not initialised")

@@ -10,6 +10,7 @@
   const PREFERRED_MODEL = 'grok-4.20-0309';
   const STORE_KEY = 'grok2api_webui_chat_sessions_v1';
   const SIDEBAR_STORE_KEY = 'grok2api_webui_sidebar_collapsed_v1';
+  const SIDEBAR_COMPACT_QUERY = '(max-width: 960px)';
   const MCP_SETTINGS_KEY = 'grok2api_webui_mcp_settings_v1';
   const SEARCH_SETTINGS_KEY = 'grok2api_webui_search_settings_v1';
   const PREVIEW_IFRAME_SANDBOX = 'allow-scripts allow-forms allow-modals allow-popups';
@@ -99,6 +100,7 @@
   const PROMPT_MAX_HEIGHT = 108;
   let pendingThreadScrollFrame = 0;
   let sessionListRenderSignature = '';
+  const sidebarCompactMedia = typeof window.matchMedia === 'function' ? window.matchMedia(SIDEBAR_COMPACT_QUERY) : null;
 
   function text(key, fallback, params) {
     if (typeof window.t !== 'function') return fallback;
@@ -1124,21 +1126,37 @@
     sidebarToggleBtn.setAttribute('aria-expanded', String(!sidebarCollapsed));
   }
 
+  function isCompactSidebar() {
+    return Boolean(sidebarCompactMedia && sidebarCompactMedia.matches);
+  }
+
+  function persistSidebarState() {
+    try {
+      localStorage.setItem(sidebarStoreKey, String(sidebarCollapsed));
+    } catch {}
+  }
+
+  function collapseSidebarOnCompact() {
+    if (!isCompactSidebar() || sidebarCollapsed) return;
+    sidebarCollapsed = true;
+    applySidebarState();
+    persistSidebarState();
+  }
+
   function loadSidebarState() {
     try {
       sidebarCollapsed = localStorage.getItem(sidebarStoreKey) === 'true';
     } catch {
       sidebarCollapsed = false;
     }
+    if (isCompactSidebar()) sidebarCollapsed = true;
     applySidebarState();
   }
 
   function toggleSidebar() {
     sidebarCollapsed = !sidebarCollapsed;
     applySidebarState();
-    try {
-      localStorage.setItem(sidebarStoreKey, String(sidebarCollapsed));
-    } catch {}
+    persistSidebarState();
   }
 
   function createSessionTitle(messagesList) {
@@ -2360,6 +2378,7 @@
     resizePromptInput();
     setStatus(text('webui.chat.statusReady', 'Ready'));
     persistStore();
+    collapseSidebarOnCompact();
   }
 
   function startNewSession() {
@@ -2375,6 +2394,7 @@
     resizePromptInput();
     setStatus(text('webui.chat.statusReady', 'Ready'));
     persistStore();
+    collapseSidebarOnCompact();
     promptInput.focus();
   }
 
@@ -2689,6 +2709,13 @@
 
   if (newChatBtn) newChatBtn.addEventListener('click', startNewSession);
   sidebarToggleBtn.addEventListener('click', toggleSidebar);
+  if (sidebarCompactMedia) {
+    if (typeof sidebarCompactMedia.addEventListener === 'function') {
+      sidebarCompactMedia.addEventListener('change', collapseSidebarOnCompact);
+    } else if (typeof sidebarCompactMedia.addListener === 'function') {
+      sidebarCompactMedia.addListener(collapseSidebarOnCompact);
+    }
+  }
   sendBtn.addEventListener('click', () => {
     if (sending) {
       stopMessage();

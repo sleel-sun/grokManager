@@ -21,8 +21,12 @@
   "webui": {
     "header": {
       "chat": "Chat",
+      "draw": "Bild",
       "masonry": "Masonry",
       "chatkit": "ChatKit"
+    },
+    "imageStudio": {
+      "pageTitle": "grokManager - Bild"
     },
     "chat": {
       "pageTitle": "grokManager - WebChat",
@@ -338,6 +342,7 @@
       "displayName": "Anzeigename",
       "enabled": "Aktiv",
       "allowNsfw": "NSFW erlauben",
+      "allowGpt": "GPT",
       "remove": "Entfernen"
     },
     "loadFailed": "Konfiguration konnte nicht geladen werden: {message}",

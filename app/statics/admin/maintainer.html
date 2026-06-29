@@ -262,6 +262,7 @@
                 <label class="check"><input id="no-sandbox" type="checkbox"> No sandbox</label>
                 <label class="check"><input id="disable-dev-shm" type="checkbox"> Disable /dev/shm</label>
               </div>
+              <small id="browser-mode-hint">关闭 Headless 和 Xvfb 且服务进程有真实图形桌面时，才会弹出 Chromium 窗口。</small>
             </div>
 
             <div class="field">
@@ -373,6 +374,7 @@ const gptAccountClearBtn = document.getElementById('gpt-account-clear-btn');
 const availableHint = document.getElementById('available-hint');
 const passwordHint = document.getElementById('password-hint');
 const solverKeyHint = document.getElementById('turnstile-solver-key-hint');
+const browserModeHint = document.getElementById('browser-mode-hint');
 const statePill = document.getElementById('state-pill');
 const tokenCount = document.getElementById('token-count');
 const spawnedWorkersEl = document.getElementById('spawned-workers');
@@ -404,6 +406,20 @@ async function api(method, path, body) {
 
 function setText(el, value) {
   el.textContent = value == null || value === '' ? '-' : String(value);
+}
+
+function browserModeHintText(payload, serverMessage) {
+  if (serverMessage) return serverMessage;
+  if (payload && payload.headless) return 'Headless 已开启，浏览器不会弹窗。';
+  if (payload && payload.use_xvfb) return 'Xvfb 虚拟显示器已开启，浏览器在虚拟显示器中运行，不会在本机桌面弹窗。';
+  return '关闭 Headless 和 Xvfb 且服务进程有真实图形桌面时，才会弹出 Chromium 窗口；Linux 无 DISPLAY 时后端会自动 Headless。';
+}
+
+function refreshBrowserModeHint(serverMessage) {
+  browserModeHint.textContent = browserModeHintText({
+    headless: document.getElementById('headless').checked,
+    use_xvfb: document.getElementById('use-xvfb').checked,
+  }, serverMessage || '');
 }
 
 // Map orchestrator event names → display label + status class for the card.
@@ -523,6 +539,7 @@ function renderStatus(data) {
   setText(outputPath, data.output_path);
   setText(configPath, data.config_path);
   setText(stateMessage, data.message);
+  refreshBrowserModeHint(data.browser_message || '');
   renderWorkerGrid(data.per_worker_progress, data.spawned_workers);
   logBox.textContent = Array.isArray(data.log_tail) && data.log_tail.length
     ? data.log_tail.join('\n')
@@ -592,6 +609,7 @@ function renderSavedConfig(data) {
   if (Number.isFinite(solverPoll) && solverPoll >= 1) {
     document.getElementById('turnstile-solver-poll-sec').value = Math.floor(solverPoll);
   }
+  refreshBrowserModeHint();
 }
 
 async function refreshStatus() {
@@ -637,7 +655,7 @@ function readPayload() {
   manualWaitEl.value = manualWait;
   solverTimeoutEl.value = solverTimeout;
   solverPollEl.value = solverPoll;
-  return {
+  const payload = {
     count,
     workers,
     email_worker_domain: document.getElementById('worker-domain').value.trim(),
@@ -655,6 +673,8 @@ function readPayload() {
     turnstile_solver_timeout_sec: solverTimeout,
     turnstile_solver_poll_sec: solverPoll,
   };
+  refreshBrowserModeHint();
+  return payload;
 }
 
 function readGPTAccountPayload() {
@@ -921,6 +941,10 @@ document.getElementById('workers').addEventListener('input', () => {
   const formWorkers = Number(document.getElementById('workers').value);
   const reqStr = Number.isFinite(formWorkers) && formWorkers > 0 ? String(formWorkers) : '1';
   spawnedWorkersEl.textContent = `未运行 (待启动 ${reqStr})`;
+});
+
+['headless', 'use-xvfb'].forEach((id) => {
+  document.getElementById(id).addEventListener('change', () => refreshBrowserModeHint());
 });
 
 (async () => {

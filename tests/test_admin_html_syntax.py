@@ -83,3 +83,18 @@ def test_maintainer_page_uses_absolute_admin_api_prefix() -> None:
     assert "const MAINTAINER_ADMIN_API = '/admin/api';" in html
     assert "fetch(MAINTAINER_ADMIN_API + path" in html
     assert "verifyKey(MAINTAINER_ADMIN_API + '/verify'" in html
+
+
+def test_config_webui_users_editor_uses_full_width_wrapping_layout() -> None:
+    """WebUI user options need enough horizontal and vertical room to render."""
+    html = (STATIC_ADMIN_DIR / "config.html").read_text(encoding="utf-8")
+
+    assert ".cfg-row.is-wide" in html
+    assert "field.type === 'webui_users' ? ' is-wide' : ''" in html
+    assert ".cfg-webui-user-row {\n      display:flex;" in html
+    assert "flex-wrap:wrap;" in html
+    assert "cfg-webui-user-gpt" in html
+    assert "config.webuiUsers.allowGpt" in html
+    assert "gpt_enabled: false" in html
+    assert "multiple: 'multiple'" not in html
+    assert "selectedOptions" not in html

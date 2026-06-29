@@ -25,6 +25,8 @@ class WebUIUser:
     username: str
     display_name: str = ""
     allow_nsfw: bool = True
+    gpt_models: tuple[str, ...] = ()
+    gpt_image_quality: str = "1k"
     legacy: bool = False
     anonymous: bool = False
 
@@ -34,6 +36,8 @@ class WebUIUser:
             "username": self.username,
             "display_name": self.display_name or self.username,
             "allow_nsfw": webui_user_allows_nsfw(self),
+            "gpt_models": list(self.gpt_models),
+            "gpt_image_quality": self.gpt_image_quality,
             "legacy": self.legacy,
             "anonymous": self.anonymous,
             "storage_scope": self.id,
@@ -158,6 +162,32 @@ def _webui_user_credentials() -> list[_WebUIUserCredential]:
             ),
             True,
         )
+        gpt_enabled_raw = entry.get(
+            "gpt_enabled",
+            entry.get("gptEnabled", entry.get("allow_gpt", entry.get("allowGpt"))),
+        )
+        gpt_models_raw = entry.get(
+            "gpt_models",
+            entry.get(
+                "gptModels",
+                entry.get("gpt_image_models", entry.get("allowed_gpt_models")),
+            ),
+        )
+        gpt_models = (
+            ("gpt-image-1", "gpt-image-2", "codex-gpt-image-2")
+            if _bool_config_value(gpt_enabled_raw, False)
+            else (() if gpt_enabled_raw is not None else _list_config_value(gpt_models_raw, ()))
+        )
+        gpt_image_quality = _gpt_quality_config_value(
+            entry.get(
+                "gpt_image_quality",
+                entry.get(
+                    "gptImageQuality",
+                    entry.get("gpt_quality", entry.get("max_gpt_image_quality")),
+                ),
+            ),
+            "1k",
+        )
         credentials.append(
             _WebUIUserCredential(
                 user=WebUIUser(
@@ -165,6 +195,8 @@ def _webui_user_credentials() -> list[_WebUIUserCredential]:
                     username=username,
                     display_name=display_name,
                     allow_nsfw=allow_nsfw,
+                    gpt_models=gpt_models,
+                    gpt_image_quality=gpt_image_quality,
                 ),
                 password=password,
             )
@@ -219,6 +251,53 @@ def _bool_config_value(value: object, default: bool) -> bool:
     return bool(value)
 
 
+def _list_config_value(value: object, default: tuple[str, ...] = ()) -> tuple[str, ...]:
+    if value is None:
+        return default
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            raw: list[object] = []
+        elif text[0] in "[{":
+            try:
+                parsed = json.loads(text)
+            except (json.JSONDecodeError, TypeError):
+                parsed = None
+            raw = parsed if isinstance(parsed, list) else [part.strip() for part in text.split(",")]
+        else:
+            raw = [part.strip() for part in text.replace("\n", ",").split(",")]
+    elif isinstance(value, (list, tuple, set)):
+        raw = list(value)
+    else:
+        return default
+    seen: set[str] = set()
+    result: list[str] = []
+    for item in raw:
+        model = str(item or "").strip()
+        if model and model not in seen:
+            seen.add(model)
+            result.append(model)
+    return tuple(result)
+
+
+def _gpt_quality_config_value(value: object, default: str = "1k") -> str:
+    text = str(value or default).strip().lower()
+    aliases = {
+        "1": "1k",
+        "1k": "1k",
+        "1024": "1k",
+        "2": "2k",
+        "2k": "2k",
+        "2048": "2k",
+        "4": "4k",
+        "4k": "4k",
+        "4096": "4k",
+        "premium": "4k",
+        "pro": "4k",
+    }
+    return aliases.get(text, default)
+
+
 def _extract_basic(authorization: str | None) -> tuple[str, str] | None:
     if not isinstance(authorization, str):
         return None
@@ -259,6 +338,8 @@ def _legacy_webui_user() -> WebUIUser:
         id="legacy",
         username="legacy",
         display_name="WebUI",
+        gpt_models=("gpt-image-1", "gpt-image-2", "codex-gpt-image-2"),
+        gpt_image_quality="4k",
         legacy=True,
     )
 
@@ -268,6 +349,7 @@ def _anonymous_webui_user() -> WebUIUser:
         id="anonymous",
         username="anonymous",
         display_name="Anonymous",
+        gpt_models=("gpt-image-1", "gpt-image-2", "codex-gpt-image-2"),
         anonymous=True,
     )
 

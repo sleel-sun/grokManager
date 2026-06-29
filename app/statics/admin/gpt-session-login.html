@@ -1,0 +1,128 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="referrer" content="no-referrer">
+  <title>ChatGPT Login</title>
+  <style>
+    :root {
+      color-scheme: light dark;
+      --bg: #101418;
+      --fg: #edf2f7;
+      --muted: #9aa6b2;
+      --card: #161d24;
+      --accent: #4cc38a;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      display: grid;
+      place-items: center;
+      background:
+        radial-gradient(circle at 20% 20%, rgba(76, 195, 138, .18), transparent 34rem),
+        linear-gradient(145deg, #0b0f14, var(--bg));
+      color: var(--fg);
+      font: 15px/1.5 ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    main {
+      width: min(460px, calc(100vw - 32px));
+      padding: 28px;
+      border: 1px solid rgba(255, 255, 255, .08);
+      border-radius: 20px;
+      background: color-mix(in srgb, var(--card) 88%, transparent);
+      box-shadow: 0 22px 80px rgba(0, 0, 0, .35);
+    }
+    h1 {
+      margin: 0 0 10px;
+      font-size: 22px;
+      letter-spacing: -.02em;
+    }
+    p { margin: 0 0 18px; color: var(--muted); }
+    a {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 40px;
+      padding: 0 16px;
+      border-radius: 999px;
+      background: var(--accent);
+      color: #06100b;
+      font-weight: 700;
+      text-decoration: none;
+    }
+    code {
+      display: block;
+      margin-top: 18px;
+      padding: 10px 12px;
+      overflow-wrap: anywhere;
+      border-radius: 12px;
+      background: rgba(255, 255, 255, .06);
+      color: var(--muted);
+      font-size: 12px;
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <h1 id="title">Preparing ChatGPT login</h1>
+    <p id="message">This popup is preparing an isolated login flow.</p>
+    <a id="fallback" href="#" rel="noreferrer">Open ChatGPT login</a>
+    <code id="target"></code>
+  </main>
+  <script>
+    (function () {
+      const params = new URLSearchParams(location.search);
+      const target = params.get('target') || '';
+      const pending = params.get('pending') === '1';
+      const stage = params.get('stage') || 'login';
+      const isolate = params.get('isolate') === '1';
+      const title = document.getElementById('title');
+      const message = document.getElementById('message');
+      const fallback = document.getElementById('fallback');
+      const targetEl = document.getElementById('target');
+      if (pending && !target) {
+        title.textContent = 'Preparing ChatGPT login';
+        message.textContent = 'The admin page is generating a fresh ChatGPT login URL.';
+        fallback.style.display = 'none';
+        return;
+      }
+      let url;
+      try {
+        url = new URL(target);
+      } catch {
+        title.textContent = 'Invalid login target';
+        message.textContent = 'The generated login target is not a valid URL.';
+        targetEl.textContent = 'Invalid login target.';
+        fallback.removeAttribute('href');
+        return;
+      }
+      if (url.origin !== 'https://chatgpt.com') {
+        title.textContent = 'Rejected login target';
+        message.textContent = 'Only ChatGPT login targets are allowed.';
+        targetEl.textContent = 'Rejected non-ChatGPT login target.';
+        fallback.removeAttribute('href');
+        return;
+      }
+      if (stage === 'logout') {
+        title.textContent = 'Signing out of ChatGPT';
+        message.textContent = 'This clears the current ChatGPT browser session before opening the login page.';
+        fallback.textContent = 'Open ChatGPT logout';
+      } else {
+        title.textContent = 'Opening ChatGPT login';
+        message.textContent = 'After login, ChatGPT should redirect to the session JSON page.';
+        fallback.textContent = 'Open ChatGPT login';
+      }
+      fallback.href = url.href;
+      targetEl.textContent = url.href;
+      setTimeout(function () {
+        if (isolate) {
+          try { window.opener = null; } catch {}
+        }
+        location.replace(url.href);
+      }, 250);
+    }());
+  </script>
+</body>
+</html>

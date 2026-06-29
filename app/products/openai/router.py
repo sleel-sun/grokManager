@@ -70,6 +70,11 @@ def _is_anthropic_client(anthropic_version: str | None) -> bool:
     return bool(anthropic_version and anthropic_version.strip())
 
 
+def _is_anthropic_visible_model(spec: ModelSpec) -> bool:
+    """Only expose text-capable models on Anthropic's Messages surface."""
+    return spec.enabled and spec.is_chat()
+
+
 def _model_capability_names(spec: ModelSpec) -> list[str]:
     capabilities: list[str] = []
     if spec.is_chat():
@@ -86,10 +91,10 @@ def _model_capability_names(spec: ModelSpec) -> list[str]:
 
 
 def _model_primary_type(spec: ModelSpec) -> str:
-    if spec.is_image_edit():
-        return "image_edit"
     if spec.is_image():
         return "image"
+    if spec.is_image_edit():
+        return "image_edit"
     if spec.is_video():
         return "video"
     if spec.is_voice():
@@ -100,7 +105,17 @@ def _model_primary_type(spec: ModelSpec) -> str:
 
 
 def _model_generation_metadata(spec: ModelSpec) -> dict:
-    if spec.is_image_edit():
+    if spec.is_image() and spec.is_image_edit():
+        input_modalities = ["text", "image"]
+        output_modalities = ["image"]
+        methods = ["chat.completions", "images.generations", "images.edits"]
+        endpoints = [
+            "/v1/chat/completions",
+            "/v1/images/generations",
+            "/v1/images/edits",
+        ]
+        modality = "text(+image)->image"
+    elif spec.is_image_edit():
         input_modalities = ["text", "image"]
         output_modalities = ["image"]
         methods = ["chat.completions", "images.edits"]
@@ -236,7 +251,11 @@ async def list_models(
     available = model_registry.list_enabled()
 
     if _is_anthropic_client(anthropic_version):
-        data = [_anthropic_model_payload(m, created) for m in available]
+        data = [
+            _anthropic_model_payload(m, created)
+            for m in available
+            if _is_anthropic_visible_model(m)
+        ]
         return JSONResponse(
             {
                 "data": data,
@@ -266,8 +285,13 @@ async def get_model_endpoint(
 
     spec = model_registry.get(model_id)
     pools = await _available_pools(request)
-    if spec is None or not spec.enabled:
-        if _is_anthropic_client(anthropic_version):
+    is_anthropic = _is_anthropic_client(anthropic_version)
+    if (
+        spec is None
+        or not spec.enabled
+        or (is_anthropic and not _is_anthropic_visible_model(spec))
+    ):
+        if is_anthropic:
             return JSONResponse(
                 {
                     "type": "error",
@@ -289,7 +313,7 @@ async def get_model_endpoint(
         )
 
     created = int(time.time())
-    if _is_anthropic_client(anthropic_version):
+    if is_anthropic:
         return JSONResponse(_anthropic_model_payload(spec, created))
     return JSONResponse(_openai_model_payload(spec, created, pools))
 
@@ -385,7 +409,7 @@ _USER_BLOCK_TYPES = {"text", "image_url", "input_audio", "file"}
 _ALLOWED_SIZES = {"1280x720", "720x1280", "1792x1024", "1024x1792", "1024x1024"}
 _EFFORT_VALUES = {"none", "minimal", "low", "medium", "high", "xhigh"}
 _LITE_IMAGE_MODELS = {"grok-imagine-image-lite"}
-_GPT_IMAGE_MODELS = {"gpt-image-1", "gpt-image-2"}
+_GPT_IMAGE_MODELS = {"gpt-image-1", "gpt-image-2", "codex-gpt-image-2"}
 
 
 def _validate_chat(req: ChatCompletionRequest) -> None:

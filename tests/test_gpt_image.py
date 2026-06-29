@@ -27,12 +27,18 @@ from app.products.web.admin.gpt_image_accounts import (
 def test_gpt_image_models_are_registered_as_image_models() -> None:
     one = resolve("gpt-image-1")
     two = resolve("gpt-image-2")
+    codex = resolve("codex-gpt-image-2")
 
     assert one.is_image()
     assert two.is_image()
+    assert codex.is_image()
+    assert one.is_image_edit()
+    assert two.is_image_edit()
+    assert codex.is_image_edit()
     assert one.upstream_profile == "chatgpt_image"
     assert one.upstream_model_name() == "gpt-image-2"
     assert two.upstream_model_name() == "gpt-image-2"
+    assert codex.upstream_model_name() == "codex-gpt-image-2"
 
 
 def test_gpt_image_account_record_token_is_stable_and_non_secret() -> None:
@@ -132,6 +138,64 @@ def test_gpt_image_parse_sse_extracts_conversation_and_file_ids() -> None:
     assert text == "working"
 
 
+def test_gpt_image_extracts_assistant_asset_pointer_without_tool_metadata() -> None:
+    mapping = {
+        "node_1": {
+            "message": {
+                "author": {"role": "assistant"},
+                "content": {
+                    "content_type": "multimodal_text",
+                    "parts": [
+                        {
+                            "content_type": "image_asset_pointer",
+                            "asset_pointer": "file-service://file_success_123",
+                        }
+                    ],
+                },
+            }
+        }
+    }
+
+    assert gpt_image._extract_image_ids(mapping) == ["file_success_123"]
+
+
+def test_gpt_image_extracts_nested_sediment_asset_pointer() -> None:
+    mapping = {
+        "node_1": {
+            "message": {
+                "author": {"role": "assistant"},
+                "metadata": {
+                    "attachments": [
+                        {
+                            "type": "image",
+                            "asset_pointer": "sediment://sed_success_456",
+                        }
+                    ]
+                },
+                "content": {"content_type": "text", "parts": ["done"]},
+            }
+        }
+    }
+
+    assert gpt_image._extract_image_ids(mapping) == ["sed:sed_success_456"]
+
+
+def test_gpt_image_recursive_asset_extraction_skips_user_prompt() -> None:
+    mapping = {
+        "node_1": {
+            "message": {
+                "author": {"role": "user"},
+                "content": {
+                    "content_type": "text",
+                    "parts": ["literal file-service://not_generated in prompt"],
+                },
+            }
+        }
+    }
+
+    assert gpt_image._extract_image_ids(mapping) == []
+
+
 def test_gpt_image_prompt_forces_generation_not_search() -> None:
     prompt = gpt_image._image_generation_prompt("马斯克直播图")
 
@@ -153,14 +217,140 @@ def test_gpt_image_no_image_error_sanitizes_processing_queue_text() -> None:
     assert message == "ChatGPT image generation is still queued upstream; retry later"
 
 
-def test_gpt_image_upstream_model_uses_gpt5_for_paid_image2() -> None:
+def test_gpt_image_upstream_model_uses_gpt_image_2_directly() -> None:
     assert gpt_image._normalize_image_model("gpt-image-1") == "gpt-image-2"
     assert gpt_image._normalize_image_model("gpt-image-2") == "gpt-image-2"
-    assert gpt_image._upstream_model("gpt-image-2", is_free=True) == "gpt-5-3"
-    assert gpt_image._upstream_model("gpt-image-2", is_free=False) == "gpt-5-3"
+    assert gpt_image._normalize_image_model("codex-gpt-image-2") == "codex-gpt-image-2"
+    assert gpt_image._upstream_model("gpt-image-1", is_free=True) == "gpt-image-2"
+    assert gpt_image._upstream_model("gpt-image-1", is_free=False) == "gpt-image-2"
+    assert gpt_image._upstream_model("gpt-image-2", is_free=True) == "gpt-image-2"
+    assert gpt_image._upstream_model("gpt-image-2", is_free=False) == "gpt-image-2"
+    assert gpt_image._upstream_model("codex-gpt-image-2", is_free=True) == "codex-gpt-image-2"
 
 
-def test_gpt_image_generate_routes_compat_model_to_image2(monkeypatch) -> None:
+def test_gpt_image_send_conversation_uses_direct_backend_api(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    class FakeContent:
+        async def iter_chunked(self, _size: int):
+            yield b'data: {"conversation_id":"conv_1"}\n'
+            yield b"data: sediment://file_123\n"
+
+    class FakeResponse:
+        ok = True
+        content = FakeContent()
+
+        def release(self) -> None:
+            captured["released"] = True
+
+    async def fake_chat_requirements(_session, _context):
+        return "chat-token", None
+
+    async def fake_request(_session, method: str, url: str, **kwargs):
+        captured.update({"method": method, "url": url, **kwargs})
+        return FakeResponse()
+
+    monkeypatch.setattr(gpt_image, "_chat_requirements", fake_chat_requirements)
+    monkeypatch.setattr(gpt_image, "_request", fake_request)
+    context = gpt_image._ChatGPTContext(
+        access_token="access-token",
+        device_id="device-id",
+        script="sdk.js",
+        dpl="build",
+    )
+
+    conversation_id, file_ids, _text = asyncio.run(
+        gpt_image._send_conversation(
+            None,
+            context,
+            prompt="draw a cube",
+            requested_model="gpt-image-2",
+            is_free=True,
+        )
+    )
+
+    payload = captured["json_body"]
+    headers = captured["headers"]
+    assert captured["method"] == "POST"
+    assert captured["url"] == "https://chatgpt.com/backend-api/conversation"
+    assert "x-conduit-token" not in headers
+    assert "x-openai-target-path" not in headers
+    assert "Create exactly one original image" in payload["messages"][0]["content"]["parts"][0]
+    assert "draw a cube" in payload["messages"][0]["content"]["parts"][0]
+    assert payload["messages"][0]["metadata"] == {"attachments": []}
+    assert payload["model"] == "gpt-image-2"
+    assert payload["force_use_sse"] is True
+    assert payload["system_hints"] == ["picture_v2"]
+    assert conversation_id == "conv_1"
+    assert file_ids == ["sed:file_123"]
+    assert captured["released"] is True
+
+
+def test_gpt_image_send_edit_conversation_uses_gpt_image_2(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    class FakeContent:
+        async def iter_chunked(self, _size: int):
+            yield b'data: {"conversation_id":"conv_edit"}\n'
+            yield b"data: file-service://file_result\n"
+
+    class FakeResponse:
+        ok = True
+        content = FakeContent()
+
+        def release(self) -> None:
+            captured["released"] = True
+
+    async def fake_upload(_session, _context, _image_input, index: int):
+        return gpt_image._EditReference(
+            file_id=f"file_ref_{index}",
+            name=f"reference-{index}.png",
+            mime_type="image/png",
+            size=5,
+        )
+
+    async def fake_chat_requirements(_session, _context):
+        return "chat-token", None
+
+    async def fake_request(_session, method: str, url: str, **kwargs):
+        captured.update({"method": method, "url": url, **kwargs})
+        return FakeResponse()
+
+    monkeypatch.setattr(gpt_image, "_upload_edit_reference", fake_upload)
+    monkeypatch.setattr(gpt_image, "_chat_requirements", fake_chat_requirements)
+    monkeypatch.setattr(gpt_image, "_request", fake_request)
+    context = gpt_image._ChatGPTContext(
+        access_token="access-token",
+        device_id="device-id",
+        script="sdk.js",
+        dpl="build",
+    )
+
+    conversation_id, file_ids, _text = asyncio.run(
+        gpt_image._send_edit_conversation(
+            None,
+            context,
+            prompt="make it blue",
+            image_inputs=["data:image/png;base64,aW1hZ2U="],
+            requested_model="gpt-image-1",
+            is_free=True,
+        )
+    )
+
+    payload = captured["json_body"]
+    message = payload["messages"][0]
+    assert captured["url"] == "https://chatgpt.com/backend-api/conversation"
+    assert "Edit the provided reference image" in message["content"]["parts"][0]
+    assert "make it blue" in message["content"]["parts"][0]
+    assert message["metadata"]["attachments"][0]["id"] == "file_ref_0"
+    assert payload["model"] == "gpt-image-2"
+    assert payload["system_hints"] == ["picture_v2", "image_edit"]
+    assert conversation_id == "conv_edit"
+    assert file_ids == ["file_result"]
+    assert captured["released"] is True
+
+
+def test_gpt_image_generate_preserves_requested_gpt_image_model(monkeypatch) -> None:
     captured: dict[str, object] = {}
 
     async def fake_run_generation(prompt: str, model: str, n: int):
@@ -182,6 +372,37 @@ def test_gpt_image_generate_routes_compat_model_to_image2(monkeypatch) -> None:
     )
 
     assert captured == {"prompt": "draw a cube", "model": "gpt-image-2", "n": 1}
+    assert result["data"][0]["b64_json"] == base64.b64encode(b"image").decode("ascii")
+
+
+def test_gpt_image_edit_preserves_requested_gpt_image_model(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    async def fake_run_edit(prompt: str, image_inputs: list[str], model: str, n: int):
+        captured.update({"prompt": prompt, "image_inputs": image_inputs, "model": model, "n": n})
+        return [
+            gpt_image._GeneratedImage(
+                b64_json=base64.b64encode(b"image").decode("ascii"),
+            )
+        ]
+
+    monkeypatch.setattr(gpt_image, "_run_edit", fake_run_edit)
+
+    result = asyncio.run(
+        gpt_image.edit(
+            model="gpt-image-1",
+            prompt="edit a cube",
+            image_inputs=["data:image/png;base64,aW1hZ2U="],
+            response_format="b64_json",
+        )
+    )
+
+    assert captured == {
+        "prompt": "edit a cube",
+        "image_inputs": ["data:image/png;base64,aW1hZ2U="],
+        "model": "gpt-image-2",
+        "n": 1,
+    }
     assert result["data"][0]["b64_json"] == base64.b64encode(b"image").decode("ascii")
 
 
@@ -282,7 +503,7 @@ def test_gpt_image_accounts_skip_invalid_access_token() -> None:
     assert account is None
 
 
-def test_gpt_image_accounts_skip_timeout_status() -> None:
+def test_gpt_image_accounts_skip_timeout_during_cooldown() -> None:
     record = AccountRecord(
         token="gptimg_123",
         tags=["gpt-image"],
@@ -290,6 +511,7 @@ def test_gpt_image_accounts_skip_timeout_status() -> None:
             "gpt_image": True,
             "gpt_image_access_token": "timeout-access-token",
             "gpt_image_status": "timeout",
+            "gpt_image_cooldown_until": gpt_image._now_ms() + 60_000,
         },
     )
 
@@ -332,6 +554,114 @@ def test_gpt_image_accounts_skip_recent_image_search_failure() -> None:
     account = asyncio.run(gpt_image._account_from_record(record))
 
     assert account is None
+
+
+def test_gpt_image_accounts_skip_recent_free_plan_limit() -> None:
+    record = AccountRecord(
+        token="gpt_123",
+        tags=["gpt"],
+        last_fail_at=gpt_image._now_ms(),
+        last_fail_reason=(
+            "You've hit the Free plan limit for image generations requests. "
+            "You can create more images when the limit resets in 7 hours and 48 minutes."
+        ),
+        ext={
+            "gpt": True,
+            "gpt_access_token": "free-plan-token",
+            "gpt_status": "available",
+        },
+    )
+
+    account = asyncio.run(gpt_image._account_from_record(record))
+
+    assert account is None
+
+
+def test_gpt_image_accounts_skip_active_generation_cooldown() -> None:
+    record = AccountRecord(
+        token="gpt_123",
+        tags=["gpt"],
+        ext={
+            "gpt": True,
+            "gpt_access_token": "cooldown-token",
+            "gpt_status": "available",
+            "gpt_cooldown_until": gpt_image._now_ms() + 60_000,
+        },
+    )
+
+    account = asyncio.run(gpt_image._account_from_record(record))
+
+    assert account is None
+
+
+def test_gpt_image_accounts_retry_rate_limited_after_cooldown() -> None:
+    record = AccountRecord(
+        token="gpt_123",
+        tags=["gpt"],
+        last_fail_at=gpt_image._now_ms() - 2 * 3600 * 1000,
+        last_fail_reason=(
+            "You've hit the Free plan limit for image generations requests. "
+            "You can create more images when the limit resets in 1 hour."
+        ),
+        ext={
+            "gpt": True,
+            "gpt_access_token": "retry-token",
+            "gpt_status": "rate_limited",
+            "gpt_cooldown_until": gpt_image._now_ms() - 60_000,
+        },
+    )
+
+    account = asyncio.run(gpt_image._account_from_record(record))
+
+    assert account is not None
+    assert account.access_token == "retry-token"
+
+
+def test_gpt_image_duplicate_retryable_failure_does_not_block_after_cooldown() -> None:
+    access_token = "shared-token"
+    old_failure = gpt_image._now_ms() - 2 * 3600 * 1000
+    blocked = AccountRecord(
+        token="gpt_image_123",
+        tags=["gpt-image"],
+        last_fail_at=old_failure,
+        last_fail_reason="ChatGPT image generation timed out after 60s: timeout",
+        ext={
+            "gpt_image": True,
+            "gpt_image_access_token": access_token,
+            "gpt_image_status": "timeout",
+            "gpt_image_cooldown_until": gpt_image._now_ms() - 60_000,
+        },
+    )
+
+    assert gpt_image._record_blocked_access_token(blocked) == ""
+
+
+def test_gpt_image_failure_patch_sets_reset_cooldown() -> None:
+    class FakeRepo:
+        def __init__(self) -> None:
+            self.patches: list[AccountPatch] = []
+
+        async def patch_accounts(self, patches):
+            self.patches.extend(patches)
+
+    repo = FakeRepo()
+    account = gpt_image.GPTImageAccount(
+        record_token="gpt_123",
+        access_token="free-plan-token",
+        status_key="gpt_status",
+        error_key="gpt_registration_error",
+    )
+    exc = UpstreamError(
+        "You've hit the Free plan limit for image generations requests. "
+        "You can create more images when the limit resets in 7 hours and 48 minutes.",
+        status=429,
+    )
+
+    status, _message = asyncio.run(gpt_image._patch_account_failure(repo, account, exc))
+
+    assert status == "rate_limited"
+    cooldown_until = repo.patches[0].ext_merge["gpt_cooldown_until"]
+    assert cooldown_until > gpt_image._now_ms() + 7 * 3600 * 1000
 
 
 def test_gpt_image_accounts_dedupe_tokens_and_prioritize_unified_gpt_records(monkeypatch) -> None:
@@ -503,7 +833,9 @@ def test_gpt_image_mark_failure_marks_invalid_token(monkeypatch) -> None:
     patch = repo.patches[0]
     assert patch.last_fail_at is not None
     assert patch.ext_merge["gpt_image_status"] == "invalid"
-    assert "unauthorized" in patch.ext_merge["gpt_image_error"]
+    assert patch.ext_merge["gpt_image_error"] == (
+        "ChatGPT access token is invalid or revoked; re-login or replace this GPT account"
+    )
 
 
 def test_gpt_image_test_account_success_marks_available(monkeypatch) -> None:
@@ -569,7 +901,9 @@ def test_gpt_image_test_account_failure_marks_invalid(monkeypatch) -> None:
     assert result["capability_status"] == "invalid"
     patch = repo.patches[0]
     assert patch.ext_merge["gpt_status"] == "invalid"
-    assert "unauthorized" in patch.ext_merge["gpt_registration_error"]
+    assert patch.ext_merge["gpt_registration_error"] == (
+        "ChatGPT access token is invalid or revoked; re-login or replace this GPT account"
+    )
 
 
 def test_gpt_image_generate_one_has_hard_timeout(monkeypatch) -> None:
@@ -591,11 +925,33 @@ def test_gpt_image_generate_one_has_hard_timeout(monkeypatch) -> None:
     assert "timed out" in str(excinfo.value)
 
 
-def test_gpt_image_run_generation_defaults_to_single_account_attempt(monkeypatch) -> None:
+def test_gpt_image_generate_one_passes_timeout_budget_to_inner(monkeypatch) -> None:
+    captured: list[float | None] = []
+
+    async def fake_generate(_account, _prompt, _model, *, timeout_s=None):
+        captured.append(timeout_s)
+        return gpt_image._GeneratedImage(b64_json="aW1hZ2U=")
+
+    monkeypatch.setattr(gpt_image, "_generate_one_inner", fake_generate)
+    account = gpt_image.GPTImageAccount(
+        record_token="gptimg_123",
+        access_token="token",
+    )
+
+    image = asyncio.run(gpt_image._generate_one(account, "draw", "gpt-image-2", timeout_s=321))
+
+    assert image.b64_json == "aW1hZ2U="
+    assert captured == [321]
+
+
+def test_gpt_image_run_generation_defaults_to_four_account_attempts(monkeypatch) -> None:
     attempts: list[str] = []
     accounts = [
         gpt_image.GPTImageAccount(record_token="gptimg_1", access_token="token-1"),
         gpt_image.GPTImageAccount(record_token="gptimg_2", access_token="token-2"),
+        gpt_image.GPTImageAccount(record_token="gptimg_3", access_token="token-3"),
+        gpt_image.GPTImageAccount(record_token="gptimg_4", access_token="token-4"),
+        gpt_image.GPTImageAccount(record_token="gptimg_5", access_token="token-5"),
     ]
 
     async def fake_accounts():
@@ -615,7 +971,17 @@ def test_gpt_image_run_generation_defaults_to_single_account_attempt(monkeypatch
     with pytest.raises(UpstreamError):
         asyncio.run(gpt_image._run_generation("draw", "gpt-image-2", 1))
 
-    assert attempts == ["gptimg_1"]
+    assert attempts == ["gptimg_1", "gptimg_2", "gptimg_3", "gptimg_4"]
+
+
+def test_gpt_image_max_account_attempts_falls_back_to_four(monkeypatch) -> None:
+    class BrokenConfig:
+        def get_int(self, *_args, **_kwargs):
+            raise RuntimeError("config unavailable")
+
+    monkeypatch.setattr(gpt_image, "get_config", lambda: BrokenConfig())
+
+    assert gpt_image._max_account_attempts_per_image(10) == 4
 
 
 def test_gpt_image_run_generation_uses_single_request_timeout_budget(monkeypatch) -> None:
@@ -680,6 +1046,37 @@ def test_gpt_image_run_generation_prefers_quota_failure_detail(monkeypatch) -> N
 
     assert attempts == ["gpt_1", "gpt_2"]
     assert "Free plan limit" in str(excinfo.value)
+
+
+def test_gpt_image_run_generation_sanitizes_revoked_token_failure(monkeypatch) -> None:
+    accounts = [
+        gpt_image.GPTImageAccount(record_token="gpt_1", access_token="token-1"),
+    ]
+
+    async def fake_accounts():
+        return accounts
+
+    async def fake_generate(account, prompt, model, *, timeout_s=None):
+        raise UpstreamError(
+            'ChatGPT chat-requirements failed: upstream returned 401: {"error":{"code":"token_revoked"}}',
+            status=401,
+            body='{"error":{"code":"token_revoked"}}',
+        )
+
+    async def mark_failure(account, exc):
+        return None
+
+    monkeypatch.setattr(gpt_image, "_gpt_image_accounts", fake_accounts)
+    monkeypatch.setattr(gpt_image, "_generate_one", fake_generate)
+    monkeypatch.setattr(gpt_image, "_mark_account_failure", mark_failure)
+
+    with pytest.raises(RateLimitError) as excinfo:
+        asyncio.run(gpt_image._run_generation("draw", "gpt-image-2", 1))
+
+    message = str(excinfo.value)
+    assert "invalid or revoked" in message
+    assert "chat-requirements" not in message
+    assert "token_revoked" not in message
 
 
 def test_account_admin_page_uses_unified_gptchat_account_panel() -> None:

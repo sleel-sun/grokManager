@@ -101,6 +101,11 @@
     .cfg-row.modified { background:#fffaf0 }
     .cfg-row.modified:hover { background:#fff6e7 }
     .cfg-row[data-apply-mode="restart"] { border-left:3px solid #f59e0b }
+    .cfg-row.is-wide {
+      grid-template-columns:1fr;
+      align-items:flex-start;
+    }
+    .cfg-row.is-wide .cfg-desc { max-width:none }
     .cfg-label-col { min-width:0; display:grid; gap:3px; align-content:start }
     .cfg-label {
       display:inline-flex;
@@ -314,8 +319,8 @@
       gap:8px;
     }
     .cfg-webui-user-row {
-      display:grid;
-      grid-template-columns:minmax(88px, 1fr) minmax(104px, 1fr) minmax(88px, 1fr) auto auto auto;
+      display:flex;
+      flex-wrap:wrap;
       gap:6px;
       align-items:center;
       padding:8px;
@@ -324,6 +329,8 @@
       background:#fbfbfb;
     }
     .cfg-webui-user-row .cfg-text {
+      flex:1 1 132px;
+      min-width:0;
       height:30px;
       font-size:12px;
       text-align:left;
@@ -332,6 +339,7 @@
     .cfg-webui-user-toggle {
       display:inline-flex;
       align-items:center;
+      flex:0 0 auto;
       gap:6px;
       color:#777;
       font-size:12px;
@@ -341,6 +349,21 @@
       width:14px;
       height:14px;
       accent-color:#111;
+    }
+    .cfg-webui-user-gpt {
+      color:#333;
+      font-weight:600;
+    }
+    .cfg-webui-user-quality {
+      flex:0 1 140px;
+      min-width:118px;
+      height:30px;
+      border:1px solid #ececec;
+      border-radius:8px;
+      background:#fff;
+      color:#333;
+      font-size:12px;
+      padding:0 8px;
     }
     .cfg-webui-users-actions {
       display:flex;
@@ -362,6 +385,7 @@
       color:#111;
     }
     .cfg-webui-user-remove {
+      flex:0 0 28px;
       width:28px;
       height:28px;
       padding:0;
@@ -496,7 +520,7 @@ const SCHEMA_DEF = [
           { key: 'api_key', label: 'API 调用密钥', labelKey: 'config.schema.fields.apiKey.label', type: 'text', desc: 'OpenAI 兼容 API 的鉴权密钥。多个值请使用英文逗号分隔；留空则禁用鉴权。', descKey: 'config.schema.fields.apiKey.desc', rand: true },
           { key: 'webui_enabled', label: '启用 WebUI', labelKey: 'config.schema.fields.webuiEnabled.label', type: 'bool', desc: '开放 WebUI 功能入口。关闭后相关路由将返回 404。', descKey: 'config.schema.fields.webuiEnabled.desc' },
           { key: 'webui_key', label: 'WebUI 访问密码', labelKey: 'config.schema.fields.webuiKey.label', type: 'password', desc: 'WebUI 的访问鉴权密码。配置后访问时必须提供。', descKey: 'config.schema.fields.webuiKey.desc', rand: true, showIf: 'app.webui_enabled' },
-          { key: 'webui_users', label: 'WebUI 用户', labelKey: 'config.schema.fields.webuiUsers.label', type: 'webui_users', desc: '配置后 WebUI 使用用户名 + 独立 key 登录，并按用户隔离浏览器端会话、搜索设置与 MCP 配置；可为每个用户独立控制 NSFW 生成能力。留空时继续使用上面的单密码模式。', descKey: 'config.schema.fields.webuiUsers.desc', showIf: 'app.webui_enabled' },
+          { key: 'webui_users', label: 'WebUI 用户', labelKey: 'config.schema.fields.webuiUsers.label', type: 'webui_users', desc: '配置后 WebUI 使用用户名 + 独立 key 登录，并按用户隔离浏览器端会话、搜索设置与 MCP 配置；可为每个用户独立控制 NSFW、GPT 图片模型访问与最高图片清晰度。留空时继续使用上面的单密码模式。', descKey: 'config.schema.fields.webuiUsers.desc', showIf: 'app.webui_enabled' },
         ]
       },
       {
@@ -1089,6 +1113,56 @@ function _coerceConfigBool(value, fallback) {
   return Boolean(value);
 }
 
+const GPT_IMAGE_MODEL_OPTIONS = [
+  { value: 'gpt-image-1', label: 'gpt-image-1' },
+  { value: 'gpt-image-2', label: 'gpt-image-2' },
+  { value: 'codex-gpt-image-2', label: 'codex-gpt-image-2' },
+];
+
+function _coerceStringList(value, fallback) {
+  if (value == null) return fallback.slice();
+  let raw = value;
+  if (typeof raw === 'string') {
+    const text = raw.trim();
+    if (!text) return [];
+    try {
+      const parsed = JSON.parse(text);
+      raw = Array.isArray(parsed) ? parsed : text.split(',');
+    } catch {
+      raw = text.replace(/\r?\n/g, ',').split(',');
+    }
+  }
+  if (!Array.isArray(raw)) return fallback.slice();
+  const seen = new Set();
+  const result = [];
+  raw.forEach((item) => {
+    const model = String(item || '').trim();
+    if (model && !seen.has(model)) {
+      seen.add(model);
+      result.push(model);
+    }
+  });
+  return result;
+}
+
+function _normalizeGptQuality(value) {
+  const text = String(value || '1k').trim().toLowerCase();
+  if (['4', '4k', '4096', 'premium', 'pro'].includes(text)) return '4k';
+  if (['2', '2k', '2048'].includes(text)) return '2k';
+  return '1k';
+}
+
+function _allGptImageModels() {
+  return GPT_IMAGE_MODEL_OPTIONS.map((item) => item.value);
+}
+
+function _firstDefined(values) {
+  for (let index = 0; index < values.length; index += 1) {
+    if (values[index] !== undefined) return values[index];
+  }
+  return undefined;
+}
+
 function _normalizeWebuiUserEntry(entry) {
   if (!entry || typeof entry !== 'object') return null;
   const username = String(entry.username || entry.name || entry.id || '').trim();
@@ -1100,12 +1174,38 @@ function _normalizeWebuiUserEntry(entry) {
   if (allowNsfwValue === undefined) allowNsfwValue = entry.nsfw;
   if (allowNsfwValue === undefined) allowNsfwValue = entry.enable_nsfw;
   const allowNsfw = _coerceConfigBool(allowNsfwValue, true);
+  const configuredGptModels = _coerceStringList(
+    _firstDefined([
+      entry.gpt_models,
+      entry.gptModels,
+      entry.gpt_image_models,
+      entry.allowed_gpt_models,
+    ]),
+    [],
+  ).filter((model) => GPT_IMAGE_MODEL_OPTIONS.some((item) => item.value === model));
+  let gptEnabledValue = entry.gpt_enabled;
+  if (gptEnabledValue === undefined) gptEnabledValue = entry.gptEnabled;
+  if (gptEnabledValue === undefined) gptEnabledValue = entry.allow_gpt;
+  if (gptEnabledValue === undefined) gptEnabledValue = entry.allowGpt;
+  const gptEnabled = _coerceConfigBool(gptEnabledValue, configuredGptModels.length > 0);
+  const gptModels = gptEnabled ? _allGptImageModels() : [];
+  const gptQuality = _normalizeGptQuality(
+    _firstDefined([
+      entry.gpt_image_quality,
+      entry.gptImageQuality,
+      entry.gpt_quality,
+      entry.max_gpt_image_quality,
+    ]),
+  );
   return {
     username,
     key,
     display_name: displayName || username,
     enabled: _coerceConfigBool(entry.enabled, true),
     allow_nsfw: allowNsfw,
+    gpt_enabled: gptEnabled,
+    gpt_models: gptModels,
+    gpt_image_quality: gptQuality,
   };
 }
 
@@ -1128,6 +1228,9 @@ function _normalizeWebuiUsers(value) {
           key: trimmed.slice(index + 1).trim(),
           enabled: true,
           allow_nsfw: true,
+          gpt_enabled: false,
+          gpt_models: [],
+          gpt_image_quality: '1k',
         };
       }).filter(Boolean);
     }
@@ -1250,6 +1353,9 @@ function renderWebuiUsersInput(value, onChange) {
         display_name: `User ${index}`,
         enabled: true,
         allow_nsfw: true,
+        gpt_enabled: false,
+        gpt_models: [],
+        gpt_image_quality: '1k',
       }]);
       onChange(_normalizeWebuiUsers(users));
       renderList();
@@ -1317,6 +1423,35 @@ function renderWebuiUsersInput(value, onChange) {
         '允许 NSFW',
       ));
 
+      const allowGpt = _el('input', { type: 'checkbox' });
+      allowGpt.checked = Boolean(user.gpt_enabled || (user.gpt_models || []).length);
+      allowGpt.addEventListener('change', () => {
+        updateUser(index, {
+          gpt_enabled: allowGpt.checked,
+          gpt_models: allowGpt.checked ? _allGptImageModels() : [],
+        });
+      });
+      const allowGptLabel = _el('label', { class: 'cfg-webui-user-toggle cfg-webui-user-gpt' }, allowGpt, tr(
+        'config.webuiUsers.allowGpt',
+        null,
+        'GPT',
+      ));
+
+      const gptQuality = _el('select', {
+        class: 'cfg-webui-user-quality',
+        title: 'GPT 图片最高可用清晰度',
+      });
+      [
+        ['1k', '最高 1K'],
+        ['2k', '最高 2K'],
+        ['4k', '最高 4K'],
+      ].forEach(([value, label]) => {
+        const option = _el('option', { value }, label);
+        option.selected = (user.gpt_image_quality || '1k') === value;
+        gptQuality.appendChild(option);
+      });
+      gptQuality.addEventListener('change', () => updateUser(index, { gpt_image_quality: gptQuality.value }));
+
       const removeBtn = _el('button', {
         class: 'cfg-webui-user-btn cfg-webui-user-remove',
         type: 'button',
@@ -1338,6 +1473,8 @@ function renderWebuiUsersInput(value, onChange) {
         displayName,
         enabledLabel,
         allowNsfwLabel,
+        allowGptLabel,
+        gptQuality,
         removeBtn,
       ));
     });
@@ -1506,7 +1643,7 @@ function renderRow(field, section, tabId) {
   const inputCol = _el('div', { class: `cfg-input-col${field.type === 'bool' ? ' is-bool' : ''}` }, input);
 
   const row = _el('div', {
-    class: `cfg-row${isDirty ? ' modified' : ''}`,
+    class: `cfg-row${field.type === 'webui_users' ? ' is-wide' : ''}${isDirty ? ' modified' : ''}`,
     'data-section': section,
     'data-key': field.key,
     'data-apply-mode': applyMode,

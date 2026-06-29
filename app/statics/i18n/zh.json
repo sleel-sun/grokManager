@@ -41,8 +41,12 @@
   "webui": {
     "header": {
       "chat": "聊天",
+      "draw": "画图",
       "masonry": "瀑布流",
       "chatkit": "ChatKit"
+    },
+    "imageStudio": {
+      "pageTitle": "grokManager - 画图"
     },
     "chat": {
       "pageTitle": "grokManager - WebChat",
@@ -451,6 +455,7 @@
       "displayName": "显示名",
       "enabled": "启用",
       "allowNsfw": "允许 NSFW",
+      "allowGpt": "GPT",
       "remove": "删除"
     },
     "loadFailed": "配置加载失败：{message}",
@@ -538,7 +543,7 @@
         },
         "webuiUsers": {
           "label": "WebUI 用户",
-          "desc": "配置后 WebUI 使用用户名 + 独立 key 登录，并按用户隔离浏览器端会话、搜索设置与 MCP 配置；可为每个用户独立控制 NSFW 生成能力。留空时继续使用单密码模式。"
+          "desc": "配置后 WebUI 使用用户名 + 独立 key 登录，并按用户隔离浏览器端会话、搜索设置与 MCP 配置；可为每个用户独立控制 NSFW、GPT 图片模型访问与最高图片清晰度。留空时继续使用单密码模式。"
         },
         "temporary": {
           "label": "临时会话",

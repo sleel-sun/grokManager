@@ -62,8 +62,9 @@ MODELS: tuple[ModelSpec, ...] = (
     ModelSpec("grok-imagine-image",                     ModeId.AUTO,     Tier.SUPER, Capability.IMAGE,      True, "Grok Imagine Image"),
     ModelSpec("grok-imagine-image-pro",                 ModeId.AUTO,     Tier.SUPER, Capability.IMAGE,      True, "Grok Imagine Image Pro"),
     # ChatGPT image accounts
-    ModelSpec("gpt-image-1",                             ModeId.CONSOLE,  Tier.BASIC, Capability.IMAGE,      True, "GPT Image 1",            upstream_profile="chatgpt_image", upstream_model="gpt-image-2"),
-    ModelSpec("gpt-image-2",                             ModeId.CONSOLE,  Tier.BASIC, Capability.IMAGE,      True, "GPT Image 2",            upstream_profile="chatgpt_image", upstream_model="gpt-image-2"),
+    ModelSpec("gpt-image-1",                             ModeId.CONSOLE,  Tier.BASIC, Capability.IMAGE | Capability.IMAGE_EDIT, True, "GPT Image 1",            upstream_profile="chatgpt_image", upstream_model="gpt-image-2"),
+    ModelSpec("gpt-image-2",                             ModeId.CONSOLE,  Tier.BASIC, Capability.IMAGE | Capability.IMAGE_EDIT, True, "GPT Image 2",            upstream_profile="chatgpt_image", upstream_model="gpt-image-2"),
+    ModelSpec("codex-gpt-image-2",                       ModeId.CONSOLE,  Tier.BASIC, Capability.IMAGE | Capability.IMAGE_EDIT, True, "Codex GPT Image 2",      upstream_profile="chatgpt_image", upstream_model="codex-gpt-image-2"),
 
     # === Image Edit =========================================================
 

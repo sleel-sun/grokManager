@@ -13,9 +13,13 @@ from app.products.web.admin.gpt_accounts import (
     GPTAccountItem,
     GPTAccountLoginRequest,
     GPTAccountOAuthFinishRequest,
+    GPTAccountOAuthStartRequest,
+    _access_token_from_login_result,
     _delete_record_tokens,
     _ext_for_item,
     _export_record,
+    _remote_detail_ext,
+    _serialize,
     _legacy_image_credential_record_token,
     _legacy_image_record_token,
     _summary,
@@ -23,6 +27,7 @@ from app.products.web.admin.gpt_accounts import (
     gpt_account_credential_record_token,
     gpt_account_record_token,
     login_gpt_account,
+    start_gpt_account_oauth,
 )
 
 
@@ -162,16 +167,131 @@ def test_account_page_exposes_ordinary_gpt_management_panel() -> None:
     ).read_text(encoding="utf-8")
 
     assert 'id="gpt-account-tbody"' in html
+    assert 'id="gpt-account-overview"' in html
+    assert 'id="gpt-overview-total"' in html
+    assert 'id="gpt-overview-available"' in html
+    assert 'id="gpt-overview-pending"' in html
+    assert 'id="gpt-overview-invalid"' in html
+    assert 'id="gpt-overview-token"' in html
+    assert 'id="gpt-overview-credentials"' in html
+    assert "function renderGptAccountOverview()" in html
+    assert "function gptAccountOverviewStats()" in html
+    assert 'id="modal-gpt-account-detail"' in html
+    assert "openGptAccountDetail(" in html
+    assert "refreshGptAccountDetail(" in html
+    assert "_api('POST', '/gpt/accounts/detail'" in html
+    assert "远端详情" in html
+    assert "GPTChat 账号详情" in html
     assert 'id="modal-gpt-login"' in html
     assert 'id="gpt-login-token-result"' in html
     assert 'id="gpt-oauth-authorize-url"' in html
     assert 'id="gpt-oauth-callback"' in html
+    assert 'id="gpt-session-json-open"' in html
+    assert "openChatGPTSessionJson()" in html
+    assert "ChatGPT /api/auth/session JSON / Bearer token" in html
+    assert "scheduleGptOAuthAutoPoll(" not in html
+    assert "https://chatgpt.com/api/auth/session" in html
     assert "_api('GET', '/gpt/accounts'" in html
     assert "_api('POST', '/gpt/accounts/oauth/start'" in html
     assert "_api('POST', '/gpt/accounts/oauth/finish'" in html
     assert "_api('POST', '/gpt/accounts/login'" in html
     assert "_api('DELETE', '/gpt/accounts'" in html
     assert "deleteGptAccount(" in html
+
+
+def test_gpt_account_serialize_includes_safe_detail_fields_without_secrets() -> None:
+    record = AccountRecord(
+        token="gpt_123",
+        tags=["gpt"],
+        created_at=1710000000000,
+        updated_at=1710000100000,
+        last_use_at=1710000200000,
+        last_fail_at=1710000300000,
+        last_fail_reason="upstream failed",
+        usage_use_count=7,
+        usage_fail_count=2,
+        ext={
+            "gpt": True,
+            "gpt_access_token": "access-secret-value",
+            "gpt_email": "user@example.test",
+            "gpt_password": "password-secret",
+            "gpt_mail_token": "mail-secret",
+            "gpt_plan_type": "plus",
+            "gpt_status": "available",
+            "gpt_last_checked_at": 1710000400000,
+            "gpt_login_attempt_at": 1710000500000,
+            "gpt_cooldown_until": 1710000600000,
+            "gpt_last_remote_refresh_at": 1710000700000,
+            "gpt_remote_user_id": "user-123",
+            "gpt_default_model_slug": "gpt-5",
+            "gpt_limits_progress": [{"feature_name": "image_gen", "remaining": 3}],
+            "gpt_image_quota": 3,
+            "gpt_image_quota_unknown": False,
+            "gpt_image_restore_at": "2026-06-29T00:00:00Z",
+            "gpt_remote_error": None,
+        },
+    )
+
+    payload = _serialize(record)
+
+    assert payload["created_at"] == 1710000000000
+    assert payload["last_used_at"] == 1710000200000
+    assert payload["last_fail_at"] == 1710000300000
+    assert payload["last_checked_at"] == 1710000400000
+    assert payload["last_login_attempt_at"] == 1710000500000
+    assert payload["cooldown_until"] == 1710000600000
+    assert payload["last_remote_refresh_at"] == 1710000700000
+    assert payload["remote_user_id"] == "user-123"
+    assert payload["default_model_slug"] == "gpt-5"
+    assert payload["limits_progress"] == [{"feature_name": "image_gen", "remaining": 3}]
+    assert payload["image_quota"] == 3
+    assert payload["image_quota_unknown"] is False
+    assert payload["image_restore_at"] == "2026-06-29T00:00:00Z"
+    assert payload["use_count"] == 7
+    assert payload["fail_count"] == 2
+    assert payload["has_access_token"] is True
+    assert payload["has_credentials"] is True
+    assert payload["has_password"] is True
+    assert payload["has_mail_token"] is True
+    assert payload["access_token_masked"] != "access-secret-value"
+    assert "access_token" not in payload
+    assert "password" not in payload
+    assert "mail_token" not in payload
+
+
+def test_gpt_remote_detail_ext_maps_profile_plan_and_quota() -> None:
+    detail = {
+        "email": "remote@example.test",
+        "user_id": "user-remote",
+        "plan_type": "Plus",
+        "default_model_slug": "gpt-5",
+        "limits_progress": [
+            {
+                "feature_name": "image_gen",
+                "remaining": 12,
+                "reset_after": "2026-06-29T00:00:00Z",
+            }
+        ],
+        "image_quota": 12,
+        "image_restore_at": "2026-06-29T00:00:00Z",
+        "image_quota_unknown": False,
+        "account": {"plan_type": "Plus"},
+    }
+
+    ext = _remote_detail_ext(detail, {"gpt_image": True})
+
+    assert ext["gpt"] is True
+    assert ext["gpt_status"] == "available"
+    assert ext["gpt_email"] == "remote@example.test"
+    assert ext["gpt_plan_type"] == "Plus"
+    assert ext["gpt_remote_user_id"] == "user-remote"
+    assert ext["gpt_default_model_slug"] == "gpt-5"
+    assert ext["gpt_limits_progress"] == detail["limits_progress"]
+    assert ext["gpt_image_quota"] == 12
+    assert ext["gpt_image_quota_unknown"] is False
+    assert ext["gpt_image_restore_at"] == "2026-06-29T00:00:00Z"
+    assert ext["gpt_image_is_free"] is False
+    assert ext["gpt_remote_error"] is None
 
 
 def test_maintainer_page_no_longer_exposes_ordinary_gpt_delete_controls() -> None:
@@ -286,6 +406,30 @@ def test_gpt_account_login_accepts_legacy_image_credentials(monkeypatch) -> None
     assert repo.patches[0].ext_merge["gpt_status"] == "available"
 
 
+def test_gpt_account_login_extracts_token_from_session_json(monkeypatch) -> None:
+    def fake_login_gpt_credentials(**_kwargs):
+        return '{"accessToken":"json-access-token","user":{"email":"user@example.test"}}'
+
+    monkeypatch.setattr("app.maintainer.gpt.login_gpt_credentials", fake_login_gpt_credentials)
+
+    response = asyncio.run(
+        login_gpt_account(
+            GPTAccountLoginRequest(
+                email="user@example.test",
+                password="secret",
+                mail_token="mail-token",
+                save=False,
+            ),
+            repo=SimpleNamespace(),
+        )
+    )
+    body = orjson.loads(response.body)
+
+    assert body["access_token"] == "json-access-token"
+    assert body["account"]["email"] == "user@example.test"
+    assert body["account"]["saved"] is False
+
+
 def test_gpt_oauth_service_start_builds_authorize_url() -> None:
     service = GPTAccountOAuthService()
 
@@ -303,6 +447,164 @@ def test_gpt_oauth_service_start_builds_authorize_url() -> None:
     assert params["login_hint"] == ["User@example.test"]
     assert params["code_challenge_method"] == ["S256"]
     assert params["scope"] == ["openid profile email offline_access"]
+
+
+def test_gpt_oauth_service_proxy_env_prefers_maintainer_proxy(monkeypatch) -> None:
+    monkeypatch.setenv("MAINTAINER_PROXY", "http://maintainer-proxy:8118")
+    monkeypatch.setenv("GROK_PROXY_EGRESS_PROXY_URL", "http://egress-proxy:8118")
+
+    assert GPTAccountOAuthService.proxy_url_from_env() == "http://maintainer-proxy:8118"
+
+
+def test_gpt_oauth_service_proxy_env_falls_back_to_egress_proxy(monkeypatch) -> None:
+    monkeypatch.delenv("MAINTAINER_PROXY", raising=False)
+    monkeypatch.setenv("GROK_PROXY_EGRESS_PROXY_URL", "http://egress-proxy:8118")
+
+    assert GPTAccountOAuthService.proxy_url_from_env() == "http://egress-proxy:8118"
+
+
+def test_gpt_account_login_start_uses_reference_oauth_url() -> None:
+    response = asyncio.run(
+        start_gpt_account_oauth(
+            GPTAccountOAuthStartRequest(email_hint=" image@example.test "),
+            repo=SimpleNamespace(),
+        )
+    )
+    body = orjson.loads(response.body)
+    parsed = urlparse(body["authorize_url"])
+    params = parse_qs(parsed.query)
+
+    assert parsed.scheme == "https"
+    assert parsed.netloc == "auth.openai.com"
+    assert parsed.path == "/api/accounts/authorize"
+    assert body["session_id"]
+    assert body["expires_in"] == 600
+    assert body["redirect_uri_prefix"] == "https://platform.openai.com/auth/callback"
+    assert body["email_hint"] == "image@example.test"
+    assert params["client_id"] == ["app_2SKx67EdpoN0G6j64rFvigXD"]
+    assert params["audience"] == ["https://api.openai.com/v1"]
+    assert params["redirect_uri"] == ["https://platform.openai.com/auth/callback"]
+    assert params["login_hint"] == ["image@example.test"]
+    assert params["state"][0].startswith(f"{body['session_id']}.")
+    assert "logout_authorize_url" not in body
+    assert "direct_authorize_url" not in body
+    assert "login_mode" not in body
+
+
+def test_gpt_account_oauth_finish_exchanges_raw_callback_code(monkeypatch) -> None:
+    class Repo:
+        def __init__(self) -> None:
+            self.upserts = []
+            self.patches = []
+
+        async def upsert_accounts(self, upserts):
+            self.upserts.extend(upserts)
+            return SimpleNamespace(upserted=len(upserts))
+
+        async def patch_accounts(self, patches):
+            self.patches.extend(patches)
+
+    calls = []
+
+    def fake_finish(session_id, callback):
+        calls.append((session_id, callback))
+        return {"access_token": "code-access-token"}
+
+    monkeypatch.setattr("app.maintainer.gpt_oauth.gpt_oauth_login_service.finish", fake_finish)
+
+    repo = Repo()
+    response = asyncio.run(
+        finish_gpt_account_oauth(
+            GPTAccountOAuthFinishRequest(
+                session_id="session-1",
+                callback="raw-callback-code",
+                email="image@example.test",
+            ),
+            repo=repo,
+        )
+    )
+    body = orjson.loads(response.body)
+
+    assert calls == [("session-1", "raw-callback-code")]
+    assert body["access_token"] == "code-access-token"
+    assert body["account"]["email"] == "image@example.test"
+    assert repo.upserts[0].token == gpt_account_record_token("code-access-token")
+    assert repo.upserts[0].ext["gpt_access_token"] == "code-access-token"
+    assert repo.upserts[0].ext["gpt_email"] == "image@example.test"
+
+
+def test_gpt_account_oauth_finish_accepts_codexmanager_session_snapshot() -> None:
+    snapshot = {
+        "href": "https://chatgpt.com/api/auth/session",
+        "text": '{"accessToken":"snapshot-token","user":{"email":"image@example.test"}}',
+    }
+
+    access_token, email = _access_token_from_login_result(orjson.dumps(snapshot).decode())
+
+    assert access_token == "snapshot-token"
+    assert email == "image@example.test"
+
+
+def test_gpt_account_oauth_finish_saves_session_snapshot_without_oauth_exchange(monkeypatch) -> None:
+    class Repo:
+        def __init__(self) -> None:
+            self.upserts = []
+            self.patches = []
+
+        async def upsert_accounts(self, upserts):
+            self.upserts.extend(upserts)
+            return SimpleNamespace(upserted=len(upserts))
+
+        async def patch_accounts(self, patches):
+            self.patches.extend(patches)
+
+    def fail_finish(_session_id, _callback):
+        raise AssertionError("session JSON should not be exchanged as an OAuth code")
+
+    monkeypatch.setattr("app.maintainer.gpt_oauth.gpt_oauth_login_service.finish", fail_finish)
+
+    snapshot = {
+        "href": "https://chatgpt.com/api/auth/session",
+        "text": '{"accessToken":"snapshot-token","user":{"email":"image@example.test"}}',
+    }
+    repo = Repo()
+    response = asyncio.run(
+        finish_gpt_account_oauth(
+            GPTAccountOAuthFinishRequest(
+                session_id="",
+                callback=orjson.dumps(snapshot).decode(),
+            ),
+            repo=repo,
+        )
+    )
+    body = orjson.loads(response.body)
+
+    assert body["access_token"] == "snapshot-token"
+    assert body["account"]["email"] == "image@example.test"
+    assert repo.upserts[0].token == gpt_account_record_token("snapshot-token")
+    assert repo.upserts[0].ext["gpt_access_token"] == "snapshot-token"
+    assert repo.upserts[0].ext["gpt_email"] == "image@example.test"
+
+
+def test_gpt_account_oauth_finish_extracts_token_from_pasted_fragment() -> None:
+    access_token, email = _access_token_from_login_result(
+        'copy from page: "accessToken":"fragment-token", "expires":"soon"'
+    )
+
+    assert access_token == "fragment-token"
+    assert email == ""
+
+
+def test_gpt_account_oauth_finish_rejects_non_chatgpt_session_snapshot() -> None:
+    snapshot = {
+        "href": "https://example.com/api/auth/session",
+        "text": '{"accessToken":"snapshot-token","user":{"email":"image@example.test"}}',
+    }
+
+    access_token, email = _access_token_from_login_result(orjson.dumps(snapshot).decode())
+
+    assert access_token == ""
+    assert email == ""
 
 
 def test_gpt_account_oauth_finish_saves_tokens(monkeypatch) -> None:
