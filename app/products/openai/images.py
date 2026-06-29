@@ -1236,13 +1236,20 @@ async def _stream_image_edit(
                 if response.status_code == 524
                 else f"Image-edit upstream returned {response.status_code}"
             )
-            raise UpstreamError(
+            exc = UpstreamError(
                 message,
                 status=status,
                 body=body,
             )
-        async for line in response.aiter_lines():
-            yield line
+            await proxy.feedback(lease, upstream_feedback(exc))
+            raise exc
+        try:
+            async for line in response.aiter_lines():
+                yield line
+        except Exception:
+            await proxy.feedback(lease, ProxyFeedback(kind=ProxyFeedbackKind.TRANSPORT_ERROR))
+            raise
+        await proxy.feedback(lease, ProxyFeedback(kind=ProxyFeedbackKind.SUCCESS, status_code=200))
 
 
 async def _stream_lite_generate(

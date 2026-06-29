@@ -311,6 +311,63 @@ class ImageGenerationRetryTests(unittest.TestCase):
         self.assertEqual(images._normalized_upstream_status(524), 504)
         self.assertIn("Cloudflare 524", images._image_generation_upstream_error_message(524, ""))
 
+    def test_image_edit_524_reports_proxy_feedback(self) -> None:
+        from app.control.proxy.models import ProxyFeedbackKind, ProxyLease
+        from app.products.openai import images
+
+        class FakeResponse:
+            status_code = 524
+            content = b"cloudflare timeout"
+
+        class FakeSession:
+            async def post(self, *_args, **_kwargs):
+                return FakeResponse()
+
+        class FakeResettableSession:
+            def __init__(self, **_kwargs):
+                pass
+
+            async def __aenter__(self):
+                return FakeSession()
+
+            async def __aexit__(self, *_args):
+                return False
+
+        class FakeProxy:
+            def __init__(self) -> None:
+                self.feedbacks = []
+
+            async def acquire(self):
+                return ProxyLease(lease_id="lease-1")
+
+            async def feedback(self, lease, feedback):
+                self.feedbacks.append((lease, feedback))
+
+        proxy = FakeProxy()
+
+        async def run() -> None:
+            with (
+                patch.object(images, "get_proxy_runtime", new=AsyncMock(return_value=proxy)),
+                patch.object(images, "ResettableSession", FakeResettableSession),
+                patch.object(images, "build_session_kwargs", return_value={}),
+            ):
+                with self.assertRaises(UpstreamError) as ctx:
+                    async for _line in images._stream_image_edit(
+                        "token",
+                        "edit it",
+                        ["asset-ref"],
+                        "post-1",
+                        timeout_s=1,
+                    ):
+                        pass
+                self.assertEqual(ctx.exception.status, 504)
+
+        asyncio.run(run())
+
+        self.assertEqual(len(proxy.feedbacks), 1)
+        self.assertEqual(proxy.feedbacks[0][1].kind, ProxyFeedbackKind.UPSTREAM_5XX)
+        self.assertEqual(proxy.feedbacks[0][1].status_code, 504)
+
     def test_media_pool_candidates_include_all_pools_with_rotation(self) -> None:
         from app.control.model.registry import get as get_model
         from app.products.openai import images

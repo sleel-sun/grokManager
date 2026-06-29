@@ -23,6 +23,19 @@ from app.products.web.admin.gpt_image_accounts import (
     account_record_token,
 )
 
+_TINY_PNG_B64 = (
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9s"
+    "AAAAASUVORK5CYII="
+)
+
+
+def _tiny_png_bytes() -> bytes:
+    return base64.b64decode(_TINY_PNG_B64)
+
+
+def _tiny_png_data_uri() -> str:
+    return f"data:image/png;base64,{_TINY_PNG_B64}"
+
 
 def test_gpt_image_models_are_registered_as_image_models() -> None:
     one = resolve("gpt-image-1")
@@ -337,7 +350,7 @@ def test_gpt_image_edit_reference_upload_adds_azure_blob_header(monkeypatch) -> 
         gpt_image._upload_edit_reference(
             None,
             context,
-            "data:image/png;base64,aW1hZ2U=",
+            _tiny_png_data_uri(),
             0,
         )
     )
@@ -345,7 +358,9 @@ def test_gpt_image_edit_reference_upload_adds_azure_blob_header(monkeypatch) -> 
     put_request = next(request for request in requests if request["method"] == "PUT")
     headers = put_request["headers"]
     assert reference.file_id == "file_ref_1"
-    assert put_request["data"] == b"image"
+    assert reference.width == 1
+    assert reference.height == 1
+    assert put_request["data"] == _tiny_png_bytes()
     assert headers["content-type"] == "image/png"
     assert headers["x-ms-blob-type"] == "BlockBlob"
     assert headers["x-ms-meta-origin"] == "chatgpt"
@@ -431,7 +446,7 @@ def test_gpt_image_edit_reference_upload_retries_missing_blob_type(monkeypatch) 
         gpt_image._upload_edit_reference(
             None,
             context,
-            "data:image/png;base64,aW1hZ2U=",
+            _tiny_png_data_uri(),
             0,
         )
     )
@@ -443,20 +458,35 @@ def test_gpt_image_edit_reference_upload_retries_missing_blob_type(monkeypatch) 
     assert put_requests[1]["headers"]["x-ms-blob-type"] == "BlockBlob"
 
 
-def test_gpt_image_send_edit_conversation_uses_gpt_image_2(monkeypatch) -> None:
-    captured: dict[str, object] = {}
+def test_gpt_image_send_edit_conversation_uses_picture_f_conversation(monkeypatch) -> None:
+    requests: list[dict[str, object]] = []
+    released: dict[str, bool] = {}
 
     class FakeContent:
         async def iter_chunked(self, _size: int):
-            yield b'data: {"conversation_id":"conv_edit"}\n'
-            yield b"data: file-service://file_result\n"
+            yield (
+                b'data: {"conversation_id":"conv_edit","message":{"author":{"role":"user"},'
+                b'"content":{"content_type":"multimodal_text","parts":[{"asset_pointer":'
+                b'"file-service://file_ref_0"}]}}}\n'
+            )
+            yield (
+                b'data: {"conversation_id":"conv_edit","message":{"author":{"role":"tool"},'
+                b'"metadata":{"async_task_type":"image_gen"},"content":{"content_type":'
+                b'"multimodal_text","parts":[{"asset_pointer":"file-service://file_result"}]}}}\n'
+            )
 
     class FakeResponse:
+        def __init__(self, payload: dict[str, object] | None = None) -> None:
+            self._payload = payload or {}
+
         ok = True
         content = FakeContent()
 
+        async def json(self, content_type=None):
+            return self._payload
+
         def release(self) -> None:
-            captured["released"] = True
+            released["stream"] = True
 
     async def fake_upload(_session, _context, _image_input, index: int):
         return gpt_image._EditReference(
@@ -464,14 +494,20 @@ def test_gpt_image_send_edit_conversation_uses_gpt_image_2(monkeypatch) -> None:
             name=f"reference-{index}.png",
             mime_type="image/png",
             size=5,
+            width=1,
+            height=1,
         )
 
     async def fake_chat_requirements(_session, _context):
         return "chat-token", None
 
     async def fake_request(_session, method: str, url: str, **kwargs):
-        captured.update({"method": method, "url": url, **kwargs})
-        return FakeResponse()
+        requests.append({"method": method, "url": url, **kwargs})
+        if url.endswith("/backend-api/f/conversation/prepare"):
+            return FakeResponse({"conduit_token": "conduit-token"})
+        if url.endswith("/backend-api/f/conversation"):
+            return FakeResponse()
+        raise AssertionError(f"unexpected request {method} {url}")
 
     monkeypatch.setattr(gpt_image, "_upload_edit_reference", fake_upload)
     monkeypatch.setattr(gpt_image, "_chat_requirements", fake_chat_requirements)
@@ -488,23 +524,37 @@ def test_gpt_image_send_edit_conversation_uses_gpt_image_2(monkeypatch) -> None:
             None,
             context,
             prompt="make it blue",
-            image_inputs=["data:image/png;base64,aW1hZ2U="],
+            image_inputs=[_tiny_png_data_uri()],
             requested_model="gpt-image-1",
             is_free=True,
         )
     )
 
-    payload = captured["json_body"]
+    prepare_request = requests[0]
+    conversation_request = requests[1]
+    prepare_payload = prepare_request["json_body"]
+    payload = conversation_request["json_body"]
     message = payload["messages"][0]
-    assert captured["url"] == "https://chatgpt.com/backend-api/conversation"
-    assert "Edit the provided reference image" in message["content"]["parts"][0]
-    assert "make it blue" in message["content"]["parts"][0]
+    parts = message["content"]["parts"]
+    assert prepare_request["url"] == "https://chatgpt.com/backend-api/f/conversation/prepare"
+    assert prepare_payload["model"] == "gpt-5-3"
+    assert "make it blue" in prepare_payload["partial_query"]["content"]["parts"][0]
+    assert conversation_request["url"] == "https://chatgpt.com/backend-api/f/conversation"
+    assert conversation_request["headers"]["x-conduit-token"] == "conduit-token"
+    assert message["content"]["content_type"] == "multimodal_text"
+    assert parts[0]["content_type"] == "image_asset_pointer"
+    assert parts[0]["asset_pointer"] == "file-service://file_ref_0"
+    assert parts[0]["width"] == 1
+    assert "Edit the provided reference image" in parts[1]
+    assert "make it blue" in parts[1]
     assert message["metadata"]["attachments"][0]["id"] == "file_ref_0"
-    assert payload["model"] == "gpt-image-2"
-    assert payload["system_hints"] == ["picture_v2", "image_edit"]
+    assert message["metadata"]["attachments"][0]["mimeType"] == "image/png"
+    assert message["metadata"]["attachments"][0]["width"] == 1
+    assert payload["model"] == "gpt-5-3"
+    assert payload["system_hints"] == ["picture_v2"]
     assert conversation_id == "conv_edit"
     assert file_ids == ["file_result"]
-    assert captured["released"] is True
+    assert released["stream"] is True
 
 
 def test_gpt_image_generate_preserves_requested_gpt_image_model(monkeypatch) -> None:
@@ -1116,6 +1166,33 @@ def test_gpt_image_mark_failure_marks_invalid_token(monkeypatch) -> None:
     assert patch.ext_merge["gpt_image_error"] == (
         "ChatGPT access token is invalid or revoked; re-login or replace this GPT account"
     )
+
+
+def test_gpt_image_mark_failure_skips_cloudflare_524_cooldown(monkeypatch) -> None:
+    class FakeRepo:
+        def __init__(self) -> None:
+            self.patches = []
+
+        async def patch_accounts(self, patches):
+            self.patches.extend(patches)
+
+    repo = FakeRepo()
+    monkeypatch.setattr(gpt_image, "get_account_repository", lambda: repo)
+    account = gpt_image.GPTImageAccount(
+        record_token="gptimg_123",
+        access_token="token",
+        status_key="gpt_image_status",
+        error_key="gpt_image_error",
+    )
+    exc = UpstreamError(
+        "ChatGPT image-edit conversation failed: upstream timed out (Cloudflare 524)",
+        status=504,
+        body="cloudflare timeout",
+    )
+
+    asyncio.run(gpt_image._mark_account_failure(account, exc))
+
+    assert repo.patches == []
 
 
 def test_gpt_image_test_account_success_marks_available(monkeypatch) -> None:
