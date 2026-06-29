@@ -78,6 +78,7 @@
       "previewSaveFailed": "保存预览地址失败",
       "previewFrameTitle": "代码预览",
       "previewOpenFailed": "预览窗口被浏览器拦截",
+      "imagePreviewTitle": "图片预览",
       "search": {
         "button": "联网",
         "onButton": "联网中",
