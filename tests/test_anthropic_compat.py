@@ -63,6 +63,27 @@ def _body(json_response) -> dict:
 # ---------------------------------------------------------------------------
 
 
+class MessagesEndpointValidationTests(unittest.TestCase):
+    @staticmethod
+    def _call(payload: dict):
+        from app.products.anthropic.router import MessagesRequest, messages_endpoint
+
+        req = MessagesRequest.model_validate(payload)
+        return asyncio.run(messages_endpoint(req))
+
+    def test_messages_rejects_image_model(self) -> None:
+        from app.platform.errors import ValidationError
+
+        with self.assertRaises(ValidationError):
+            self._call(
+                {
+                    "model": "gpt-image-2",
+                    "messages": [{"role": "user", "content": "draw a cube"}],
+                    "stream": False,
+                }
+            )
+
+
 class CountTokensEndpointTests(unittest.TestCase):
     @staticmethod
     def _call(payload: dict):
@@ -137,6 +158,17 @@ class CountTokensEndpointTests(unittest.TestCase):
         body = _body(resp)
         self.assertGreater(body["input_tokens"], 0)
 
+    def test_count_tokens_rejects_image_model(self) -> None:
+        from app.platform.errors import ValidationError
+
+        with self.assertRaises(ValidationError):
+            self._call(
+                {
+                    "model": "gpt-image-2",
+                    "messages": [{"role": "user", "content": "Hello"}],
+                }
+            )
+
 
 # ---------------------------------------------------------------------------
 # /v1/models content negotiation
@@ -193,6 +225,22 @@ class ModelsContentNegotiationTests(unittest.TestCase):
         self.assertEqual(body["first_id"], first["id"])
         self.assertEqual(body["last_id"], body["data"][-1]["id"])
 
+    def test_list_models_anthropic_header_exposes_only_chat_models(self) -> None:
+        from app.control.model.registry import get
+
+        body = _body(self._list_models(anthropic_version="2023-06-01"))
+        ids = {item["id"] for item in body["data"]}
+
+        self.assertGreater(len(ids), 0)
+        self.assertNotIn("gpt-image-2", ids)
+        self.assertNotIn("codex-gpt-image-2", ids)
+        self.assertNotIn("grok-imagine-image", ids)
+        self.assertNotIn("grok-imagine-video", ids)
+        for model_id in ids:
+            spec = get(model_id)
+            self.assertIsNotNone(spec)
+            self.assertTrue(spec.is_chat(), model_id)
+
     def test_list_models_anthropic_empty_pool_still_lists_registered_models(self) -> None:
         # No manageable accounts should not hide registered models; runtime
         # requests report account availability failures explicitly.
@@ -221,6 +269,14 @@ class ModelsContentNegotiationTests(unittest.TestCase):
         self.assertEqual(body["object"], "model")
         self.assertEqual(body["id"], model)
         self.assertIn("name", body)
+
+    def test_get_model_anthropic_header_hides_image_model(self) -> None:
+        resp = self._get_model("gpt-image-2", anthropic_version="2023-06-01")
+
+        self.assertEqual(resp.status_code, 404)
+        body = _body(resp)
+        self.assertEqual(body["type"], "error")
+        self.assertEqual(body["error"]["type"], "not_found_error")
 
     def test_get_model_unknown_returns_format_specific_404(self) -> None:
         resp_openai = self._get_model("__does_not_exist__")
@@ -308,6 +364,45 @@ class ModelPayloadHelperTests(unittest.TestCase):
             {
                 "modality": "text->image",
                 "input_modalities": ["text"],
+                "output_modalities": ["image"],
+            },
+        )
+
+    def test_openai_model_payload_marks_gpt_image_model_as_generation_and_edit(self) -> None:
+        from app.control.model.registry import get
+        from app.products.openai.router import _openai_model_payload
+
+        spec = get("gpt-image-2")
+        self.assertIsNotNone(spec)
+        payload = _openai_model_payload(spec, 0)
+
+        self.assertEqual(payload["object"], "model")
+        self.assertEqual(payload["id"], "gpt-image-2")
+        self.assertEqual(payload["capability"], "image")
+        self.assertEqual(payload["capabilities"], ["image", "image_edit"])
+        self.assertEqual(payload["type"], "image")
+        self.assertEqual(payload["model_type"], "image")
+        self.assertEqual(payload["input_modalities"], ["text", "image"])
+        self.assertEqual(payload["output_modalities"], ["image"])
+        self.assertEqual(payload["modalities"], ["text", "image"])
+        self.assertEqual(
+            payload["supported_generation_methods"],
+            ["chat.completions", "images.generations", "images.edits"],
+        )
+        self.assertEqual(
+            payload["supportedGenerationMethods"],
+            ["chat.completions", "images.generations", "images.edits"],
+        )
+        self.assertEqual(
+            payload["endpoints"],
+            ["/v1/chat/completions", "/v1/images/generations", "/v1/images/edits"],
+        )
+        self.assertEqual(payload["routing"]["upstream_profile"], "chatgpt_image")
+        self.assertEqual(
+            payload["architecture"],
+            {
+                "modality": "text(+image)->image",
+                "input_modalities": ["text", "image"],
                 "output_modalities": ["image"],
             },
         )

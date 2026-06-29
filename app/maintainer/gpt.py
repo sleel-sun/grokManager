@@ -2,17 +2,19 @@
 
 from __future__ import annotations
 
+import base64
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from dataclasses import dataclass
 import json
 import random
+import re
 import secrets
 import string
 import time
 import uuid
 from pathlib import Path
 from typing import Any, Callable
-from urllib.parse import urlencode
+from urllib.parse import quote, urlencode, urlparse
 
 import requests
 
@@ -83,6 +85,82 @@ _DEFAULT_OTP_TIMEOUT_S = 90
 _DEFAULT_LOGIN_OTP_TIMEOUT_S = 90
 
 
+class _SentinelTokenGenerator:
+    MAX_ATTEMPTS = 500_000
+    ERROR_PREFIX = "wQ8Lk5FbGpA2NcR9dShT6gYjU7VxZ4D"
+
+    def __init__(self, device_id: str, user_agent: str) -> None:
+        self.device_id = device_id
+        self.user_agent = user_agent
+        self.sid = str(uuid.uuid4())
+
+    @staticmethod
+    def _fnv1a_32(text: str) -> str:
+        h = 2_166_136_261
+        for ch in text:
+            h ^= ord(ch)
+            h = (h * 16_777_619) & 0xFFFFFFFF
+        h ^= h >> 16
+        h = (h * 2_246_822_507) & 0xFFFFFFFF
+        h ^= h >> 13
+        h = (h * 3_266_489_909) & 0xFFFFFFFF
+        h ^= h >> 16
+        return format(h & 0xFFFFFFFF, "08x")
+
+    @staticmethod
+    def _b64(data: Any) -> str:
+        payload = json.dumps(data, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+        return base64.b64encode(payload).decode("ascii")
+
+    def _get_config(self) -> list[Any]:
+        perf_now = random.uniform(1000, 50_000)
+        return [
+            "1920x1080",
+            time.strftime("%a %b %d %Y %H:%M:%S GMT+0000 (Coordinated Universal Time)", time.gmtime()),
+            4_294_705_152,
+            random.random(),
+            self.user_agent,
+            "https://sentinel.openai.com/sentinel/20260124ceb8/sdk.js",
+            None,
+            None,
+            "en-US",
+            random.random(),
+            random.choice(
+                [
+                    "vendorSub-undefined",
+                    "plugins-undefined",
+                    "mimeTypes-undefined",
+                    "hardwareConcurrency-undefined",
+                ]
+            ),
+            random.choice(["location", "implementation", "URL", "documentURI", "compatMode"]),
+            random.choice(["Object", "Function", "Array", "Number", "parseFloat", "undefined"]),
+            perf_now,
+            self.sid,
+            "",
+            random.choice([4, 8, 12, 16]),
+            time.time() * 1000 - perf_now,
+        ]
+
+    def generate_requirements_token(self) -> str:
+        data = self._get_config()
+        data[3] = 1
+        data[9] = round(random.uniform(5, 50))
+        return "gAAAAAC" + self._b64(data)
+
+    def generate_token(self, seed: str, difficulty: str) -> str:
+        start = time.time()
+        data = self._get_config()
+        difficulty = str(difficulty or "0")
+        for index in range(self.MAX_ATTEMPTS):
+            data[3] = index
+            data[9] = round((time.time() - start) * 1000)
+            payload = self._b64(data)
+            if self._fnv1a_32(seed + payload)[: len(difficulty)] <= difficulty:
+                return "gAAAAAB" + payload + "~S"
+        return "gAAAAAB" + self.ERROR_PREFIX + self._b64(str(None))
+
+
 @dataclass(slots=True)
 class GPTRegistrationResult:
     email: str
@@ -95,6 +173,12 @@ class GPTRegistrationResult:
 
     def saved_identifier(self) -> str:
         return self.access_token or self.email
+
+
+@dataclass(slots=True)
+class ChatGPTSessionTokenResult:
+    access_token: str
+    email: str = ""
 
 
 class GPTRegistrationError(RuntimeError):
@@ -178,6 +262,176 @@ class ChatGPTRegistrationClient:
         headers.update(kwargs.pop("headers", {}) or {})
         response = self.session.request(method, url, headers=headers, timeout=30, **kwargs)
         return response
+
+    def _sentinel_token(self, flow: str) -> str:
+        generator = _SentinelTokenGenerator(self.device_id, self.user_agent)
+        response = self.session.post(
+            "https://sentinel.openai.com/backend-api/sentinel/req",
+            data=json.dumps(
+                {
+                    "p": generator.generate_requirements_token(),
+                    "id": self.device_id,
+                    "flow": flow,
+                }
+            ),
+            headers={
+                "Content-Type": "text/plain;charset=UTF-8",
+                "Referer": "https://sentinel.openai.com/backend-api/sentinel/frame.html",
+                "Origin": "https://sentinel.openai.com",
+                "User-Agent": self.user_agent,
+                "sec-ch-ua": self.sec_ch_ua,
+                "sec-ch-ua-mobile": "?0",
+                "sec-ch-ua-platform": '"Windows"',
+            },
+            timeout=60,
+            verify=False,
+        )
+        try:
+            data = response.json()
+        except ValueError:
+            data = {}
+        token = str(data.get("token") or "").strip()
+        if response.status_code != 200 or not token:
+            raise GPTRegistrationError(f"sentinel_req_failed_{response.status_code}")
+        pow_data = data.get("proofofwork") if isinstance(data.get("proofofwork"), dict) else {}
+        if pow_data.get("required") and pow_data.get("seed"):
+            p_value = generator.generate_token(
+                str(pow_data.get("seed") or ""),
+                str(pow_data.get("difficulty") or "0"),
+            )
+        else:
+            p_value = generator.generate_requirements_token()
+        return json.dumps(
+            {
+                "p": p_value,
+                "t": "",
+                "c": token,
+                "id": self.device_id,
+                "flow": flow,
+            },
+            separators=(",", ":"),
+        )
+
+    def _request_with_sentinel_retry(
+        self,
+        method: str,
+        url: str,
+        *,
+        flow: str,
+        headers: dict[str, str],
+        ok_statuses: tuple[int, ...] = (200,),
+        **kwargs: Any,
+    ) -> requests.Response:
+        response = self._request(method, url, headers=headers, **kwargs)
+        if response.status_code in ok_statuses:
+            return response
+        retry_headers = dict(headers)
+        try:
+            retry_headers["openai-sentinel-token"] = self._sentinel_token(flow)
+        except GPTRegistrationError:
+            return response
+        return self._request(method, url, headers=retry_headers, **kwargs)
+
+    @staticmethod
+    def _response_json(response: requests.Response) -> dict[str, Any]:
+        try:
+            data = response.json()
+        except (AttributeError, ValueError):
+            return {}
+        return data if isinstance(data, dict) else {}
+
+    @staticmethod
+    def _continue_url(response: requests.Response) -> str:
+        data = ChatGPTRegistrationClient._response_json(response)
+        url = str(
+            data.get("continue_url")
+            or data.get("redirect_url")
+            or data.get("url")
+            or ""
+        ).strip()
+        if url:
+            return url
+        headers = getattr(response, "headers", {}) or {}
+        return str(headers.get("Location") or "").strip()
+
+    @staticmethod
+    def chatgpt_session_login_url(
+        email: str = "",
+        *,
+        force_account_selection: bool = False,
+    ) -> str:
+        params = {
+            "next": "/api/auth/session",
+            "callbackUrl": f"{CHATGPT_BASE}/api/auth/session",
+        }
+        if email.strip():
+            params["login_hint"] = email.strip()
+        if force_account_selection:
+            params["prompt"] = "login select_account"
+        return f"{CHATGPT_BASE}/auth/login?{urlencode(params)}"
+
+    @staticmethod
+    def chatgpt_session_logout_login_url(
+        email: str = "",
+        *,
+        force_account_selection: bool = False,
+    ) -> str:
+        login_url = ChatGPTRegistrationClient.chatgpt_session_login_url(
+            email,
+            force_account_selection=force_account_selection,
+        )
+        encoded = quote(login_url, safe="")
+        return f"{CHATGPT_BASE}/auth/logout?next={encoded}&callbackUrl={encoded}"
+
+    @staticmethod
+    def chatgpt_session_logout_url(return_url: str = "") -> str:
+        target = return_url.strip() or f"{CHATGPT_BASE}/"
+        encoded = quote(target, safe="")
+        return f"{CHATGPT_BASE}/auth/logout?next={encoded}&callbackUrl={encoded}"
+
+    @staticmethod
+    def _session_result_from_json(data: dict[str, Any]) -> ChatGPTSessionTokenResult | None:
+        href = str(data.get("href") or "").strip()
+        text = str(data.get("text") or "").strip()
+        if href and text:
+            parsed = urlparse(href)
+            if parsed.scheme == "https" and parsed.netloc.lower() == "chatgpt.com" and parsed.path == "/api/auth/session":
+                return ChatGPTRegistrationClient.parse_session_text(text)
+            return None
+        token = str(data.get("accessToken") or data.get("access_token") or "").strip()
+        if not token:
+            return None
+        user = data.get("user") if isinstance(data.get("user"), dict) else {}
+        email = str((user or {}).get("email") or data.get("email") or "").strip()
+        return ChatGPTSessionTokenResult(access_token=token, email=email)
+
+    @classmethod
+    def parse_session_text(cls, text: str) -> ChatGPTSessionTokenResult | None:
+        raw = str(text or "").strip()
+        try:
+            data = json.loads(raw)
+        except ValueError:
+            match = re.search(r'"access(?:Token|_token)"\s*:\s*"([^"]+)"', raw)
+            if not match:
+                return None
+            return ChatGPTSessionTokenResult(access_token=match.group(1).strip(), email="")
+        if not isinstance(data, dict):
+            return None
+        return cls._session_result_from_json(data)
+
+    @staticmethod
+    def _session_result_matches_email(result: ChatGPTSessionTokenResult, email: str = "") -> bool:
+        expected = email.strip().lower()
+        if not expected:
+            return True
+        actual = result.email.strip().lower()
+        return not actual or actual == expected
+
+    def _session_token_from_response(self, response: requests.Response, *, email: str = "") -> str:
+        result = self._session_result_from_json(self._response_json(response))
+        if not result or not self._session_result_matches_email(result, email):
+            return ""
+        return result.access_token
 
     def visit_homepage(self) -> None:
         response = self._request(
@@ -264,31 +518,40 @@ class ChatGPTRegistrationClient:
             "Accept": "application/json",
             "Referer": f"{AUTH_BASE}/create-account/password",
             "Origin": AUTH_BASE,
+            "oai-device-id": self.device_id,
         }
-        response = self._request(
+        response = self._request_with_sentinel_retry(
             "POST",
             f"{AUTH_BASE}/api/accounts/user/register",
-            json={"username": email, "password": password},
+            flow="username_password_create",
             headers=headers,
+            json={"username": email, "password": password},
         )
         if response.status_code != 200:
             raise GPTRegistrationError(f"注册密码失败: HTTP {response.status_code} {response.text[:240]}")
 
-    def submit_login_password(self, email: str, password: str) -> None:
-        response = self._request(
+    def submit_login_password(self, email: str, password: str) -> str:
+        headers = {
+            **self._trace_headers(),
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+            "Referer": f"{AUTH_BASE}/login/password",
+            "Origin": AUTH_BASE,
+            "oai-device-id": self.device_id,
+        }
+        response = self._request_with_sentinel_retry(
             "POST",
-            f"{AUTH_BASE}/api/accounts/user/login",
-            json={"username": email, "password": password},
-            headers={
-                **self._trace_headers(),
-                "Content-Type": "application/json",
-                "Accept": "application/json",
-                "Referer": f"{AUTH_BASE}/log-in/password",
-                "Origin": AUTH_BASE,
-            },
+            f"{AUTH_BASE}/api/accounts/password/verify",
+            flow="username_password_login",
+            headers=headers,
+            ok_statuses=(200, 302, 403),
+            json={"password": password},
         )
-        if response.status_code >= 500:
-            raise GPTRegistrationError(f"提交 ChatGPT 登录密码失败: HTTP {response.status_code}")
+        if response.status_code == 403:
+            raise GPTRegistrationError(f"ChatGPT 密码验证被拒绝: HTTP 403 {response.text[:240]}")
+        if response.status_code not in (200, 302):
+            raise GPTRegistrationError(f"提交 ChatGPT 登录密码失败: HTTP {response.status_code} {response.text[:240]}")
+        return self._continue_url(response)
 
     def send_otp(self, *, referer: str | None = None) -> None:
         response = self._request(
@@ -304,38 +567,40 @@ class ChatGPTRegistrationClient:
             raise GPTRegistrationError(f"发送邮箱 OTP 失败: HTTP {response.status_code}")
 
     def validate_otp(self, code: str) -> str:
-        response = self._request(
+        headers = {
+            **self._trace_headers(),
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+            "Referer": f"{AUTH_BASE}/email-verification",
+            "Origin": AUTH_BASE,
+            "oai-device-id": self.device_id,
+        }
+        response = self._request_with_sentinel_retry(
             "POST",
             f"{AUTH_BASE}/api/accounts/email-otp/validate",
+            flow="authorize_continue",
+            headers=headers,
             json={"code": code},
-            headers={
-                **self._trace_headers(),
-                "Content-Type": "application/json",
-                "Accept": "application/json",
-                "Referer": f"{AUTH_BASE}/email-verification",
-                "Origin": AUTH_BASE,
-            },
         )
         if response.status_code != 200:
             raise GPTRegistrationError(f"验证邮箱 OTP 失败: HTTP {response.status_code} {response.text[:240]}")
-        try:
-            data = response.json()
-        except ValueError:
-            data = {}
-        return str(data.get("continue_url") or data.get("url") or data.get("redirect_url") or "")
+        return self._continue_url(response)
 
     def create_account(self, name: str, birthdate: str) -> bool:
-        response = self._request(
+        headers = {
+            **self._trace_headers(),
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+            "Referer": f"{AUTH_BASE}/about-you",
+            "Origin": AUTH_BASE,
+            "oai-device-id": self.device_id,
+        }
+        response = self._request_with_sentinel_retry(
             "POST",
             f"{AUTH_BASE}/api/accounts/create_account",
+            flow="oauth_create_account",
+            headers=headers,
             json={"name": name, "birthdate": birthdate},
-            headers={
-                **self._trace_headers(),
-                "Content-Type": "application/json",
-                "Accept": "application/json",
-                "Referer": f"{AUTH_BASE}/about-you",
-                "Origin": AUTH_BASE,
-            },
         )
         try:
             data = response.json()
@@ -372,12 +637,12 @@ class ChatGPTRegistrationClient:
             )
         )
 
-    def perform_callback(self, url: str = "") -> None:
+    def perform_callback(self, url: str = "") -> str:
         callback = url or self.callback_url
         if not callback:
-            return
+            return ""
         full_url = callback if callback.startswith("http") else f"{AUTH_BASE}{callback}"
-        self._request(
+        response = self._request(
             "GET",
             full_url,
             headers={
@@ -385,20 +650,72 @@ class ChatGPTRegistrationClient:
                 "Upgrade-Insecure-Requests": "1",
             },
         )
+        return response.url
 
-    def session_access_token(self) -> str:
+    def session_access_token(self, email: str = "") -> str:
         response = self._request(
             "GET",
             f"{CHATGPT_BASE}/api/auth/session",
-            headers={"Accept": "application/json", "Referer": f"{CHATGPT_BASE}/"},
+            headers={
+                "Accept": "application/json",
+                "Cache-Control": "no-cache",
+                "Pragma": "no-cache",
+                "Referer": f"{CHATGPT_BASE}/",
+            },
         )
         if response.status_code != 200:
             return ""
-        try:
-            token = response.json().get("accessToken")
-        except ValueError:
-            token = None
-        return str(token or "").strip()
+        return self._session_token_from_response(response, email=email)
+
+    def hydrate_chatgpt_session(
+        self,
+        email: str = "",
+        *,
+        force_account_selection: bool = False,
+    ) -> str:
+        response = self._request(
+            "GET",
+            self.chatgpt_session_login_url(
+                email,
+                force_account_selection=force_account_selection,
+            ),
+            headers={
+                "Accept": "text/html,application/json;q=0.9,*/*;q=0.8",
+                "Referer": f"{CHATGPT_BASE}/",
+                "Upgrade-Insecure-Requests": "1",
+            },
+        )
+        if "/api/auth/session" not in response.url:
+            return ""
+        return self._session_token_from_response(response, email=email)
+
+    def wait_for_session_access_token(self, email: str = "", *, timeout: float = 12.0) -> str:
+        deadline = time.monotonic() + max(0.5, timeout)
+        hydrated = False
+        while time.monotonic() < deadline:
+            token = self.session_access_token(email)
+            if token:
+                return token
+            if not hasattr(self, "_request"):
+                return ""
+            if not hydrated:
+                try:
+                    token = self.hydrate_chatgpt_session(email)
+                except Exception:
+                    token = ""
+                if token:
+                    return token
+                hydrated = True
+            time.sleep(1)
+        return self.session_access_token(email)
+
+    def _complete_auth_url(self, url: str, email: str = "", *, timeout: float = 12.0) -> str:
+        if not url:
+            return self.wait_for_session_access_token(email, timeout=timeout)
+        final_url = self.perform_callback(url)
+        if "phone" in f"{url} {final_url}".lower():
+            raise GPTRegistrationError("ChatGPT 登录需要手机验证")
+        return self.wait_for_session_access_token(email, timeout=timeout)
 
     def login_with_otp(
         self,
@@ -414,11 +731,20 @@ class ChatGPTRegistrationClient:
         csrf = self.get_csrf()
         auth_url = self.signin(email, csrf)
         final_url = self.authorize(auth_url)
-        if not self.session_access_token():
-            self.submit_login_password(email, password)
-        token = self.session_access_token()
+        if "phone" in final_url.lower():
+            raise GPTRegistrationError("ChatGPT 登录需要手机验证")
+        if "callback" in final_url.lower() or "chatgpt.com" in final_url.lower():
+            token = self._complete_auth_url(final_url, email, timeout=8.0)
+            if token:
+                return token
+        token = self.wait_for_session_access_token(email, timeout=4.0)
         if token:
             return token
+        if "email-verification" not in final_url and "email-otp" not in final_url:
+            continue_url = self.submit_login_password(email, password)
+            token = self._complete_auth_url(continue_url, email, timeout=8.0)
+            if token:
+                return token
 
         attempted_codes: set[str] = set()
         for attempt in range(3):
@@ -461,12 +787,14 @@ class ChatGPTRegistrationClient:
                     continue
                 raise
             if continue_url:
-                self.perform_callback(continue_url)
-            if "phone" in final_url.lower():
-                raise GPTRegistrationError("ChatGPT 登录需要手机验证")
-            token = self.session_access_token()
+                token = self._complete_auth_url(continue_url, email, timeout=12.0)
+            else:
+                token = self.wait_for_session_access_token(email, timeout=12.0)
             if not token:
-                raise GPTRegistrationError("ChatGPT 登录成功后未返回 session access token")
+                raise GPTRegistrationError(
+                    f"ChatGPT 登录成功后未返回 session access token"
+                    f"{f' continue_url={continue_url}' if continue_url else ''}"
+                )
             return token
         raise GPTRegistrationError("ChatGPT 登录邮箱验证码连续错误")
 

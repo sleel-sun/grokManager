@@ -41,8 +41,12 @@
   "webui": {
     "header": {
       "chat": "Chat",
+      "draw": "Draw",
       "masonry": "Masonry",
       "chatkit": "ChatKit"
+    },
+    "imageStudio": {
+      "pageTitle": "grokManager - Draw"
     },
     "chat": {
       "pageTitle": "grokManager - WebChat",
@@ -242,7 +246,7 @@
     "actionImportShort": "Import",
     "actionAddShort": "Add",
     "gptImageTitle": "GPT Image Accounts",
-    "gptImageSubtitle": "ChatGPT access tokens for gpt-image-1 / gpt-image-2, kept separate from the xAI account pool.",
+    "gptImageSubtitle": "ChatGPT access tokens for gpt-image-2 image generation, kept separate from the xAI account pool.",
     "gptImageRefresh": "Refresh",
     "gptImageAdd": "Add GPT",
     "gptImageColToken": "Access Token",
@@ -428,7 +432,7 @@
   "config": {
     "pageTitle": "grokManager - Configuration Management",
     "pageHeading": "Configuration Management",
-    "pageSubtitle": "Manage grokManager runtime parameters and default service behavior.",
+    "pageSubtitle": "Manage grokManager runtime parameters and default service behavior; restart-required fields are marked explicitly.",
     "resetShort": "Reset",
     "saveShort": "Save",
     "resetChanges": "Reset Changes",
@@ -436,6 +440,8 @@
     "unsavedDefault": "Unsaved changes detected",
     "unsavedSingle": "1 unsaved change detected",
     "unsavedMultiple": "{n} unsaved changes detected",
+    "unsavedWithRestartSingle": "{n} unsaved changes detected, including 1 change that requires a restart",
+    "unsavedWithRestartMultiple": "{n} unsaved changes detected, including {restart} changes that require a restart",
     "discardShort": "Undo",
     "saveBarShort": "Save",
     "discardChanges": "Discard Changes",
@@ -449,13 +455,19 @@
       "displayName": "Display name",
       "enabled": "Enabled",
       "allowNsfw": "Allow NSFW",
+      "allowGpt": "GPT",
       "remove": "Remove"
     },
     "loadFailed": "Failed to load configuration: {message}",
     "saving": "Saving changes...",
     "saveSuccess": "Changes saved",
+    "saveSuccessRestart": "Changes saved; some fields will apply after service restart",
     "saveFailed": "Failed to save changes: {message}",
     "resetSuccess": "Unsaved changes discarded",
+    "apply": {
+      "restartBadge": "Restart",
+      "restartHint": "Requires service restart after saving"
+    },
     "disabledTip": {
       "appUrlRequired": "Configure the APP Base URL first"
     },
@@ -531,7 +543,7 @@
         },
         "webuiUsers": {
           "label": "WebUI Users",
-          "desc": "When configured, WebUI login uses username + independent key and browser-side chat sessions, search settings, and MCP configuration are isolated per user. Each user can independently allow NSFW generation. Leave empty to keep single-password mode."
+          "desc": "When configured, WebUI login uses username + independent key and browser-side chat sessions, search settings, and MCP configuration are isolated per user. Each user can independently control NSFW, GPT image model access, and maximum image quality. Leave empty to keep single-password mode."
         },
         "temporary": {
           "label": "Temporary Sessions",
@@ -716,7 +728,7 @@
         },
         "gptImageTimeout": {
           "label": "GPT Image Request Timeout (s)",
-          "desc": "Overall timeout for ChatGPT gpt-image-1 / gpt-image-2 generation requests."
+          "desc": "Overall timeout for ChatGPT gpt-image-2 generation requests."
         },
         "videoTimeout": {
           "label": "Video Request Timeout (s)",

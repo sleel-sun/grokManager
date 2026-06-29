@@ -21,8 +21,12 @@
   "webui": {
     "header": {
       "chat": "Chat",
+      "draw": "Imagen",
       "masonry": "Masonry",
       "chatkit": "ChatKit"
+    },
+    "imageStudio": {
+      "pageTitle": "grokManager - Imagen"
     },
     "chat": {
       "pageTitle": "grokManager - WebChat",
@@ -315,7 +319,7 @@
   "config": {
     "pageTitle": "grokManager - Gestión de Configuración",
     "pageHeading": "Gestión de Configuración",
-    "pageSubtitle": "Administre los parámetros de ejecución de grokManager y el comportamiento predeterminado del servicio.",
+    "pageSubtitle": "Administre los parámetros de ejecución de grokManager y el comportamiento predeterminado del servicio; los campos que requieren reinicio se marcan explícitamente.",
     "resetShort": "Restablecer",
     "saveShort": "Guardar",
     "resetChanges": "Restablecer cambios",
@@ -323,6 +327,8 @@
     "unsavedDefault": "Hay cambios sin guardar",
     "unsavedSingle": "Hay 1 cambio sin guardar",
     "unsavedMultiple": "Hay {n} cambios sin guardar",
+    "unsavedWithRestartSingle": "Hay {n} cambios sin guardar, incluido 1 que requiere reinicio",
+    "unsavedWithRestartMultiple": "Hay {n} cambios sin guardar, incluidos {restart} que requieren reinicio",
     "discardShort": "Deshacer",
     "saveBarShort": "Guardar",
     "discardChanges": "Descartar cambios",
@@ -336,13 +342,19 @@
       "displayName": "Nombre visible",
       "enabled": "Activo",
       "allowNsfw": "Permitir NSFW",
+      "allowGpt": "GPT",
       "remove": "Eliminar"
     },
     "loadFailed": "No se pudo cargar la configuración: {message}",
     "saving": "Guardando cambios...",
     "saveSuccess": "Cambios guardados",
+    "saveSuccessRestart": "Cambios guardados; algunos campos se aplicarán tras reiniciar el servicio",
     "saveFailed": "No se pudieron guardar los cambios: {message}",
     "resetSuccess": "Se descartaron los cambios no guardados",
+    "apply": {
+      "restartBadge": "Reinicio",
+      "restartHint": "Requiere reiniciar el servicio tras guardar"
+    },
     "disabledTip": {
       "appUrlRequired": "Configure primero la URL base de APP"
     },

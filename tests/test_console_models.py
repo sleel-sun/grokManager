@@ -132,7 +132,7 @@ class ConsoleModelRoutingTests(unittest.TestCase):
         "grok-4.3-medium",
         "grok-4.3-low",
         "grok-build-console",
-        "grok-composer-2.5-fast",
+        "grok-composer-2.5",
         "grok-4.3-beta",
     )
     AVAILABLE_MEDIA_MODELS = (
@@ -224,7 +224,7 @@ class ConsoleModelRoutingTests(unittest.TestCase):
             "grok-4.3-medium": "grok-4.3",
             "grok-4.3-low": "grok-4.3",
             "grok-build-console": "grok-build-0.1",
-            "grok-composer-2.5-fast": "grok-4.3",
+            "grok-composer-2.5": "grok-4.3",
         }
 
         for public_model, upstream_model in expected.items():
@@ -234,8 +234,8 @@ class ConsoleModelRoutingTests(unittest.TestCase):
                 self.assertTrue(spec.uses_console_responses())
                 self.assertEqual(spec.upstream_model_name(), upstream_model)
 
-    def test_composer_fast_uses_text_trigger_alias(self) -> None:
-        spec = resolve("grok-composer-2.5-fast")
+    def test_composer_uses_text_trigger_alias(self) -> None:
+        spec = resolve("grok-composer-2.5")
 
         payload = build_console_responses_payload(
             model=spec.upstream_model_name(),
@@ -248,12 +248,12 @@ class ConsoleModelRoutingTests(unittest.TestCase):
         self.assertEqual(payload["model"], "grok-4.3")
         self.assertEqual(
             payload["input"],
-            "[user]: grok-composer-2.5-fast\n\n[user]: write a short note",
+            "[user]: grok-composer-2.5\n\n[user]: write a short note",
         )
-        self.assertIn("grok-composer-2.5-fast", payload["instructions"])
+        self.assertIn("grok-composer-2.5", payload["instructions"])
 
-    def test_composer_fast_upstream_model_can_be_configured(self) -> None:
-        spec = resolve("grok-composer-2.5-fast")
+    def test_composer_upstream_model_can_be_configured(self) -> None:
+        spec = resolve("grok-composer-2.5")
 
         def fake_get_config(key: str, default=None):
             if key == "models.composer_fast_upstream_model":
@@ -272,7 +272,7 @@ class ConsoleModelRoutingTests(unittest.TestCase):
         self.assertEqual(payload["model"], "grok-4.20-multi-agent")
         self.assertEqual(
             payload["input"],
-            "[user]: grok-composer-2.5-fast\n\n[user]: hi",
+            "[user]: grok-composer-2.5\n\n[user]: hi",
         )
 
     def test_console_reasoning_effort_payload_policy(self) -> None:
@@ -293,7 +293,7 @@ class ConsoleModelRoutingTests(unittest.TestCase):
             ("grok-4.20-0309-reasoning-console", None, None),
             ("grok-4.20-0309-non-reasoning-console", None, None),
             ("grok-build-console", "high", None),
-            ("grok-composer-2.5-fast", "high", None),
+            ("grok-composer-2.5", "high", None),
         )
 
         for model, requested_effort, expected_effort in cases:

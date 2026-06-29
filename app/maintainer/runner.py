@@ -49,6 +49,7 @@ DEFAULT_WORKER_IDLE_TIMEOUT = 600.0
 DEFAULT_TURNSTILE_MANUAL_WAIT_SECONDS = 180.0
 DEFAULT_TURNSTILE_SOLVER_TIMEOUT_SECONDS = 150.0
 DEFAULT_TURNSTILE_SOLVER_POLL_INTERVAL_SECONDS = 5.0
+DEFAULT_REGISTRATION_ENV_RETRY_LIMIT = 2
 WORKER_TERMINATE_GRACE_SECONDS = 5.0
 WORKER_DEBUG_PORT_MIN = 20_000
 WORKER_DEBUG_PORT_SPAN = 40_000
@@ -265,12 +266,27 @@ def _select_worker_chrome_debug_port(worker_id: int, pid: int) -> int:
     called. Parallel workers need explicit ports or they all keep the default
     ``127.0.0.1:9222`` address and then race/fail during browser connection.
     """
-    seed = (int(pid) + int(worker_id) * 9973) % WORKER_DEBUG_PORT_SPAN
+    seed = _worker_chrome_debug_port_candidate(worker_id, pid) - WORKER_DEBUG_PORT_MIN
     for offset in range(WORKER_DEBUG_PORT_SPAN):
         port = WORKER_DEBUG_PORT_MIN + ((seed + offset) % WORKER_DEBUG_PORT_SPAN)
         if _is_tcp_port_available(port):
             return port
     raise RuntimeError("无法为并发注册 worker 分配可用 Chrome 调试端口")
+
+
+def _worker_chrome_debug_port_candidate(worker_id: int, pid: int) -> int:
+    seed = (int(pid) + int(worker_id) * 9973) % WORKER_DEBUG_PORT_SPAN
+    return WORKER_DEBUG_PORT_MIN + seed
+
+
+def _select_browser_debug_port(preferred: int = 42222) -> int:
+    if _is_tcp_port_available(preferred):
+        return preferred
+    pid = os.getpid()
+    try:
+        return _select_worker_chrome_debug_port(0, pid)
+    except RuntimeError:
+        return _worker_chrome_debug_port_candidate(0, pid)
 
 
 def _format_bytes(size: int) -> str:
@@ -302,8 +318,26 @@ def _worker_idle_timeout_seconds() -> float:
         return DEFAULT_WORKER_IDLE_TIMEOUT
 
 
+def _registration_env_retry_limit() -> int:
+    raw = os.getenv("MAINTAINER_REGISTRATION_ENV_RETRY_LIMIT", "").strip()
+    if not raw:
+        raw = str(_web_config_value("registration_env_retry_limit", "") or "").strip()
+    if not raw:
+        raw = str(_web_config_value("registration_failure_retry_limit", "") or "").strip()
+    if not raw:
+        return DEFAULT_REGISTRATION_ENV_RETRY_LIMIT
+    try:
+        return max(0, int(raw))
+    except ValueError:
+        return DEFAULT_REGISTRATION_ENV_RETRY_LIMIT
+
+
+def _linux_without_display() -> bool:
+    return sys.platform.startswith("linux") and not os.environ.get("DISPLAY")
+
+
 def _browser_effective_headless() -> bool:
-    _no_display = not os.environ.get("DISPLAY") and sys.platform != "win32"
+    _no_display = _linux_without_display()
     return as_bool(os.getenv("MAINTAINER_HEADLESS"), default=_no_display)
 
 
@@ -314,7 +348,7 @@ def _turnstile_auto_manual_wait_seconds() -> float:
         return 0.0
     if as_bool(os.getenv("MAINTAINER_USE_XVFB"), default=False):
         return 0.0
-    if sys.platform != "win32" and not os.environ.get("DISPLAY"):
+    if _linux_without_display():
         return 0.0
     return DEFAULT_TURNSTILE_MANUAL_WAIT_SECONDS
 
@@ -498,8 +532,8 @@ def _ensure_virtual_display() -> None:
     global _virtual_display
     if _virtual_display is not None:
         return
-    # 无 DISPLAY 且非 Windows → 自动视为 headless，无需虚拟显示器
-    _no_display = not os.environ.get("DISPLAY") and sys.platform != "win32"
+    # Linux 无 DISPLAY → 自动视为 headless，无需虚拟显示器
+    _no_display = _linux_without_display()
     if os.environ.get("DISPLAY") or as_bool(os.getenv("MAINTAINER_HEADLESS"), default=_no_display):
         return
     if not as_bool(os.getenv("MAINTAINER_USE_XVFB"), default=_running_in_container()):
@@ -553,7 +587,7 @@ def _configure_browser_options() -> ChromiumOptions:
                 f"MAINTAINER_CHROME_DEBUG_PORT 超出有效端口范围: {debug_port}"
             )
     else:
-        port_int = 42222
+        port_int = _select_browser_debug_port()
     opts.set_local_port(port_int)
     opts.set_tmp_path(str(_resolve_browser_tmp_path()))
     opts.set_timeouts(base=15)
@@ -576,8 +610,8 @@ def _configure_browser_options() -> ChromiumOptions:
     opts.set_argument("--no-first-run")
     opts.set_argument("--no-default-browser-check")
 
-    # 无 DISPLAY 且非 Windows → 自动启用 headless，避免裸启动报错
-    _no_display = not os.environ.get("DISPLAY") and sys.platform != "win32"
+    # Linux 无 DISPLAY → 自动启用 headless，避免裸启动报错
+    _no_display = _linux_without_display()
     is_headless = as_bool(os.getenv("MAINTAINER_HEADLESS"), default=_no_display)
     if is_headless:
         opts.headless(True)
@@ -626,13 +660,31 @@ def start_browser():
     try:
         browser = Chromium(co)
     except BrowserConnectError:
-        raise RuntimeError(
-            "BrowserConnectError: 浏览器连接失败。请检查：\n"
-            "1. 设置 MAINTAINER_CHROME_USER_DATA_DIR 为一个不与其他 Chrome 冲突的路径\n"
-            "2. 无界面系统请设置 MAINTAINER_HEADLESS=true\n"
-            "3. Linux 系统请设置 MAINTAINER_NO_SANDBOX=true 和 MAINTAINER_DISABLE_DEV_SHM=true\n"
-            "4. 如需固定调试端口，设置 MAINTAINER_CHROME_DEBUG_PORT（如 9222）"
-        ) from None
+        if not os.getenv("MAINTAINER_CHROME_DEBUG_PORT", "").strip():
+            time.sleep(1)
+            _reset_isolated_browser_profile()
+            retry_port = _select_browser_debug_port(
+                _worker_chrome_debug_port_candidate(0, os.getpid())
+            )
+            co.set_local_port(retry_port)
+            try:
+                browser = Chromium(co)
+            except BrowserConnectError:
+                raise RuntimeError(
+                    "BrowserConnectError: 浏览器连接失败。请检查：\n"
+                    "1. 设置 MAINTAINER_CHROME_USER_DATA_DIR 为一个不与其他 Chrome 冲突的路径\n"
+                    "2. 无界面系统请设置 MAINTAINER_HEADLESS=true\n"
+                    "3. Linux 系统请设置 MAINTAINER_NO_SANDBOX=true 和 MAINTAINER_DISABLE_DEV_SHM=true\n"
+                    "4. 如需固定调试端口，设置 MAINTAINER_CHROME_DEBUG_PORT（如 9222）"
+                ) from None
+        else:
+            raise RuntimeError(
+                "BrowserConnectError: 浏览器连接失败。请检查：\n"
+                "1. 设置 MAINTAINER_CHROME_USER_DATA_DIR 为一个不与其他 Chrome 冲突的路径\n"
+                "2. 无界面系统请设置 MAINTAINER_HEADLESS=true\n"
+                "3. Linux 系统请设置 MAINTAINER_NO_SANDBOX=true 和 MAINTAINER_DISABLE_DEV_SHM=true\n"
+                "4. 如需固定调试端口，设置 MAINTAINER_CHROME_DEBUG_PORT（如 9222）"
+            ) from None
     tabs = browser.get_tabs()
     page = tabs[-1] if tabs else browser.new_tab()
     _install_turnstile_patch()
@@ -1846,12 +1898,156 @@ return true;
     raise RuntimeError("未找到邮箱输入框或注册按钮")
 
 
+def _recover_verification_page(email: str) -> str:
+    try:
+        return str(
+            page.run_js(
+                r"""
+const email = String(arguments[0] || '').trim();
+
+function isVisible(node) {
+    if (!node) {
+        return false;
+    }
+    const style = window.getComputedStyle(node);
+    if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') {
+        return false;
+    }
+    const rect = node.getBoundingClientRect();
+    return rect.width > 0 && rect.height > 0;
+}
+
+function setNativeValue(input, value) {
+    const nativeInputValueSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')?.set;
+    const tracker = input._valueTracker;
+    if (tracker) {
+        tracker.setValue('');
+    }
+    if (nativeInputValueSetter) {
+        nativeInputValueSetter.call(input, '');
+        nativeInputValueSetter.call(input, value);
+    } else {
+        input.value = '';
+        input.value = value;
+    }
+    input.dispatchEvent(new InputEvent('input', {
+        bubbles: true,
+        cancelable: true,
+        data: value,
+        inputType: 'insertText',
+    }));
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+}
+
+const buttons = Array.from(document.querySelectorAll('button, [role="button"], a')).filter((node) => {
+    return isVisible(node)
+        && !node.disabled
+        && node.getAttribute('aria-disabled') !== 'true';
+});
+
+const retryButton = buttons.find((node) => {
+    const text = String(node.innerText || node.textContent || node.getAttribute('aria-label') || '')
+        .replace(/\s+/g, '')
+        .toLowerCase();
+    return text === 'retry'
+        || text.includes('retry')
+        || text === '重试'
+        || text.includes('重试')
+        || text.includes('再试');
+});
+if (retryButton) {
+    retryButton.focus?.();
+    retryButton.click();
+    return 'retry-clicked';
+}
+
+const confirmEmailButton = buttons.find((node) => {
+    const text = String(node.innerText || node.textContent || node.getAttribute('aria-label') || '')
+        .replace(/\s+/g, '')
+        .toLowerCase();
+    return text === 'confirmemail'
+        || text.includes('confirmemail')
+        || text === '确认邮箱'
+        || text.includes('确认邮箱');
+});
+if (confirmEmailButton) {
+    confirmEmailButton.focus?.();
+    for (const eventType of ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click']) {
+        confirmEmailButton.dispatchEvent(new MouseEvent(eventType, {
+            bubbles: true,
+            cancelable: true,
+            view: window,
+        }));
+    }
+    return 'confirm-email-clicked';
+}
+
+const emailSignupButton = buttons.find((node) => {
+    const text = String(node.innerText || node.textContent || node.getAttribute('aria-label') || '')
+        .replace(/\s+/g, '')
+        .toLowerCase();
+    return text === 'signupwithemail'
+        || text.includes('signupwithemail')
+        || text.includes('emailsignup')
+        || text.includes('registerwithemail')
+        || text === '使用邮箱注册'
+        || text.includes('使用邮箱注册')
+        || text.includes('邮箱注册')
+        || text.includes('电子邮件注册');
+});
+if (emailSignupButton) {
+    emailSignupButton.focus?.();
+    emailSignupButton.click();
+    return 'email-signup-clicked';
+}
+
+const emailInput = Array.from(document.querySelectorAll('input[data-testid="email"], input[name="email"], input[type="email"], input[autocomplete="email"]')).find((node) => {
+    return isVisible(node) && !node.disabled && !node.readOnly;
+}) || null;
+if (!emailInput) {
+    return 'no-recovery-target';
+}
+
+emailInput.focus();
+emailInput.click();
+setNativeValue(emailInput, email);
+
+const submitButton = buttons.find((node) => {
+    const text = String(node.innerText || node.textContent || node.getAttribute('aria-label') || '')
+        .replace(/\s+/g, '')
+        .toLowerCase();
+    return text === '注册'
+        || text.includes('注册')
+        || text.includes('signup')
+        || text.includes('continue')
+        || text.includes('createaccount');
+});
+if (!submitButton) {
+    return 'email-form-no-submit';
+}
+
+submitButton.focus?.();
+submitButton.click();
+return 'email-resubmitted';
+                """,
+                email,
+            )
+            or ""
+        )
+    except PageDisconnectedError:
+        refresh_active_page()
+        return "page-disconnected"
+    except Exception as exc:
+        return f"recovery-error:{str(exc)[:160]}"
+
+
 def fill_code_and_submit(email: str, dev_token: str, timeout: int = 180) -> str:
     code = get_oai_code(dev_token, email)
     if not code:
         raise RuntimeError("获取验证码失败")
 
     deadline = time.time() + timeout
+    confirm_retry_count = 0
     while time.time() < deadline:
         try:
             filled = page.run_js(
@@ -1972,13 +2168,25 @@ return merged === code ? 'filled' : 'box-mismatch';
             continue
 
         if filled == "not-ready":
+            confirm_retry_count = 0
             if has_profile_form():
                 print("[*] 已直接进入最终注册页，跳过验证码按钮确认。")
                 return code
+            recovery = _recover_verification_page(email)
+            if recovery in {
+                "retry-clicked",
+                "confirm-email-clicked",
+                "email-signup-clicked",
+                "email-resubmitted",
+            }:
+                print(f"[*] 验证码页未就绪，已尝试恢复: {recovery}")
+                time.sleep(2)
+                continue
             time.sleep(0.5)
             continue
 
         if filled != "filled":
+            confirm_retry_count = 0
             print(f"[Debug] 验证码输入框已出现，但写入失败: {filled}")
             time.sleep(0.5)
             continue
@@ -2053,7 +2261,41 @@ if (!confirmButton) {
 }
 
 confirmButton.focus();
-confirmButton.click();
+for (const eventType of ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click']) {
+    confirmButton.dispatchEvent(new MouseEvent(eventType, {
+        bubbles: true,
+        cancelable: true,
+        view: window,
+    }));
+}
+confirmButton.click?.();
+
+const form = confirmButton.closest('form');
+if (form) {
+    try {
+        if (typeof form.requestSubmit === 'function') {
+            form.requestSubmit(confirmButton);
+        } else {
+            form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+        }
+    } catch (e) {
+        try {
+            form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+        } catch (ignored) {}
+    }
+}
+
+const activeInput = aggregateInput || document.activeElement;
+if (activeInput) {
+    for (const eventType of ['keydown', 'keypress', 'keyup']) {
+        activeInput.dispatchEvent(new KeyboardEvent(eventType, {
+            bubbles: true,
+            cancelable: true,
+            key: 'Enter',
+            code: 'Enter',
+        }));
+    }
+}
 return 'clicked';
                 """
             )
@@ -2070,7 +2312,86 @@ return 'clicked';
             refresh_active_page()
             if has_profile_form():
                 print("[*] 验证码确认完成，最终注册页已就绪。")
-            return code
+                return code
+            recovery = _recover_verification_page(email)
+            if recovery == "confirm-email-clicked":
+                confirm_retry_count += 1
+                print(f"[*] 验证码确认后页面未跳转，已重试确认按钮: {recovery}")
+                if confirm_retry_count >= 3:
+                    fallback = page.run_js(
+                        r"""
+const code = String(arguments[0] || '').trim();
+
+function isVisible(node) {
+    if (!node) {
+        return false;
+    }
+    const style = window.getComputedStyle(node);
+    if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') {
+        return false;
+    }
+    const rect = node.getBoundingClientRect();
+    return rect.width > 0 && rect.height > 0;
+}
+
+const codeInput = Array.from(document.querySelectorAll('input[name="code"], input[autocomplete="one-time-code"], input[data-input-otp="true"]')).find((node) => {
+    return isVisible(node) && !node.disabled && !node.readOnly;
+}) || null;
+if (!codeInput) {
+    return 'no-code-input';
+}
+
+codeInput.focus();
+if (String(codeInput.value || '').trim() !== code) {
+    const nativeInputValueSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')?.set;
+    if (nativeInputValueSetter) {
+        nativeInputValueSetter.call(codeInput, code);
+    } else {
+        codeInput.value = code;
+    }
+    codeInput.dispatchEvent(new InputEvent('input', {
+        bubbles: true,
+        cancelable: true,
+        data: code,
+        inputType: 'insertText',
+    }));
+    codeInput.dispatchEvent(new Event('change', { bubbles: true }));
+}
+
+for (const eventType of ['keydown', 'keypress', 'keyup']) {
+    codeInput.dispatchEvent(new KeyboardEvent(eventType, {
+        bubbles: true,
+        cancelable: true,
+        key: 'Enter',
+        code: 'Enter',
+    }));
+}
+
+const form = codeInput.closest('form') || document.querySelector('form');
+if (form) {
+    try {
+        if (typeof form.requestSubmit === 'function') {
+            form.requestSubmit();
+        } else {
+            form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+        }
+    } catch (e) {
+        try {
+            form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+        } catch (ignored) {}
+    }
+    return 'form-submitted';
+}
+return 'enter-dispatched';
+                        """,
+                        code,
+                    )
+                    print(f"[*] 验证码确认仍未跳转，已尝试表单提交兜底: {fallback}")
+                time.sleep(2)
+                continue
+            confirm_retry_count = 0
+            print("[Debug] 确认邮箱后最终注册页尚未就绪，继续等待验证码页状态。")
+            continue
 
         if clicked == "no-button":
             current_url = page.url
@@ -2117,6 +2438,26 @@ return { url: location.href, inputs, buttons };
         """
     )
     print(f"[Debug] 验证码页 DOM 摘要: {debug_snapshot}")
+    try:
+        inputs = debug_snapshot.get("inputs", []) if isinstance(debug_snapshot, dict) else []
+        buttons = debug_snapshot.get("buttons", []) if isinstance(debug_snapshot, dict) else []
+        has_code_input = any(
+            str(item.get("name") or "") == "code"
+            or str(item.get("autocomplete") or "").lower() == "one-time-code"
+            for item in inputs
+            if isinstance(item, dict)
+        )
+        has_confirm_button = any(
+            "confirm email" in str(item.get("text") or "").lower()
+            or "确认邮箱" in str(item.get("text") or "")
+            for item in buttons
+            if isinstance(item, dict)
+        )
+    except Exception:
+        has_code_input = False
+        has_confirm_button = False
+    if has_code_input and has_confirm_button:
+        raise RuntimeError("验证码已填写并点击确认邮箱，但页面未跳转到最终注册页")
     raise RuntimeError("未找到验证码输入框或确认邮箱按钮")
 
 
@@ -3560,6 +3901,18 @@ def _wait_while_paused(
     return bool(stop_check and stop_check())
 
 
+def _is_registration_env_retryable_error(error: BaseException) -> bool:
+    message = f"{type(error).__name__}: {error}".lower()
+    return (
+        "cloudflare" in message
+        and (
+            "无法进入邮箱注册表单" in message
+            or "检测未通过" in message
+            or "attention required" in message
+        )
+    )
+
+
 def run_batch(
     *,
     config_path: str | os.PathLike[str],
@@ -3626,6 +3979,8 @@ def run_batch(
     collected_sso: list[str] = []
     failed_rounds: list[str] = []
     current_round = 0
+    env_retries_used = 0
+    env_retry_limit = _registration_env_retry_limit()
     _emit("started", {"count": count})
 
     try:
@@ -3685,6 +4040,19 @@ def run_batch(
             except Exception as error:
                 print(f"[Error] 第 {current_round} 轮失败: {error}")
                 failed_rounds.append(f"round#{current_round}: {type(error).__name__}: {error}")
+                retry_env_failure = (
+                    count > 0
+                    and env_retries_used < env_retry_limit
+                    and _is_registration_env_retryable_error(error)
+                    and not (stop_check and stop_check())
+                )
+                if retry_env_failure:
+                    env_retries_used += 1
+                    count += 1
+                    print(
+                        "[Warn] 注册入口被环境/Cloudflare 拦截，"
+                        f"将重开浏览器重试 ({env_retries_used}/{env_retry_limit})"
+                    )
                 if run_logger:
                     run_logger.warning(
                         "第 %s 轮失败: %s: %s",
@@ -3698,6 +4066,9 @@ def run_batch(
                         "round": current_round,
                         "error": f"{type(error).__name__}: {error}",
                         "elapsed_s": round(time.monotonic() - round_started_at, 1),
+                        "retrying": retry_env_failure,
+                        "env_retries_used": env_retries_used,
+                        "env_retry_limit": env_retry_limit,
                     },
                 )
             finally:

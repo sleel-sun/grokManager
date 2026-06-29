@@ -6,6 +6,7 @@ from app.products.web.admin.maintainer import (
     MaintainerRunRequest,
     _MaintainerController,
     _env_for_request,
+    browser_mode_for_request,
     build_completion_status,
     build_gpt_runtime_config,
     build_saved_config_response,
@@ -146,15 +147,79 @@ class MaintainerAdminTests(unittest.TestCase):
             turnstile_solver_poll_sec=3,
         )
 
-        with patch.dict("os.environ", {}, clear=True):
+        with patch.dict(
+            "os.environ",
+            {
+                "MAINTAINER_PROXY": "http://privoxy:8118",
+                "MAINTAINER_FLARESOLVERR_URL": "http://flaresolverr:8191",
+                "MAINTAINER_FLARESOLVERR_TIMEOUT_SEC": "60",
+            },
+            clear=True,
+        ):
             env = _env_for_request(req, Path("/tmp/cfg.json"))
 
+        self.assertEqual(env["MAINTAINER_TMP_PATH"], "/tmp/grokmanager-web-maintainer")
+        self.assertEqual(
+            env["MAINTAINER_CHROME_USER_DATA_DIR"],
+            "/tmp/grokmanager-web-maintainer/chrome-profile",
+        )
+        self.assertEqual(env["MAINTAINER_BROWSER_PATH"], "/usr/bin/chromium-browser")
+        self.assertEqual(env["MAINTAINER_PROXY"], "http://privoxy:8118")
+        self.assertEqual(env["MAINTAINER_FLARESOLVERR_URL"], "http://flaresolverr:8191")
+        self.assertEqual(env["MAINTAINER_FLARESOLVERR_TIMEOUT_SEC"], "60")
         self.assertEqual(env["MAINTAINER_TURNSTILE_MANUAL_WAIT_SEC"], "180")
         self.assertEqual(env["MAINTAINER_TURNSTILE_SOLVER_PROVIDER"], "capsolver")
         self.assertEqual(env["MAINTAINER_TURNSTILE_SOLVER_API_KEY"], "solver-secret")
         self.assertEqual(env["MAINTAINER_TURNSTILE_SOLVER_TIMEOUT_SEC"], "120")
         self.assertEqual(env["MAINTAINER_TURNSTILE_SOLVER_POLL_SEC"], "3")
         self.assertEqual(env["MAINTAINER_HEADLESS"], "false")
+
+    def test_env_for_request_does_not_force_headless_on_macos_without_display(self) -> None:
+        req = MaintainerRunRequest(
+            count=1,
+            workers=1,
+            email_worker_domain="mail.example.com",
+            email_domains=["example.com"],
+            email_admin_password="pw",
+        )
+
+        with (
+            patch.dict("os.environ", {}, clear=True),
+            patch("app.products.web.admin.maintainer.sys.platform", "darwin"),
+        ):
+            env = _env_for_request(req, Path("/tmp/cfg.json"))
+            mode = browser_mode_for_request(req)
+
+        self.assertEqual(env["MAINTAINER_HEADLESS"], "false")
+        self.assertEqual(mode["browser_mode"], "visible")
+        self.assertTrue(mode["browser_visible"])
+
+    def test_browser_mode_explains_hidden_browser_modes(self) -> None:
+        base = {
+            "count": 1,
+            "workers": 1,
+            "email_worker_domain": "mail.example.com",
+            "email_domains": ["example.com"],
+            "email_admin_password": "pw",
+        }
+
+        self.assertEqual(
+            browser_mode_for_request(MaintainerRunRequest(**base, headless=True))["browser_mode"],
+            "headless",
+        )
+        self.assertEqual(
+            browser_mode_for_request(MaintainerRunRequest(**base, use_xvfb=True))["browser_mode"],
+            "xvfb",
+        )
+
+        with (
+            patch.dict("os.environ", {}, clear=True),
+            patch("app.products.web.admin.maintainer.sys.platform", "linux"),
+        ):
+            mode = browser_mode_for_request(MaintainerRunRequest(**base))
+
+        self.assertEqual(mode["browser_mode"], "auto_headless")
+        self.assertFalse(mode["browser_visible"])
 
     def test_runtime_config_reuses_saved_turnstile_solver_key_when_request_omits_it(self) -> None:
         req = MaintainerRunRequest(

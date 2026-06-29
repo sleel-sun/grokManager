@@ -21,8 +21,12 @@
   "webui": {
     "header": {
       "chat": "Chat",
+      "draw": "Bild",
       "masonry": "Masonry",
       "chatkit": "ChatKit"
+    },
+    "imageStudio": {
+      "pageTitle": "grokManager - Bild"
     },
     "chat": {
       "pageTitle": "grokManager - WebChat",
@@ -315,7 +319,7 @@
   "config": {
     "pageTitle": "grokManager - Konfigurationsverwaltung",
     "pageHeading": "Konfigurationsverwaltung",
-    "pageSubtitle": "Verwalten Sie die Laufzeitparameter von grokManager und das Standardverhalten des Dienstes.",
+    "pageSubtitle": "Verwalten Sie die Laufzeitparameter von grokManager und das Standardverhalten des Dienstes; Felder mit Neustartpflicht werden ausdrücklich markiert.",
     "resetShort": "Zurücksetzen",
     "saveShort": "Speichern",
     "resetChanges": "Änderungen zurücksetzen",
@@ -323,6 +327,8 @@
     "unsavedDefault": "Nicht gespeicherte Änderungen vorhanden",
     "unsavedSingle": "1 nicht gespeicherte Änderung vorhanden",
     "unsavedMultiple": "{n} nicht gespeicherte Änderungen vorhanden",
+    "unsavedWithRestartSingle": "{n} nicht gespeicherte Änderungen vorhanden, davon 1 mit Neustartpflicht",
+    "unsavedWithRestartMultiple": "{n} nicht gespeicherte Änderungen vorhanden, davon {restart} mit Neustartpflicht",
     "discardShort": "Rückgängig",
     "saveBarShort": "Speichern",
     "discardChanges": "Änderungen verwerfen",
@@ -336,13 +342,19 @@
       "displayName": "Anzeigename",
       "enabled": "Aktiv",
       "allowNsfw": "NSFW erlauben",
+      "allowGpt": "GPT",
       "remove": "Entfernen"
     },
     "loadFailed": "Konfiguration konnte nicht geladen werden: {message}",
     "saving": "Änderungen werden gespeichert...",
     "saveSuccess": "Änderungen gespeichert",
+    "saveSuccessRestart": "Änderungen gespeichert; einige Felder werden nach einem Dienstneustart wirksam",
     "saveFailed": "Änderungen konnten nicht gespeichert werden: {message}",
     "resetSuccess": "Nicht gespeicherte Änderungen verworfen",
+    "apply": {
+      "restartBadge": "Neustart",
+      "restartHint": "Erfordert nach dem Speichern einen Dienstneustart"
+    },
     "disabledTip": {
       "appUrlRequired": "Konfigurieren Sie zuerst die APP-Basis-URL"
     },

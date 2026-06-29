@@ -51,6 +51,8 @@ def test_webui_users_require_username_password_and_return_stable_user(monkeypatc
         "username": "alice",
         "display_name": "Alice",
         "allow_nsfw": True,
+        "gpt_models": [],
+        "gpt_image_quality": "1k",
         "legacy": False,
         "anonymous": False,
         "storage_scope": auth_middleware._webui_user_id("alice"),
@@ -116,6 +118,41 @@ def test_webui_users_accept_independent_key_and_nsfw_permission(monkeypatch: pyt
     assert auth_middleware.webui_user_allows_nsfw(alice) is False
     assert auth_middleware.webui_user_allows_nsfw(bob) is True
     assert auth_middleware.webui_user_allows_nsfw(bob, global_enabled=False) is False
+
+
+def test_webui_users_accept_gpt_image_permissions(monkeypatch: pytest.MonkeyPatch) -> None:
+    _configure_auth(
+        monkeypatch,
+        {
+            "app.webui_enabled": True,
+            "app.webui_users": [
+                {
+                    "username": "alice",
+                    "key": "alice-key",
+                    "gpt_enabled": True,
+                    "gpt_image_quality": "4k",
+                },
+                {
+                    "username": "bob",
+                    "key": "bob-key",
+                    "gptEnabled": False,
+                    "gptModels": ["codex-gpt-image-2"],
+                    "gptImageQuality": "2k",
+                },
+            ],
+        },
+    )
+
+    alice = auth_middleware.authenticate_webui_authorization(_basic("alice", "alice-key"))
+    bob = auth_middleware.authenticate_webui_authorization(_basic("bob", "bob-key"))
+
+    assert alice is not None
+    assert alice.gpt_models == ("gpt-image-1", "gpt-image-2", "codex-gpt-image-2")
+    assert alice.gpt_image_quality == "4k"
+    assert alice.public_dict()["gpt_models"] == ["gpt-image-1", "gpt-image-2", "codex-gpt-image-2"]
+    assert bob is not None
+    assert bob.gpt_models == ()
+    assert bob.gpt_image_quality == "2k"
 
 
 def test_webui_legacy_single_key_and_anonymous_modes_stay_compatible(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -370,5 +407,5 @@ def test_webui_multi_user_i18n_keys_exist_for_all_locales() -> None:
         assert data["config"]["schema"]["fields"]["webuiUsers"]["label"]
         assert data["config"]["schema"]["fields"]["webuiUsers"]["desc"]
         users = data["config"]["webuiUsers"]
-        for key in ("add", "empty", "username", "password", "key", "displayName", "enabled", "allowNsfw", "remove"):
+        for key in ("add", "empty", "username", "password", "key", "displayName", "enabled", "allowNsfw", "allowGpt", "remove"):
             assert users[key], f"{path.name} missing config.webuiUsers.{key}"

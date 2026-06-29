@@ -9,6 +9,7 @@ from unittest.mock import MagicMock, patch
 from app.maintainer.runner import (
     build_profile,
     click_email_signup_button,
+    fill_code_and_submit,
     fill_profile_and_submit,
     _install_turnstile_patch,
     _profile_snapshot_indicates_submitted,
@@ -19,8 +20,10 @@ from app.maintainer.runner import (
     _compute_worker_chrome_user_data_dir,
     _configure_browser_options,
     _ensure_browser_storage_ready,
+    _browser_effective_headless,
     _poll_turnstile_solver_result,
     _resolve_browser_tmp_path,
+    _select_browser_debug_port,
     _solve_turnstile_with_external_solver,
     _turnstile_solver_settings,
     _turnstile_manual_wait_seconds,
@@ -202,6 +205,106 @@ class MaintainerRunnerTests(unittest.TestCase):
         ):
             with self.assertRaisesRegex(RuntimeError, "未找到最终注册表单"):
                 fill_profile_and_submit(timeout=1)
+
+    def test_fill_code_recovers_retry_page_before_entering_code(self) -> None:
+        mock_page = MagicMock()
+        mock_page.run_js.side_effect = [
+            "not-ready",
+            "retry-clicked",
+            "filled",
+            "clicked",
+        ]
+
+        with (
+            patch("app.maintainer.runner.page", mock_page),
+            patch("app.maintainer.runner.get_oai_code", return_value="123456"),
+            patch("app.maintainer.runner.has_profile_form", side_effect=[False, True]),
+            patch("app.maintainer.runner.refresh_active_page", return_value=mock_page),
+            patch(
+                "app.maintainer.runner.time.time",
+                side_effect=[0.0, 0.0, 1.0, 2.0, 3.0],
+            ),
+            patch("app.maintainer.runner.time.sleep"),
+        ):
+            self.assertEqual(
+                fill_code_and_submit("user@example.test", "mail-token", timeout=5),
+                "123456",
+            )
+
+        self.assertEqual(mock_page.run_js.call_args_list[1].args[1], "user@example.test")
+
+    def test_fill_code_recovers_email_signup_choice_before_resubmitting_email(self) -> None:
+        mock_page = MagicMock()
+        mock_page.run_js.side_effect = [
+            "not-ready",
+            "email-signup-clicked",
+            "not-ready",
+            "email-resubmitted",
+            "filled",
+            "clicked",
+        ]
+
+        with (
+            patch("app.maintainer.runner.page", mock_page),
+            patch("app.maintainer.runner.get_oai_code", return_value="123456"),
+            patch("app.maintainer.runner.has_profile_form", side_effect=[False, False, True]),
+            patch("app.maintainer.runner.refresh_active_page", return_value=mock_page),
+            patch(
+                "app.maintainer.runner.time.time",
+                side_effect=[0.0, 0.0, 1.0, 2.0, 3.0, 4.0],
+            ),
+            patch("app.maintainer.runner.time.sleep"),
+        ):
+            self.assertEqual(
+                fill_code_and_submit("user@example.test", "mail-token", timeout=5),
+                "123456",
+            )
+
+        self.assertEqual(mock_page.run_js.call_args_list[3].args[1], "user@example.test")
+
+    def test_fill_code_retries_when_confirm_click_does_not_reach_profile_form(self) -> None:
+        mock_page = MagicMock()
+        mock_page.run_js.side_effect = [
+            "filled",
+            "clicked",
+            "confirm-email-clicked",
+            "filled",
+            "clicked",
+        ]
+
+        with (
+            patch("app.maintainer.runner.page", mock_page),
+            patch("app.maintainer.runner.get_oai_code", return_value="123456"),
+            patch("app.maintainer.runner.has_profile_form", side_effect=[False, True]),
+            patch("app.maintainer.runner.refresh_active_page", return_value=mock_page),
+            patch(
+                "app.maintainer.runner.time.time",
+                side_effect=[0.0, 0.0, 1.0, 2.0, 3.0],
+            ),
+            patch("app.maintainer.runner.time.sleep"),
+        ):
+            self.assertEqual(
+                fill_code_and_submit("user@example.test", "mail-token", timeout=5),
+                "123456",
+            )
+
+    def test_browser_debug_port_falls_back_when_default_is_busy(self) -> None:
+        with (
+            patch("app.maintainer.runner._is_tcp_port_available", side_effect=[False, True]),
+            patch("app.maintainer.runner.os.getpid", return_value=123),
+        ):
+            port = _select_browser_debug_port(42222)
+
+        self.assertGreaterEqual(port, 20_000)
+
+    def test_browser_debug_port_returns_candidate_when_ports_cannot_be_probed(self) -> None:
+        with (
+            patch("app.maintainer.runner._is_tcp_port_available", return_value=False),
+            patch("app.maintainer.runner.os.getpid", return_value=123),
+        ):
+            port = _select_browser_debug_port(42222)
+
+        self.assertEqual(port, 20_123)
 
     def test_fill_profile_clicks_submit_when_turnstile_is_absent(self) -> None:
         mock_page = MagicMock()
@@ -412,6 +515,16 @@ class MaintainerRunnerTests(unittest.TestCase):
             },
         ):
             self.assertEqual(_turnstile_manual_wait_seconds(), 0.0)
+
+    def test_macos_without_display_uses_visible_browser_by_default(self) -> None:
+        with (
+            patch.dict(os.environ, {}, clear=True),
+            patch("app.maintainer.runner.sys.platform", "darwin"),
+        ):
+            self.assertFalse(_browser_effective_headless())
+            opts = _configure_browser_options()
+
+        self.assertNotIn("--headless=new", opts.arguments)
 
     def test_turnstile_patch_is_registered_for_new_documents(self) -> None:
         mock_page = MagicMock()
@@ -704,6 +817,105 @@ class MaintainerBatchProfileIsolationTests(unittest.TestCase):
                 )
 
         self.assertEqual(tokens, ["sso-first", "sso-second"])
+        self.assertEqual(calls["count"], 2)
+
+    def test_run_batch_retries_cloudflare_env_block_without_consuming_target(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp_path = Path(tmpdir)
+            config_path = tmp_path / "maintainer.config.json"
+            config_path.write_text(
+                json.dumps({"web": {"registration_env_retry_limit": 1}}),
+                encoding="utf-8",
+            )
+            output_path = tmp_path / "sso.txt"
+            calls = {"count": 0}
+            progress: list[tuple[str, dict[str, Any]]] = []
+
+            def fake_registration(*_args: Any, **_kwargs: Any) -> dict[str, str]:
+                calls["count"] += 1
+                if calls["count"] == 1:
+                    raise RuntimeError(
+                        "x.ai 注册页被 Cloudflare 硬拦截，无法进入邮箱注册表单"
+                        "；title=Attention Required! | Cloudflare"
+                    )
+                return {"sso": "sso-ok"}
+
+            env = {
+                k: v
+                for k, v in os.environ.items()
+                if not k.startswith("MAINTAINER_")
+            }
+
+            with (
+                patch.dict(os.environ, env, clear=True),
+                patch("app.maintainer.runner.start_browser"),
+                patch("app.maintainer.runner.stop_browser"),
+                patch("app.maintainer.runner.push_sso_to_api"),
+                patch("app.maintainer.runner.time.sleep"),
+                patch(
+                    "app.maintainer.runner.run_single_registration",
+                    side_effect=fake_registration,
+                ),
+            ):
+                tokens = run_batch(
+                    config_path=str(config_path),
+                    count=1,
+                    output=str(output_path),
+                    progress_callback=lambda event, payload: progress.append((event, payload)),
+                )
+
+        self.assertEqual(tokens, ["sso-ok"])
+        self.assertEqual(calls["count"], 2)
+        retry_events = [
+            payload
+            for event, payload in progress
+            if event == "round_failed" and payload.get("retrying") is True
+        ]
+        self.assertEqual(len(retry_events), 1)
+        self.assertEqual(retry_events[0]["env_retries_used"], 1)
+
+    def test_run_batch_cloudflare_env_retry_limit_stops_retries(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp_path = Path(tmpdir)
+            config_path = tmp_path / "maintainer.config.json"
+            config_path.write_text(
+                json.dumps({"web": {"registration_env_retry_limit": 1}}),
+                encoding="utf-8",
+            )
+            output_path = tmp_path / "sso.txt"
+            calls = {"count": 0}
+
+            def fake_registration(*_args: Any, **_kwargs: Any) -> dict[str, str]:
+                calls["count"] += 1
+                raise RuntimeError(
+                    "x.ai 注册页被 Cloudflare 硬拦截，无法进入邮箱注册表单"
+                    "；title=Attention Required! | Cloudflare"
+                )
+
+            env = {
+                k: v
+                for k, v in os.environ.items()
+                if not k.startswith("MAINTAINER_")
+            }
+
+            with (
+                patch.dict(os.environ, env, clear=True),
+                patch("app.maintainer.runner.start_browser"),
+                patch("app.maintainer.runner.stop_browser"),
+                patch("app.maintainer.runner.push_sso_to_api"),
+                patch("app.maintainer.runner.time.sleep"),
+                patch(
+                    "app.maintainer.runner.run_single_registration",
+                    side_effect=fake_registration,
+                ),
+            ):
+                tokens = run_batch(
+                    config_path=str(config_path),
+                    count=1,
+                    output=str(output_path),
+                )
+
+        self.assertEqual(tokens, [])
         self.assertEqual(calls["count"], 2)
 
 

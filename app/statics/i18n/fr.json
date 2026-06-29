@@ -21,8 +21,12 @@
   "webui": {
     "header": {
       "chat": "Chat",
+      "draw": "Image",
       "masonry": "Masonry",
       "chatkit": "ChatKit"
+    },
+    "imageStudio": {
+      "pageTitle": "grokManager - Image"
     },
     "chat": {
       "pageTitle": "grokManager - WebChat",
@@ -315,7 +319,7 @@
   "config": {
     "pageTitle": "grokManager - Gestion de la Configuration",
     "pageHeading": "Gestion de la Configuration",
-    "pageSubtitle": "Gérez les paramètres d’exécution de grokManager et le comportement par défaut du service.",
+    "pageSubtitle": "Gérez les paramètres d’exécution de grokManager et le comportement par défaut du service ; les champs nécessitant un redémarrage sont indiqués.",
     "resetShort": "Réinitialiser",
     "saveShort": "Enregistrer",
     "resetChanges": "Réinitialiser les modifications",
@@ -323,6 +327,8 @@
     "unsavedDefault": "Des modifications non enregistrées ont été détectées",
     "unsavedSingle": "1 modification non enregistrée a été détectée",
     "unsavedMultiple": "{n} modifications non enregistrées ont été détectées",
+    "unsavedWithRestartSingle": "{n} modifications non enregistrées ont été détectées, dont 1 nécessitant un redémarrage",
+    "unsavedWithRestartMultiple": "{n} modifications non enregistrées ont été détectées, dont {restart} nécessitant un redémarrage",
     "discardShort": "Annuler",
     "saveBarShort": "Enregistrer",
     "discardChanges": "Ignorer les modifications",
@@ -336,13 +342,19 @@
       "displayName": "Nom affiché",
       "enabled": "Actif",
       "allowNsfw": "Autoriser NSFW",
+      "allowGpt": "GPT",
       "remove": "Supprimer"
     },
     "loadFailed": "Impossible de charger la configuration : {message}",
     "saving": "Enregistrement des modifications...",
     "saveSuccess": "Modifications enregistrées",
+    "saveSuccessRestart": "Modifications enregistrées ; certains champs seront appliqués après redémarrage du service",
     "saveFailed": "Impossible d’enregistrer les modifications : {message}",
     "resetSuccess": "Les modifications non enregistrées ont été ignorées",
+    "apply": {
+      "restartBadge": "Redémarrage",
+      "restartHint": "Nécessite un redémarrage du service après enregistrement"
+    },
     "disabledTip": {
       "appUrlRequired": "Configurez d’abord l’URL de base de l’application"
     },

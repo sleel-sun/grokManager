@@ -20,6 +20,16 @@ _TAG_MESSAGES = "Anthropic - Messages"
 _SSE_HEADERS = {"Cache-Control": "no-cache", "Connection": "keep-alive", "X-Accel-Buffering": "no"}
 
 
+def _message_model_spec(model: str):
+    spec = model_registry.get(model)
+    if spec is None or not spec.enabled or not spec.is_chat():
+        raise ValidationError(
+            f"Model {model!r} does not exist or you do not have access to it.",
+            param="model", code="model_not_found",
+        )
+    return spec
+
+
 # ---------------------------------------------------------------------------
 # Request schema
 # ---------------------------------------------------------------------------
@@ -81,13 +91,7 @@ async def _safe_sse_anthropic(stream):
 async def messages_endpoint(req: MessagesRequest):
     from app.platform.config.snapshot import get_config
 
-    # Model validation
-    spec = model_registry.get(req.model)
-    if spec is None or not spec.enabled:
-        raise ValidationError(
-            f"Model {req.model!r} does not exist or you do not have access to it.",
-            param="model", code="model_not_found",
-        )
+    spec = _message_model_spec(req.model)
 
     if not req.messages:
         raise ValidationError("messages cannot be empty", param="messages")
@@ -164,6 +168,9 @@ async def count_tokens_endpoint(req: CountTokensRequest):
     """
     if not req.messages:
         raise ValidationError("messages cannot be empty", param="messages")
+
+    if req.model is not None:
+        _message_model_spec(req.model)
 
     # Lazy import to avoid a top-level dependency on the Messages handler
     # (which itself imports heavier dataplane modules).

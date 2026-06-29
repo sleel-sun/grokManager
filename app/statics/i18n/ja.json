@@ -21,8 +21,12 @@
   "webui": {
     "header": {
       "chat": "Chat",
+      "draw": "画像",
       "masonry": "Masonry",
       "chatkit": "ChatKit"
+    },
+    "imageStudio": {
+      "pageTitle": "grokManager - 画像"
     },
     "chat": {
       "pageTitle": "grokManager - WebChat",
@@ -315,7 +319,7 @@
   "config": {
     "pageTitle": "grokManager - 構成管理",
     "pageHeading": "構成管理",
-    "pageSubtitle": "grokManager のランタイム設定とサービス既定動作を管理します。",
+    "pageSubtitle": "grokManager のランタイム設定とサービス既定動作を管理します。再起動が必要な項目は明示されます。",
     "resetShort": "リセット",
     "saveShort": "保存",
     "resetChanges": "変更をリセット",
@@ -323,6 +327,8 @@
     "unsavedDefault": "未保存の変更があります",
     "unsavedSingle": "未保存の変更が 1 件あります",
     "unsavedMultiple": "未保存の変更が {n} 件あります",
+    "unsavedWithRestartSingle": "未保存の変更が {n} 件あります。そのうち 1 件は再起動後に有効になります",
+    "unsavedWithRestartMultiple": "未保存の変更が {n} 件あります。そのうち {restart} 件は再起動後に有効になります",
     "discardShort": "元に戻す",
     "saveBarShort": "保存",
     "discardChanges": "変更を破棄",
@@ -336,13 +342,19 @@
       "displayName": "表示名",
       "enabled": "有効",
       "allowNsfw": "NSFW を許可",
+      "allowGpt": "GPT",
       "remove": "削除"
     },
     "loadFailed": "構成の読み込みに失敗しました: {message}",
     "saving": "変更を保存しています...",
     "saveSuccess": "変更を保存しました",
+    "saveSuccessRestart": "変更を保存しました。一部の項目はサービス再起動後に有効になります",
     "saveFailed": "変更の保存に失敗しました: {message}",
     "resetSuccess": "未保存の変更を破棄しました",
+    "apply": {
+      "restartBadge": "再起動",
+      "restartHint": "保存後、サービス再起動が必要です"
+    },
     "disabledTip": {
       "appUrlRequired": "先に APP Base URL を設定してください"
     },

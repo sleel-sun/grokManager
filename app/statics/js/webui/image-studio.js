@@ -3,10 +3,14 @@
   const MODELS_ENDPOINT = '/webui/api/images/models';
   const GENERATE_ENDPOINT = '/webui/api/images/generations';
   const EDIT_ENDPOINT = '/webui/api/images/edits';
+  const HISTORY_ENDPOINT = '/webui/api/images/history';
   const HISTORY_KEY = 'grokmanager.image_studio.history.v1';
   const HISTORY_LIMIT = 24;
+  const GPT_MODELS = new Set(['gpt-image-1', 'gpt-image-2', 'codex-gpt-image-2']);
+  const QUALITY_RANK = { '1k': 1, '2k': 2, '4k': 3 };
 
   const form = document.getElementById('studioForm');
+  const composer = document.getElementById('studioComposer');
   const modeToggle = document.getElementById('studioModeToggle');
   const promptInput = document.getElementById('studioPrompt');
   const promptCount = document.getElementById('studioPromptCount');
@@ -14,22 +18,34 @@
   const editModelSelect = document.getElementById('studioEditModel');
   const generateModelField = document.getElementById('studioGenerateModelField');
   const editModelField = document.getElementById('studioEditModelField');
-  const imageField = document.getElementById('studioImageField');
   const imageInput = document.getElementById('studioImages');
+  const pickImagesBtn = document.getElementById('studioPickImages');
   const imageCount = document.getElementById('studioImageCount');
+  const referencePreview = document.getElementById('studioReferencePreview');
   const sizeSelect = document.getElementById('studioSize');
+  const qualitySelect = document.getElementById('studioQuality');
+  const qualityHint = document.getElementById('studioQualityHint');
   const countSelect = document.getElementById('studioCount');
   const submitBtn = document.getElementById('studioSubmit');
   const statusEl = document.getElementById('studioStatus');
   const output = document.getElementById('studioOutput');
   const empty = document.getElementById('studioEmpty');
   const clearHistoryBtn = document.getElementById('studioClearHistory');
+  const newSessionBtn = document.getElementById('studioNewSession');
+  const sessionList = document.getElementById('studioSessionList');
   const modelCount = document.getElementById('studioModelCount');
   const modelHint = document.getElementById('studioModelHint');
+  const historyHint = document.getElementById('studioHistoryHint');
+  const resultsViewport = document.getElementById('studioResultsViewport');
 
   let mode = 'generate';
   let running = false;
   let history = readHistory();
+  let selectedSessionId = '';
+  let draftMode = false;
+  let dragDepth = 0;
+  let referencePreviewUrls = [];
+  let qualityConfig = { premium: false, default: '1k', max: '1k', options: [{ id: '1k', label: '1K', enabled: true }] };
 
   function escapeHtml(value) {
     return String(value == null ? '' : value)
@@ -65,6 +81,52 @@
     } catch {}
   }
 
+  function normalizeSession(session) {
+    if (!session || typeof session !== 'object') return null;
+    const images = Array.isArray(session.images)
+      ? session.images
+        .map((item) => (typeof item === 'string' ? { url: item } : item))
+        .filter((item) => item && item.url)
+      : [];
+    if (!images.length && session.url) images.push({ url: session.url });
+    if (!images.length) return null;
+
+    const createdAt = Number(session.created_at || session.createdAt || Date.now());
+    return {
+      id: String(session.id || `${createdAt}-${Math.random()}`),
+      prompt: String(session.prompt || ''),
+      model: String(session.model || 'model'),
+      mode: session.mode === 'edit' ? 'edit' : 'generate',
+      size: String(session.size || '1024x1024'),
+      quality: String(session.quality || '1k'),
+      created_at: createdAt,
+      updated_at: Number(session.updated_at || session.updatedAt || createdAt),
+      reference_names: Array.isArray(session.reference_names) ? session.reference_names : [],
+      images,
+    };
+  }
+
+  function sessionsFromLocalItems(items) {
+    return (Array.isArray(items) ? items : []).map((item) => normalizeSession({
+      id: item.id,
+      prompt: item.prompt,
+      model: item.model,
+      mode: item.mode,
+      size: item.size,
+      quality: item.quality || '1k',
+      created_at: item.created_at,
+      images: item.images || [{ url: item.url }],
+    })).filter(Boolean);
+  }
+
+  function historySessions() {
+    const normalized = (Array.isArray(history) ? history : [])
+      .map((item) => normalizeSession(item))
+      .filter(Boolean);
+    if (normalized.length) return normalized;
+    return sessionsFromLocalItems(history);
+  }
+
   function imageUrlFromItem(item) {
     if (!item || typeof item !== 'object') return '';
     if (item.url) return String(item.url);
@@ -77,18 +139,23 @@
     return data.map(imageUrlFromItem).filter(Boolean);
   }
 
-  function addHistory({ images, prompt, model, mode, size }) {
+  function addHistory({ images, prompt, model, mode: sessionMode, size, quality }) {
     const now = Date.now();
-    const items = images.map((url, index) => ({
-      id: `${now}-${index}`,
-      url,
+    const session = normalizeSession({
+      id: `${now}`,
       prompt,
       model,
-      mode,
+      mode: sessionMode,
       size,
+      quality,
       created_at: now,
-    }));
-    history = [...items, ...history].slice(0, HISTORY_LIMIT);
+      updated_at: now,
+      images: images.map((url) => ({ url })),
+    });
+    if (!session) return;
+    history = [session, ...historySessions()].slice(0, HISTORY_LIMIT);
+    selectedSessionId = session.id;
+    draftMode = false;
     writeHistory();
     renderHistory();
   }
@@ -99,32 +166,120 @@
     return date.toLocaleString(undefined, { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' });
   }
 
-  function renderHistory() {
-    if (!output || !empty) return;
-    empty.hidden = history.length > 0;
-    empty.style.display = history.length > 0 ? 'none' : '';
-    output.innerHTML = history.map((item) => {
-      const title = item.prompt || 'Untitled';
-      const meta = `${item.model || 'model'} · ${item.size || 'size'} · ${formatDate(item.created_at)}`;
+  function modeLabel(value) {
+    return value === 'edit' ? '图像编辑' : '文生图';
+  }
+
+  function shortPrompt(value) {
+    const text = String(value || '').trim();
+    if (!text) return '未命名画图';
+    return text.length > 42 ? `${text.slice(0, 42)}...` : text;
+  }
+
+  function renderSidebar(sessions, selected) {
+    if (!sessionList) return;
+    sessionList.innerHTML = sessions.map((session) => {
+      const active = selected && selected.id === session.id ? ' is-active' : '';
+      const meta = `${modeLabel(session.mode)} · ${session.images.length} 张 · ${formatDate(session.created_at)}`;
+      return `<button class="studio-side-session${active}" type="button" data-select-session="${escapeHtml(session.id)}">
+        <span class="studio-side-session-title" title="${escapeHtml(session.prompt)}">${escapeHtml(shortPrompt(session.prompt))}</span>
+        <span class="studio-side-session-meta" title="${escapeHtml(meta)}">${escapeHtml(meta)}</span>
+      </button>`;
+    }).join('');
+  }
+
+  function renderSelectedSession(session) {
+    const prompt = session.prompt || 'Untitled';
+    const meta = `${modeLabel(session.mode)} · ${session.model} · ${String(session.quality || '1k').toUpperCase()} · ${session.size} · ${formatDate(session.created_at)}`;
+    const refs = session.reference_names.length
+      ? `<span class="studio-tag">参考图 ${escapeHtml(session.reference_names.join(', '))}</span>`
+      : '';
+    const images = session.images.map((image, index) => {
+      const url = escapeHtml(image.url);
       return `<article class="studio-output">
-        <a href="${escapeHtml(item.url)}" target="_blank" rel="noopener">
-          <img src="${escapeHtml(item.url)}" alt="${escapeHtml(title)}" loading="lazy">
+        <a class="studio-image-link" href="${url}" target="_blank" rel="noopener">
+          <img src="${url}" alt="${escapeHtml(prompt)}" loading="lazy">
         </a>
         <div class="studio-output-body">
-          <div class="studio-output-title" title="${escapeHtml(title)}">${escapeHtml(title)}</div>
-          <div class="studio-output-meta" title="${escapeHtml(meta)}">${escapeHtml(meta)}</div>
+          <span class="studio-output-title">结果 ${index + 1}</span>
+          <a class="studio-output-meta studio-download-link" href="${url}" download>下载</a>
         </div>
       </article>`;
     }).join('');
+
+    return `<article class="studio-turn" data-session-id="${escapeHtml(session.id)}">
+      <div class="studio-turn-user">
+        <div class="studio-turn-meta">
+          <span>${escapeHtml(modeLabel(session.mode))}</span>
+          <span>${escapeHtml(formatDate(session.created_at))}</span>
+        </div>
+        <div class="studio-user-bubble">${escapeHtml(prompt)}</div>
+      </div>
+      <div class="studio-result-wrap">
+        <div class="studio-result-toolbar">
+          <div class="studio-result-tags">
+            <span class="studio-tag">${escapeHtml(session.images.length)} 张</span>
+            <span class="studio-tag">${escapeHtml(session.model)}</span>
+            <span class="studio-tag">${escapeHtml(String(session.quality || '1k').toUpperCase())}</span>
+            <span class="studio-tag">${escapeHtml(session.size)}</span>
+            ${refs}
+          </div>
+          <button class="studio-delete-btn" type="button" data-delete-session="${escapeHtml(session.id)}">删除</button>
+        </div>
+        <div class="studio-session-images">${images}</div>
+        <div class="studio-output-meta" title="${escapeHtml(meta)}">${escapeHtml(meta)}</div>
+      </div>
+    </article>`;
+  }
+
+  function renderHistory() {
+    if (!output || !empty) return;
+    const sessions = historySessions();
+    let selected = selectedSessionId ? sessions.find((session) => session.id === selectedSessionId) : null;
+    if (!draftMode && !selected && sessions[0]) {
+      selected = sessions[0];
+      selectedSessionId = selected.id;
+    }
+    if (draftMode) selected = null;
+
+    renderSidebar(sessions, selected);
+    empty.hidden = Boolean(selected);
+    empty.style.display = selected ? 'none' : '';
+    output.innerHTML = selected ? renderSelectedSession(selected) : '';
+    if (historyHint) historyHint.textContent = sessions.length ? `${sessions.length} 个` : '暂无';
+  }
+
+  async function loadHistory(preferredSessionId = '') {
+    const res = await fetch(HISTORY_ENDPOINT, {
+      headers: await webuiAuthHeaders(),
+      cache: 'no-store',
+    });
+    if (!res.ok) throw new Error(await responseError(res));
+    const payload = await res.json();
+    const sessions = Array.isArray(payload.data) ? payload.data : [];
+    history = sessions.map(normalizeSession).filter(Boolean);
+    if (preferredSessionId) selectedSessionId = preferredSessionId;
+    draftMode = false;
+    writeHistory();
+    renderHistory();
+  }
+
+  function syncSubmitState() {
+    if (!submitBtn) return;
+    const hasPrompt = Boolean(String((promptInput && promptInput.value) || '').trim());
+    submitBtn.disabled = running || !hasPrompt;
   }
 
   function setRunning(next) {
     running = next;
+    if (composer) {
+      composer.classList.toggle('is-running', next);
+    }
     if (submitBtn) {
-      submitBtn.disabled = next;
-      submitBtn.textContent = next
+      submitBtn.title = next
         ? (mode === 'edit' ? '正在编辑...' : '正在生成...')
         : (mode === 'edit' ? '开始编辑' : '开始生成');
+      submitBtn.setAttribute('aria-label', submitBtn.title);
     }
     [
       promptInput,
@@ -132,7 +287,9 @@
       editModelSelect,
       imageInput,
       sizeSelect,
+      qualitySelect,
       countSelect,
+      pickImagesBtn,
     ].forEach((el) => {
       if (el) el.disabled = next;
     });
@@ -141,6 +298,7 @@
         button.disabled = next;
       });
     }
+    syncSubmitState();
   }
 
   function setMode(nextMode) {
@@ -154,25 +312,102 @@
     }
     if (generateModelField) generateModelField.classList.toggle('studio-hidden', mode !== 'generate');
     if (editModelField) editModelField.classList.toggle('studio-hidden', mode !== 'edit');
-    if (imageField) imageField.classList.toggle('studio-hidden', mode !== 'edit');
     if (countSelect) {
       Array.from(countSelect.options).forEach((option) => {
         option.disabled = mode === 'edit' && Number(option.value) > 2;
       });
       if (mode === 'edit' && Number(countSelect.value) > 2) countSelect.value = '2';
     }
+    if (promptInput) {
+      promptInput.placeholder = mode === 'edit'
+        ? '描述你希望如何修改参考图'
+        : '输入你想要生成的画面，也可直接粘贴图片';
+    }
+    syncQualityAccess();
     setRunning(false);
   }
 
   function syncPromptCount() {
-    if (!promptCount) return;
-    promptCount.textContent = `${String((promptInput && promptInput.value) || '').trim().length} 字`;
+    const value = String((promptInput && promptInput.value) || '');
+    if (promptCount) promptCount.textContent = `${value.trim().length} 字`;
+    if (promptInput) {
+      promptInput.style.height = 'auto';
+      const nextHeight = Math.min(Math.max(promptInput.scrollHeight, 96), 300);
+      promptInput.style.height = `${nextHeight}px`;
+    }
+    syncSubmitState();
+  }
+
+  function imageFiles() {
+    return Array.from((imageInput && imageInput.files) || []).filter((file) => file.type.startsWith('image/'));
   }
 
   function syncImageCount() {
     if (!imageCount) return;
-    const count = imageInput && imageInput.files ? imageInput.files.length : 0;
-    imageCount.textContent = count ? `${count} 张` : '未选择';
+    const count = imageFiles().length;
+    imageCount.textContent = count ? `参考图 ${count}` : '上传参考图';
+  }
+
+  function revokeReferencePreviewUrls() {
+    referencePreviewUrls.forEach((url) => URL.revokeObjectURL(url));
+    referencePreviewUrls = [];
+  }
+
+  function syncReferencePreview() {
+    if (!referencePreview) return;
+    revokeReferencePreviewUrls();
+    const files = imageFiles();
+    const visible = files.slice(0, 8).map((file) => {
+      const url = URL.createObjectURL(file);
+      referencePreviewUrls.push(url);
+      return `<div class="studio-reference-item">
+        <img src="${escapeHtml(url)}" alt="${escapeHtml(file.name || 'reference')}" title="${escapeHtml(file.name || '')}">
+      </div>`;
+    });
+    const remaining = files.length > 8 ? `<div class="studio-reference-more">+${files.length - 8}</div>` : '';
+    referencePreview.innerHTML = `${visible.join('')}${remaining}`;
+  }
+
+  function setImageFiles(files) {
+    if (!imageInput) return;
+    const images = files.filter((file) => file && file.type && file.type.startsWith('image/')).slice(0, 5);
+    try {
+      const transfer = new DataTransfer();
+      images.forEach((file) => transfer.items.add(file));
+      imageInput.files = transfer.files;
+      syncImageCount();
+      syncReferencePreview();
+      if (images.length) setMode('edit');
+    } catch {
+      toast('当前浏览器不支持直接粘贴图片，请使用上传按钮', 'error');
+    }
+  }
+
+  function appendImageFiles(files) {
+    setImageFiles([...imageFiles(), ...files]);
+  }
+
+  function syncQualityAccess() {
+    if (!qualitySelect) return;
+    const max = String((qualityConfig && qualityConfig.max) || '1k').toLowerCase();
+    const enabledById = new Map(
+      (Array.isArray(qualityConfig.options) ? qualityConfig.options : [])
+        .map((item) => [String(item.id || '').toLowerCase(), item.enabled !== false])
+    );
+    Array.from(qualitySelect.options).forEach((option) => {
+      const value = String(option.value || '').toLowerCase();
+      const enabled = enabledById.has(value)
+        ? enabledById.get(value)
+        : (QUALITY_RANK[value] || 1) <= (QUALITY_RANK[max] || 1);
+      option.disabled = !enabled;
+    });
+    if (qualitySelect.selectedOptions[0] && qualitySelect.selectedOptions[0].disabled) {
+      const fallback = Array.from(qualitySelect.options).find((option) => !option.disabled);
+      if (fallback) qualitySelect.value = fallback.value;
+    }
+    if (qualityHint) {
+      qualityHint.textContent = (QUALITY_RANK[max] || 1) > 1 ? `最高 ${max.toUpperCase()}` : '锁定 1K';
+    }
   }
 
   function optionHtml(model) {
@@ -188,25 +423,42 @@
     if (!res.ok) throw new Error(await responseError(res));
     const payload = await res.json();
     const generation = Array.isArray(payload.generation) ? payload.generation : [];
-    const edits = Array.isArray(payload.edits) ? payload.edits : [];
+    const edits = Array.isArray(payload.edits)
+      ? payload.edits.filter((item) => GPT_MODELS.has(String(item.id || '')))
+      : [];
 
-    const gptFirst = [...generation].sort((a, b) => {
-      const ag = String(a.id || '').startsWith('gpt-image') ? 0 : 1;
-      const bg = String(b.id || '').startsWith('gpt-image') ? 0 : 1;
-      return ag - bg;
+    const workspace = payload.workspace && typeof payload.workspace === 'object' ? payload.workspace : {};
+    qualityConfig = workspace.quality || qualityConfig;
+    const gptModels = generation.filter((item) => GPT_MODELS.has(String(item.id || '')));
+    const gptFirst = (gptModels.length ? gptModels : generation).sort((a, b) => {
+      const order = ['gpt-image-2', 'gpt-image-1', 'codex-gpt-image-2'];
+      const ai = order.indexOf(String(a.id || ''));
+      const bi = order.indexOf(String(b.id || ''));
+      return (ai === -1 ? 99 : ai) - (bi === -1 ? 99 : bi);
     });
     if (modelSelect) {
-      modelSelect.innerHTML = gptFirst.map(optionHtml).join('');
+      modelSelect.innerHTML = gptFirst.length
+        ? gptFirst.map(optionHtml).join('')
+        : '<option value="">无可用模型</option>';
       const preferred = gptFirst.find((item) => item.id === 'gpt-image-2') || gptFirst[0];
       if (preferred) modelSelect.value = preferred.id;
     }
     if (editModelSelect) {
-      editModelSelect.innerHTML = edits.map(optionHtml).join('');
-      if (edits[0]) editModelSelect.value = edits[0].id;
+      editModelSelect.innerHTML = edits.length
+        ? edits.map(optionHtml).join('')
+        : '<option value="">无可用编辑模型</option>';
+      const preferredEdit = edits.find((item) => item.id === 'gpt-image-2') || edits[0];
+      if (preferredEdit) editModelSelect.value = preferredEdit.id;
     }
     const total = generation.length + edits.length;
     if (modelCount) modelCount.textContent = String(total);
-    if (modelHint) modelHint.textContent = `可用文生图 ${generation.length} 个，编辑 ${edits.length} 个`;
+    if (modelHint) modelHint.textContent = `GPT 工作台 ${gptFirst.length} 个模型，编辑 ${edits.length} 个`;
+    if (qualitySelect && qualityConfig.options) {
+      qualitySelect.innerHTML = qualityConfig.options.map((item) => (
+        `<option value="${escapeHtml(item.id)}">${escapeHtml(item.label || String(item.id || '').toUpperCase())}</option>`
+      )).join('');
+    }
+    syncQualityAccess();
   }
 
   async function responseError(res) {
@@ -228,6 +480,7 @@
     const model = (modelSelect && modelSelect.value) || 'gpt-image-2';
     const n = Number((countSelect && countSelect.value) || 1);
     const size = (sizeSelect && sizeSelect.value) || '1024x1024';
+    const quality = (qualitySelect && qualitySelect.value) || '1k';
     const res = await fetch(GENERATE_ENDPOINT, {
       method: 'POST',
       headers: await webuiAuthHeaders(true),
@@ -236,25 +489,28 @@
         prompt,
         n,
         size,
+        quality,
         response_format: 'url',
       }),
     });
     if (!res.ok) throw new Error(await responseError(res));
     const payload = await res.json();
-    return { images: normalizeImages(payload), model, size };
+    return { images: normalizeImages(payload), model, size, quality: payload.quality || quality, session: payload.studio_session };
   }
 
   async function editImages(prompt) {
-    const files = Array.from((imageInput && imageInput.files) || []);
+    const files = imageFiles();
     if (!files.length) throw new Error('图像编辑需要至少上传一张参考图');
-    const model = (editModelSelect && editModelSelect.value) || 'grok-imagine-image-edit';
+    const model = (editModelSelect && editModelSelect.value) || 'gpt-image-2';
     const n = Math.min(Number((countSelect && countSelect.value) || 1), 2);
     const size = (sizeSelect && sizeSelect.value) || '1024x1024';
+    const quality = (qualitySelect && qualitySelect.value) || '1k';
     const body = new FormData();
     body.set('model', model);
     body.set('prompt', prompt);
     body.set('n', String(n));
     body.set('size', size);
+    body.set('quality', quality);
     body.set('response_format', 'url');
     files.slice(0, 5).forEach((file) => body.append('image', file));
 
@@ -265,7 +521,7 @@
     });
     if (!res.ok) throw new Error(await responseError(res));
     const payload = await res.json();
-    return { images: normalizeImages(payload), model, size };
+    return { images: normalizeImages(payload), model, size, quality: payload.quality || quality, session: payload.studio_session };
   }
 
   async function submit() {
@@ -283,15 +539,22 @@
         ? await editImages(prompt)
         : await generateImages(prompt);
       if (!result.images.length) throw new Error('接口没有返回可显示图片');
-      addHistory({
-        images: result.images,
-        prompt,
-        model: result.model,
-        mode,
-        size: result.size,
-      });
+      if (result.session) {
+        selectedSessionId = String(result.session.id || '');
+        await loadHistory(selectedSessionId);
+      } else {
+        addHistory({
+          images: result.images,
+          prompt,
+          model: result.model,
+          mode,
+          size: result.size,
+          quality: result.quality,
+        });
+      }
       setStatus(`完成，返回 ${result.images.length} 张图片`, 'completed');
       toast('图片任务完成', 'success');
+      if (resultsViewport) resultsViewport.scrollTo({ top: 0, behavior: 'smooth' });
     } catch (error) {
       const message = (error && error.message) || String(error);
       setStatus(message, 'failed');
@@ -301,6 +564,22 @@
     }
   }
 
+  function startDraft() {
+    draftMode = true;
+    selectedSessionId = '';
+    if (promptInput) {
+      promptInput.value = '';
+      promptInput.focus();
+    }
+    if (imageInput) imageInput.value = '';
+    setMode('generate');
+    syncPromptCount();
+    syncImageCount();
+    syncReferencePreview();
+    renderHistory();
+    setStatus('新画图已就绪', 'idle');
+  }
+
   async function boot() {
     if (typeof renderWebuiHeader === 'function') await renderWebuiHeader();
     if (typeof renderSiteFooter === 'function') await renderSiteFooter();
@@ -308,9 +587,11 @@
     renderHistory();
     syncPromptCount();
     syncImageCount();
+    syncReferencePreview();
     setMode('generate');
     try {
       await loadModels();
+      await loadHistory();
       setStatus('就绪', 'idle');
     } catch (error) {
       const message = (error && error.message) || String(error);
@@ -334,16 +615,125 @@
     });
   }
 
-  if (promptInput) promptInput.addEventListener('input', syncPromptCount);
-  if (imageInput) imageInput.addEventListener('change', syncImageCount);
-  if (clearHistoryBtn) {
-    clearHistoryBtn.addEventListener('click', () => {
-      history = [];
-      writeHistory();
-      renderHistory();
-      setStatus('历史已清空', 'idle');
+  if (promptInput) {
+    promptInput.addEventListener('input', syncPromptCount);
+    promptInput.addEventListener('keydown', (event) => {
+      if (event.key !== 'Enter' || event.shiftKey) return;
+      event.preventDefault();
+      void submit();
+    });
+    promptInput.addEventListener('paste', (event) => {
+      const files = Array.from((event.clipboardData && event.clipboardData.files) || [])
+        .filter((file) => file.type.startsWith('image/'));
+      if (!files.length) return;
+      event.preventDefault();
+      appendImageFiles(files);
     });
   }
+
+  if (pickImagesBtn) {
+    pickImagesBtn.addEventListener('click', () => {
+      if (!running && imageInput) imageInput.click();
+    });
+  }
+
+  if (imageInput) {
+    imageInput.addEventListener('change', () => {
+      syncImageCount();
+      syncReferencePreview();
+      if (imageFiles().length) setMode('edit');
+    });
+  }
+
+  if (qualitySelect) qualitySelect.addEventListener('change', syncQualityAccess);
+
+  if (newSessionBtn) {
+    newSessionBtn.addEventListener('click', startDraft);
+  }
+
+  if (clearHistoryBtn) {
+    clearHistoryBtn.addEventListener('click', async () => {
+      try {
+        const res = await fetch(HISTORY_ENDPOINT, {
+          method: 'DELETE',
+          headers: await webuiAuthHeaders(),
+        });
+        if (!res.ok) throw new Error(await responseError(res));
+        history = [];
+        selectedSessionId = '';
+        draftMode = true;
+        writeHistory();
+        renderHistory();
+        setStatus('历史已清空', 'idle');
+      } catch (error) {
+        const message = (error && error.message) || String(error);
+        toast(message, 'error');
+      }
+    });
+  }
+
+  if (sessionList) {
+    sessionList.addEventListener('click', (event) => {
+      const button = event.target instanceof Element ? event.target.closest('[data-select-session]') : null;
+      if (!(button instanceof HTMLButtonElement)) return;
+      selectedSessionId = button.dataset.selectSession || '';
+      draftMode = false;
+      renderHistory();
+      if (resultsViewport) resultsViewport.scrollTo({ top: 0 });
+    });
+  }
+
+  if (output) {
+    output.addEventListener('click', async (event) => {
+      const button = event.target instanceof Element ? event.target.closest('[data-delete-session]') : null;
+      if (!(button instanceof HTMLButtonElement)) return;
+      const id = button.dataset.deleteSession || '';
+      if (!id) return;
+      try {
+        const res = await fetch(`${HISTORY_ENDPOINT}/${encodeURIComponent(id)}`, {
+          method: 'DELETE',
+          headers: await webuiAuthHeaders(),
+        });
+        if (!res.ok) throw new Error(await responseError(res));
+        selectedSessionId = '';
+        await loadHistory();
+        setStatus('历史会话已删除', 'idle');
+      } catch (error) {
+        const message = (error && error.message) || String(error);
+        toast(message, 'error');
+      }
+    });
+  }
+
+  if (composer) {
+    composer.addEventListener('dragenter', (event) => {
+      const hasImage = Array.from((event.dataTransfer && event.dataTransfer.items) || [])
+        .some((item) => item.kind === 'file' && item.type.startsWith('image/'));
+      if (!hasImage) return;
+      event.preventDefault();
+      dragDepth += 1;
+      composer.classList.add('is-dragging');
+    });
+    composer.addEventListener('dragover', (event) => {
+      event.preventDefault();
+      if (event.dataTransfer) event.dataTransfer.dropEffect = 'copy';
+    });
+    composer.addEventListener('dragleave', (event) => {
+      event.preventDefault();
+      dragDepth = Math.max(0, dragDepth - 1);
+      if (!dragDepth) composer.classList.remove('is-dragging');
+    });
+    composer.addEventListener('drop', (event) => {
+      event.preventDefault();
+      dragDepth = 0;
+      composer.classList.remove('is-dragging');
+      const files = Array.from((event.dataTransfer && event.dataTransfer.files) || [])
+        .filter((file) => file.type.startsWith('image/'));
+      if (files.length) appendImageFiles(files);
+    });
+  }
+
+  window.addEventListener('beforeunload', revokeReferencePreviewUrls);
 
   boot().catch((error) => {
     console.error('image studio boot failed', error);

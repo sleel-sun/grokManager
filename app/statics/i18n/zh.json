@@ -41,8 +41,12 @@
   "webui": {
     "header": {
       "chat": "聊天",
+      "draw": "画图",
       "masonry": "瀑布流",
       "chatkit": "ChatKit"
+    },
+    "imageStudio": {
+      "pageTitle": "grokManager - 画图"
     },
     "chat": {
       "pageTitle": "grokManager - WebChat",
@@ -242,7 +246,7 @@
     "actionImportShort": "导入",
     "actionAddShort": "新增",
     "gptImageTitle": "GPT 图片账号",
-    "gptImageSubtitle": "用于 gpt-image-1 / gpt-image-2 的 ChatGPT access token，独立于 xAI 账户池。",
+    "gptImageSubtitle": "用于 gpt-image-2 生图的 ChatGPT access token，独立于 xAI 账户池。",
     "gptImageRefresh": "刷新",
     "gptImageAdd": "新增 GPT",
     "gptImageColToken": "Access Token",
@@ -428,7 +432,7 @@
   "config": {
     "pageTitle": "grokManager - 配置管理",
     "pageHeading": "配置管理",
-    "pageSubtitle": "管理 grokManager 系统运行时参数与服务默认行为。",
+    "pageSubtitle": "管理 grokManager 系统运行时参数与服务默认行为；需重启生效的项目会单独标记。",
     "resetShort": "重置",
     "saveShort": "保存",
     "resetChanges": "重置更改",
@@ -436,6 +440,8 @@
     "unsavedDefault": "存在未保存的更改",
     "unsavedSingle": "存在 1 项未保存的更改",
     "unsavedMultiple": "存在 {n} 项未保存的更改",
+    "unsavedWithRestartSingle": "存在 {n} 项未保存的更改，其中 1 项需重启后生效",
+    "unsavedWithRestartMultiple": "存在 {n} 项未保存的更改，其中 {restart} 项需重启后生效",
     "discardShort": "撤销",
     "saveBarShort": "保存",
     "discardChanges": "放弃更改",
@@ -449,13 +455,19 @@
       "displayName": "显示名",
       "enabled": "启用",
       "allowNsfw": "允许 NSFW",
+      "allowGpt": "GPT",
       "remove": "删除"
     },
     "loadFailed": "配置加载失败：{message}",
     "saving": "正在保存更改…",
     "saveSuccess": "更改已保存",
+    "saveSuccessRestart": "更改已保存；部分项目将在重启服务后生效",
     "saveFailed": "保存更改失败：{message}",
     "resetSuccess": "未保存的更改已撤销",
+    "apply": {
+      "restartBadge": "需重启",
+      "restartHint": "保存后需重启服务生效"
+    },
     "disabledTip": {
       "appUrlRequired": "请先填写 APP 访问地址"
     },
@@ -531,7 +543,7 @@
         },
         "webuiUsers": {
           "label": "WebUI 用户",
-          "desc": "配置后 WebUI 使用用户名 + 独立 key 登录，并按用户隔离浏览器端会话、搜索设置与 MCP 配置；可为每个用户独立控制 NSFW 生成能力。留空时继续使用单密码模式。"
+          "desc": "配置后 WebUI 使用用户名 + 独立 key 登录，并按用户隔离浏览器端会话、搜索设置与 MCP 配置；可为每个用户独立控制 NSFW、GPT 图片模型访问与最高图片清晰度。留空时继续使用单密码模式。"
         },
         "temporary": {
           "label": "临时会话",
@@ -716,7 +728,7 @@
         },
         "gptImageTimeout": {
           "label": "GPT 图片请求超时（秒）",
-          "desc": "ChatGPT gpt-image-1 / gpt-image-2 生成请求的总超时时间。"
+          "desc": "ChatGPT gpt-image-2 生成请求的总超时时间。"
         },
         "videoTimeout": {
           "label": "视频请求超时（秒）",

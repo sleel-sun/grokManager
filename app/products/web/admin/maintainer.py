@@ -8,6 +8,7 @@ import json
 import multiprocessing as mp
 import os
 import re
+import sys
 import time
 from pathlib import Path
 from typing import Any, Callable, Literal
@@ -30,8 +31,14 @@ _ENV_KEYS = (
     "MAINTAINER_USE_XVFB",
     "MAINTAINER_NO_SANDBOX",
     "MAINTAINER_DISABLE_DEV_SHM",
+    "MAINTAINER_TMP_PATH",
+    "MAINTAINER_CHROME_USER_DATA_DIR",
+    "MAINTAINER_BROWSER_PATH",
     "MAINTAINER_WINDOW_SIZE",
     "MAINTAINER_CHROME_ARGS",
+    "MAINTAINER_PROXY",
+    "MAINTAINER_FLARESOLVERR_URL",
+    "MAINTAINER_FLARESOLVERR_TIMEOUT_SEC",
     "MAINTAINER_TURNSTILE_MANUAL_WAIT_SEC",
     "MAINTAINER_TURNSTILE_SOLVER_PROVIDER",
     "MAINTAINER_TURNSTILE_SOLVER_API_KEY",
@@ -129,6 +136,9 @@ _state: dict[str, Any] = {
     "workers": 1,
     "spawned_workers": 0,
     "per_worker_progress": {},
+    "browser_mode": "unknown",
+    "browser_visible": None,
+    "browser_message": "",
 }
 _task: asyncio.Task | None = None
 _lock = asyncio.Lock()
@@ -288,8 +298,39 @@ def _running_in_container() -> bool:
     return Path("/.dockerenv").exists()
 
 
+def _linux_without_display() -> bool:
+    return sys.platform.startswith("linux") and not os.getenv("DISPLAY")
+
+
+def browser_mode_for_request(req: MaintainerRunRequest) -> dict[str, Any]:
+    """Describe whether the maintainer browser will be visible to the operator."""
+    if req.headless:
+        return {
+            "browser_mode": "headless",
+            "browser_visible": False,
+            "browser_message": "Headless 已开启，浏览器不会弹窗。",
+        }
+    if req.use_xvfb:
+        return {
+            "browser_mode": "xvfb",
+            "browser_visible": False,
+            "browser_message": "Xvfb 虚拟显示器已开启，浏览器在虚拟显示器中运行，不会在本机桌面弹窗。",
+        }
+    if _linux_without_display():
+        return {
+            "browser_mode": "auto_headless",
+            "browser_visible": False,
+            "browser_message": "服务进程没有 DISPLAY，已自动使用 Headless，浏览器不会弹窗；如需可见窗口，请给服务配置 DISPLAY 并关闭 Headless/Xvfb。",
+        }
+    return {
+        "browser_mode": "visible",
+        "browser_visible": True,
+        "browser_message": "将启动可见 Chromium 窗口。",
+    }
+
+
 def _default_web_browser_options() -> dict[str, bool]:
-    linux_without_display = os.name == "posix" and not os.getenv("DISPLAY") and Path("/proc").exists()
+    linux_without_display = _linux_without_display()
     linux_safe = _running_in_container() or linux_without_display
     return {
         "headless": os.getenv("MAINTAINER_HEADLESS", "").strip().lower() in {"1", "true", "yes", "on"},
@@ -484,20 +525,50 @@ def _log_tail(line_count: int = 80) -> list[str]:
 
 
 def _env_for_request(req: MaintainerRunRequest, config_path: Path) -> dict[str, str]:
-    # 无 DISPLAY 且未启用 Xvfb 时自动 headless；启用 Xvfb 时允许有界面浏览器跑在虚拟显示器里。
-    _no_display = not os.environ.get("DISPLAY") and os.name != "nt"
+    # Linux 无 DISPLAY 且未启用 Xvfb 时自动 headless；启用 Xvfb 时跑在虚拟显示器里。
+    _no_display = _linux_without_display()
     _headless = req.headless or (_no_display and not req.use_xvfb)
     _no_sandbox = req.no_sandbox or (os.name != "nt")
     _disable_dev_shm = req.disable_dev_shm or (os.name != "nt")
+
+    def _from_env(name: str, default: str = "") -> str:
+        return os.getenv(name, "").strip() or default
+
     env = {
         "GROK_MAINTAINER_CONFIG": str(config_path),
         "MAINTAINER_HEADLESS": "true" if _headless else "false",
         "MAINTAINER_USE_XVFB": "true" if req.use_xvfb else "false",
         "MAINTAINER_NO_SANDBOX": "true" if _no_sandbox else "false",
         "MAINTAINER_DISABLE_DEV_SHM": "true" if _disable_dev_shm else "false",
+        "MAINTAINER_TMP_PATH": _from_env(
+            "MAINTAINER_TMP_PATH",
+            "/tmp/grokmanager-web-maintainer",
+        ),
+        "MAINTAINER_CHROME_USER_DATA_DIR": _from_env(
+            "MAINTAINER_CHROME_USER_DATA_DIR",
+            "/tmp/grokmanager-web-maintainer/chrome-profile",
+        ),
+        "MAINTAINER_BROWSER_PATH": _from_env(
+            "MAINTAINER_BROWSER_PATH",
+            "/usr/bin/chromium-browser",
+        ),
     }
     if req.window_size:
         env["MAINTAINER_WINDOW_SIZE"] = req.window_size
+    if os.getenv("MAINTAINER_CHROME_ARGS", "").strip():
+        env["MAINTAINER_CHROME_ARGS"] = os.getenv("MAINTAINER_CHROME_ARGS", "").strip()
+    if os.getenv("MAINTAINER_PROXY", "").strip():
+        env["MAINTAINER_PROXY"] = os.getenv("MAINTAINER_PROXY", "").strip()
+    if os.getenv("MAINTAINER_FLARESOLVERR_URL", "").strip():
+        env["MAINTAINER_FLARESOLVERR_URL"] = os.getenv(
+            "MAINTAINER_FLARESOLVERR_URL",
+            "",
+        ).strip()
+    if os.getenv("MAINTAINER_FLARESOLVERR_TIMEOUT_SEC", "").strip():
+        env["MAINTAINER_FLARESOLVERR_TIMEOUT_SEC"] = os.getenv(
+            "MAINTAINER_FLARESOLVERR_TIMEOUT_SEC",
+            "",
+        ).strip()
     env["MAINTAINER_TURNSTILE_MANUAL_WAIT_SEC"] = str(req.turnstile_manual_wait_sec)
     if req.turnstile_solver_provider:
         env["MAINTAINER_TURNSTILE_SOLVER_PROVIDER"] = req.turnstile_solver_provider
@@ -860,6 +931,7 @@ async def maintainer_run(req: MaintainerRunRequest, request: Request):
         config_path = _write_runtime_config(runtime_config)
         output_path = _output_path()
         env = _env_for_request(req, config_path)
+        browser_info = browser_mode_for_request(req)
 
         _controller.reset()
 
@@ -868,7 +940,7 @@ async def maintainer_run(req: MaintainerRunRequest, request: Request):
                 "running": True,
                 "paused": False,
                 "status": "running",
-                "message": "注册任务已启动",
+                "message": f"注册任务已启动；{browser_info['browser_message']}",
                 "started_at": int(time.time()),
                 "finished_at": None,
                 "token_count": 0,
@@ -877,6 +949,7 @@ async def maintainer_run(req: MaintainerRunRequest, request: Request):
                 "workers": req.workers,
                 "spawned_workers": 0,
                 "per_worker_progress": {},
+                **browser_info,
             }
         )
         _task = asyncio.create_task(
@@ -918,7 +991,7 @@ async def gpt_maintainer_run(req: MaintainerRunRequest, request: Request):
                 "running": True,
                 "paused": False,
                 "status": "running",
-                "message": "GPT 自动注册任务已启动",
+                "message": "GPT 自动注册任务已启动；GPT 注册使用 HTTP 自动化流程，不会启动浏览器窗口。",
                 "started_at": int(time.time()),
                 "finished_at": None,
                 "token_count": 0,
@@ -927,6 +1000,9 @@ async def gpt_maintainer_run(req: MaintainerRunRequest, request: Request):
                 "workers": req.workers,
                 "spawned_workers": req.workers,
                 "per_worker_progress": {},
+                "browser_mode": "http",
+                "browser_visible": False,
+                "browser_message": "GPT 注册使用 HTTP 自动化流程，不会启动浏览器窗口。",
             }
         )
         _task = asyncio.create_task(
@@ -981,6 +1057,7 @@ async def maintainer_stop():
 
 __all__ = [
     "MaintainerRunRequest",
+    "browser_mode_for_request",
     "build_completion_status",
     "build_gpt_runtime_config",
     "build_saved_config_response",

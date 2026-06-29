@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import os
 import secrets
 import threading
 import time
@@ -24,6 +25,12 @@ USER_AGENT = (
     "Chrome/145.0.0.0 Safari/537.36"
 )
 SEC_CH_UA = '"Google Chrome";v="145", "Not?A_Brand";v="8", "Chromium";v="145"'
+_OAUTH_PROXY_ENV_KEYS = (
+    "MAINTAINER_PROXY",
+    "GROK_PROXY_EGRESS_PROXY_URL",
+    "HTTPS_PROXY",
+    "HTTP_PROXY",
+)
 
 
 class GPTAccountOAuthError(RuntimeError):
@@ -124,6 +131,14 @@ class GPTAccountOAuthService:
             return code, state
         return raw, ""
 
+    @staticmethod
+    def proxy_url_from_env() -> str:
+        for key in _OAUTH_PROXY_ENV_KEYS:
+            value = os.getenv(key, "").strip()
+            if value:
+                return value
+        return ""
+
     def finish(self, session_id: str, callback: str) -> dict[str, str]:
         body_sid = str(session_id or "").strip()
         code, state = self.extract_code_from_callback(callback)
@@ -165,6 +180,9 @@ class GPTAccountOAuthService:
             from curl_cffi import requests
 
             session = requests.Session(impersonate="chrome", verify=False)
+            proxy_url = GPTAccountOAuthService.proxy_url_from_env()
+            if proxy_url:
+                session.proxies = {"http": proxy_url, "https": proxy_url}
         except Exception as exc:
             raise GPTAccountOAuthError(f"Failed to initialize OAuth HTTP client: {exc}") from exc
 
