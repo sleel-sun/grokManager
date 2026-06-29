@@ -296,6 +296,8 @@ def _is_cloudflare_challenge_body(body: str) -> bool:
 
 
 def _image_generation_upstream_error_message(status_code: int, body: str) -> str:
+    if status_code == 524:
+        return "Image-generation upstream timed out (Cloudflare 524); retry later"
     message = f"Image-generation upstream returned {status_code}"
     if status_code == 403 and _is_cloudflare_challenge_body(body):
         return (
@@ -305,6 +307,10 @@ def _image_generation_upstream_error_message(status_code: int, body: str) -> str
     return message
 
 
+def _normalized_upstream_status(status_code: int) -> int:
+    return 504 if status_code == 524 else status_code
+
+
 def _image_retry_codes(cfg) -> frozenset[int]:
     """Return image retry statuses.
 
@@ -312,7 +318,7 @@ def _image_retry_codes(cfg) -> frozenset[int]:
     stale birth-date/NSFW state, or blocked image mode) that should swap
     accounts. Cloudflare challenge 403 is handled separately and is not retried.
     """
-    return _configured_retry_codes(cfg) | frozenset({403, 502})
+    return _configured_retry_codes(cfg) | frozenset({403, 502, 504, 524})
 
 
 def _image_max_retries(cfg) -> int:
@@ -1224,9 +1230,15 @@ async def _stream_image_edit(
         )
         if response.status_code != 200:
             body = response.content.decode("utf-8", "replace")[:300]
+            status = _normalized_upstream_status(response.status_code)
+            message = (
+                "Image-edit upstream timed out (Cloudflare 524); retry later"
+                if response.status_code == 524
+                else f"Image-edit upstream returned {response.status_code}"
+            )
             raise UpstreamError(
-                f"Image-edit upstream returned {response.status_code}",
-                status=response.status_code,
+                message,
+                status=status,
                 body=body,
             )
         async for line in response.aiter_lines():
@@ -1263,7 +1275,7 @@ async def _stream_lite_generate(
             body = response.content.decode("utf-8", "replace")[:400]
             exc = UpstreamError(
                 _image_generation_upstream_error_message(response.status_code, body),
-                status = response.status_code,
+                status = _normalized_upstream_status(response.status_code),
                 body   = body,
             )
             logger.warning(

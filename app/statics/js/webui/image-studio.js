@@ -5,8 +5,10 @@
   const EDIT_ENDPOINT = '/webui/api/images/edits';
   const HISTORY_ENDPOINT = '/webui/api/images/history';
   const HISTORY_KEY = 'grokmanager.image_studio.history.v1';
+  const PENDING_REFERENCE_KEY = 'grokmanager.image_studio.pending_reference.v1';
   const HISTORY_LIMIT = 24;
   const GPT_MODELS = new Set(['gpt-image-1', 'gpt-image-2', 'codex-gpt-image-2']);
+  const EDIT_SIZE = '1024x1024';
   const QUALITY_RANK = { '1k': 1, '2k': 2, '4k': 3 };
 
   const form = document.getElementById('studioForm');
@@ -45,6 +47,8 @@
   let draftMode = false;
   let dragDepth = 0;
   let referencePreviewUrls = [];
+  let referenceUrls = [];
+  let lastGenerateSize = EDIT_SIZE;
   let qualityConfig = { premium: false, default: '1k', max: '1k', options: [{ id: '1k', label: '1K', enabled: true }] };
 
   function escapeHtml(value) {
@@ -196,13 +200,17 @@
       : '';
     const images = session.images.map((image, index) => {
       const url = escapeHtml(image.url);
+      const label = `结果 ${index + 1}`;
       return `<article class="studio-output">
         <a class="studio-image-link" href="${url}" target="_blank" rel="noopener">
           <img src="${url}" alt="${escapeHtml(prompt)}" loading="lazy">
         </a>
         <div class="studio-output-body">
-          <span class="studio-output-title">结果 ${index + 1}</span>
-          <a class="studio-output-meta studio-download-link" href="${url}" download>下载</a>
+          <span class="studio-output-title">${escapeHtml(label)}</span>
+          <span class="studio-output-actions">
+            <button class="studio-reference-link" type="button" data-reference-image="${url}" data-reference-name="${escapeHtml(label)}">引用编辑</button>
+            <a class="studio-output-meta studio-download-link" href="${url}" download>下载</a>
+          </span>
         </div>
       </article>`;
     }).join('');
@@ -293,6 +301,7 @@
     ].forEach((el) => {
       if (el) el.disabled = next;
     });
+    syncSizeAccess();
     if (modeToggle) {
       modeToggle.querySelectorAll('button').forEach((button) => {
         button.disabled = next;
@@ -323,6 +332,7 @@
         ? '描述你希望如何修改参考图'
         : '输入你想要生成的画面，也可直接粘贴图片';
     }
+    syncSizeAccess();
     syncQualityAccess();
     setRunning(false);
   }
@@ -354,9 +364,13 @@
     return Array.from((imageInput && imageInput.files) || []).filter((file) => file.type.startsWith('image/'));
   }
 
+  function referenceCount() {
+    return imageFiles().length + referenceUrls.length;
+  }
+
   function syncImageCount() {
     if (!imageCount) return;
-    const count = imageFiles().length;
+    const count = referenceCount();
     imageCount.textContent = count ? `参考图 ${count}` : '上传参考图';
   }
 
@@ -369,20 +383,31 @@
     if (!referencePreview) return;
     revokeReferencePreviewUrls();
     const files = imageFiles();
-    const visible = files.slice(0, 8).map((file) => {
+    const fileItems = files.map((file) => {
       const url = URL.createObjectURL(file);
       referencePreviewUrls.push(url);
       return `<div class="studio-reference-item">
         <img src="${escapeHtml(url)}" alt="${escapeHtml(file.name || 'reference')}" title="${escapeHtml(file.name || '')}">
       </div>`;
     });
-    const remaining = files.length > 8 ? `<div class="studio-reference-more">+${files.length - 8}</div>` : '';
+    const urlItems = referenceUrls.map((item, index) => {
+      const url = escapeHtml(item.url);
+      const name = escapeHtml(item.name || `历史图 ${index + 1}`);
+      return `<div class="studio-reference-item">
+        <img src="${url}" alt="${name}" title="${name}">
+        <button class="studio-reference-remove" type="button" data-remove-reference="${index}" aria-label="移除引用">&times;</button>
+      </div>`;
+    });
+    const items = [...fileItems, ...urlItems];
+    const visible = items.slice(0, 8);
+    const remaining = items.length > 8 ? `<div class="studio-reference-more">+${items.length - 8}</div>` : '';
     referencePreview.innerHTML = `${visible.join('')}${remaining}`;
   }
 
   function setImageFiles(files) {
     if (!imageInput) return;
-    const images = files.filter((file) => file && file.type && file.type.startsWith('image/')).slice(0, 5);
+    const limit = Math.max(0, 5 - referenceUrls.length);
+    const images = files.filter((file) => file && file.type && file.type.startsWith('image/')).slice(0, limit);
     try {
       const transfer = new DataTransfer();
       images.forEach((file) => transfer.items.add(file));
@@ -397,6 +422,43 @@
 
   function appendImageFiles(files) {
     setImageFiles([...imageFiles(), ...files]);
+  }
+
+  function addReferenceUrl(url, name) {
+    const cleanUrl = String(url || '').trim();
+    if (!cleanUrl) return;
+    if (referenceCount() >= 5) {
+      toast('图像编辑最多支持 5 张参考图', 'error');
+      return;
+    }
+    if (referenceUrls.some((item) => item.url === cleanUrl)) {
+      toast('这张图片已经在参考图中', 'info');
+      setMode('edit');
+      return;
+    }
+    referenceUrls.push({
+      url: cleanUrl,
+      name: String(name || `历史图 ${referenceUrls.length + 1}`),
+    });
+    syncImageCount();
+    syncReferencePreview();
+    setMode('edit');
+    setStatus('已引用历史图片，可输入编辑要求', 'idle');
+    if (promptInput) promptInput.focus();
+  }
+
+  function consumePendingReference() {
+    let pending = null;
+    try {
+      pending = JSON.parse(sessionStorage.getItem(PENDING_REFERENCE_KEY) || 'null');
+      sessionStorage.removeItem(PENDING_REFERENCE_KEY);
+    } catch {
+      pending = null;
+    }
+    if (!pending || typeof pending !== 'object') return;
+    const createdAt = Number(pending.created_at || pending.createdAt || 0);
+    if (createdAt && Date.now() - createdAt > 10 * 60 * 1000) return;
+    addReferenceUrl(pending.url, pending.name);
   }
 
   function syncQualityAccess() {
@@ -420,6 +482,25 @@
     if (qualityHint) {
       qualityHint.textContent = (QUALITY_RANK[max] || 1) > 1 ? `最高 ${max.toUpperCase()}` : '锁定 1K';
     }
+  }
+
+  function syncSizeAccess() {
+    if (!sizeSelect) return;
+    if (mode === 'edit') {
+      const current = String(sizeSelect.value || EDIT_SIZE);
+      if (current !== EDIT_SIZE) lastGenerateSize = current;
+      sizeSelect.value = EDIT_SIZE;
+    } else {
+      const fallback = Array.from(sizeSelect.options).some((option) => option.value === lastGenerateSize)
+        ? lastGenerateSize
+        : EDIT_SIZE;
+      sizeSelect.value = fallback;
+    }
+    Array.from(sizeSelect.options).forEach((option) => {
+      option.disabled = mode === 'edit' && option.value !== EDIT_SIZE;
+    });
+    sizeSelect.disabled = running || mode === 'edit';
+    sizeSelect.title = mode === 'edit' ? '图像编辑当前仅支持 1:1' : '';
   }
 
   function optionHtml(model) {
@@ -512,10 +593,11 @@
 
   async function editImages(prompt) {
     const files = imageFiles();
-    if (!files.length) throw new Error('图像编辑需要至少上传一张参考图');
+    const referenced = referenceUrls.slice(0, 5);
+    if (!files.length && !referenced.length) throw new Error('图像编辑需要至少上传或引用一张参考图');
     const model = (editModelSelect && editModelSelect.value) || 'gpt-image-2';
     const n = Math.min(Number((countSelect && countSelect.value) || 1), 2);
-    const size = (sizeSelect && sizeSelect.value) || '1024x1024';
+    const size = EDIT_SIZE;
     const quality = (qualitySelect && qualitySelect.value) || '1k';
     const body = new FormData();
     body.set('model', model);
@@ -524,7 +606,8 @@
     body.set('size', size);
     body.set('quality', quality);
     body.set('response_format', 'url');
-    files.slice(0, 5).forEach((file) => body.append('image', file));
+    referenced.forEach((item) => body.append('reference_url', item.url));
+    files.slice(0, Math.max(0, 5 - referenced.length)).forEach((file) => body.append('image', file));
 
     const res = await fetch(EDIT_ENDPOINT, {
       method: 'POST',
@@ -586,6 +669,7 @@
       promptInput.focus();
     }
     if (imageInput) imageInput.value = '';
+    referenceUrls = [];
     setMode('generate');
     syncPromptCount();
     syncImageCount();
@@ -606,7 +690,8 @@
     try {
       await loadModels();
       await loadHistory();
-      setStatus('就绪', 'idle');
+      consumePendingReference();
+      if (!referenceCount()) setStatus('就绪', 'idle');
     } catch (error) {
       const message = (error && error.message) || String(error);
       setStatus(`模型加载失败: ${message}`, 'failed');
@@ -660,6 +745,25 @@
   }
 
   if (qualitySelect) qualitySelect.addEventListener('change', syncQualityAccess);
+  if (sizeSelect) {
+    sizeSelect.addEventListener('change', () => {
+      if (mode === 'generate') lastGenerateSize = sizeSelect.value || EDIT_SIZE;
+      syncSizeAccess();
+    });
+  }
+
+  if (referencePreview) {
+    referencePreview.addEventListener('click', (event) => {
+      const button = event.target instanceof Element ? event.target.closest('[data-remove-reference]') : null;
+      if (!(button instanceof HTMLButtonElement)) return;
+      const index = Number(button.dataset.removeReference);
+      if (!Number.isInteger(index) || index < 0) return;
+      referenceUrls.splice(index, 1);
+      syncImageCount();
+      syncReferencePreview();
+      if (!referenceCount()) setMode('generate');
+    });
+  }
 
   if (newSessionBtn) {
     newSessionBtn.addEventListener('click', startDraft);
@@ -699,6 +803,11 @@
 
   if (output) {
     output.addEventListener('click', async (event) => {
+      const referenceButton = event.target instanceof Element ? event.target.closest('[data-reference-image]') : null;
+      if (referenceButton instanceof HTMLButtonElement) {
+        addReferenceUrl(referenceButton.dataset.referenceImage || '', referenceButton.dataset.referenceName || '');
+        return;
+      }
       const button = event.target instanceof Element ? event.target.closest('[data-delete-session]') : null;
       if (!(button instanceof HTMLButtonElement)) return;
       const id = button.dataset.deleteSession || '';

@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import time
 import uuid
 from pathlib import Path
 from typing import Annotated, Any
+from urllib.parse import parse_qs, urlparse
 
 from fastapi import APIRouter, Depends, File, Form, UploadFile
 from fastapi.responses import JSONResponse
@@ -18,8 +20,10 @@ from app.platform.auth.middleware import WebUIUser, verify_webui_key
 from app.platform.config.snapshot import get_config
 from app.platform.errors import ValidationError
 from app.platform.paths import data_path
+from app.platform.storage import image_files_dir
 from app.products.openai.router import (
     _coalesce_uploads,
+    _image_bytes_to_data_uri,
     _uploads_to_data_uris,
     _validate_image_edit_n,
     _validate_image_n,
@@ -29,6 +33,9 @@ router = APIRouter(prefix="/webui/api", tags=["WebUI - Images"])
 
 _HISTORY_LIMIT = 80
 _GPT_WORKSPACE_MODELS = {"gpt-image-1", "gpt-image-2", "codex-gpt-image-2"}
+_IMAGE_EDIT_SIZE = "1024x1024"
+_IMAGE_EDIT_REFERENCE_LIMIT = 5
+_LOCAL_IMAGE_ID_RE = re.compile(r"^[0-9a-fA-F\-]{16,36}$")
 _QUALITY_VALUES = {"1k", "2k", "4k"}
 _QUALITY_RANK = {"1k": 1, "2k": 2, "4k": 3}
 
@@ -211,6 +218,69 @@ def _images_from_payload(payload: Any) -> list[dict[str, str]]:
     return images
 
 
+def _coalesce_reference_urls(*groups: list[str] | str | None) -> list[str]:
+    urls: list[str] = []
+    for group in groups:
+        if not group:
+            continue
+        if isinstance(group, str):
+            group = [group]
+        urls.extend(str(item or "").strip() for item in group if str(item or "").strip())
+    return urls
+
+
+def _local_image_id_from_url(url: str) -> str:
+    try:
+        parsed = urlparse(url)
+    except ValueError as exc:
+        raise ValidationError("reference_url must be a generated image URL", param="reference_url") from exc
+    if parsed.path != "/v1/files/image":
+        raise ValidationError("reference_url must be a generated image URL", param="reference_url")
+    file_id = (parse_qs(parsed.query).get("id") or [""])[0].strip()
+    if not _LOCAL_IMAGE_ID_RE.fullmatch(file_id):
+        raise ValidationError("Invalid generated image ID", param="reference_url")
+    return file_id.lower()
+
+
+def _local_image_bytes(file_id: str) -> tuple[bytes, str]:
+    mime_by_ext = {
+        ".jpg": "image/jpeg",
+        ".jpeg": "image/jpeg",
+        ".png": "image/png",
+        ".webp": "image/webp",
+        ".gif": "image/gif",
+        ".bmp": "image/bmp",
+    }
+    matches: list[tuple[Path, str]] = []
+    img_dir = image_files_dir()
+    for ext, mime in mime_by_ext.items():
+        path = img_dir / f"{file_id}{ext}"
+        if path.exists():
+            matches.append((path, mime))
+    if not matches:
+        raise ValidationError(f"Generated image {file_id!r} not found", param="reference_url")
+    path, mime = max(matches, key=lambda item: item[0].stat().st_mtime_ns)
+    return path.read_bytes(), mime
+
+
+async def _reference_url_to_data_uri(url: str, index: int) -> str:
+    if url.startswith("data:image/"):
+        return url
+    file_id = _local_image_id_from_url(url)
+    raw, mime = await asyncio.to_thread(_local_image_bytes, file_id)
+    return _image_bytes_to_data_uri(raw, mime, param=f"reference_url.{index}")
+
+
+def _reference_name_from_url(url: str, index: int) -> str:
+    if url.startswith("data:image/"):
+        return f"history-reference-{index + 1}"
+    try:
+        file_id = _local_image_id_from_url(url)
+    except ValidationError:
+        return f"history-reference-{index + 1}"
+    return f"generated-{file_id[:8]}"
+
+
 async def _append_history_session(
     user: WebUIUser,
     *,
@@ -320,6 +390,8 @@ async def webui_image_edits(
     model: Annotated[str, Form()] = "gpt-image-2",
     image: Annotated[list[UploadFile] | None, File(alias="image")] = None,
     image_array: Annotated[list[UploadFile] | None, File(alias="image[]")] = None,
+    reference_url: Annotated[list[str] | None, Form(alias="reference_url")] = None,
+    reference_url_array: Annotated[list[str] | None, Form(alias="reference_url[]")] = None,
     mask: Annotated[UploadFile | None, File()] = None,
     n: Annotated[int, Form()] = 1,
     size: Annotated[str, Form()] = "1024x1024",
@@ -333,15 +405,35 @@ async def webui_image_edits(
     _ensure_gpt_model_access(model, user)
     _validate_image_edit_n(n, param="n")
     quality_value = _quality_for_user(quality, user)
+    edit_size = _IMAGE_EDIT_SIZE
 
     image_uploads = _coalesce_uploads(image, image_array)
-    if not image_uploads:
+    reference_urls = _coalesce_reference_urls(reference_url, reference_url_array)
+    if not image_uploads and not reference_urls:
         raise ValidationError("image is required", param="image")
-    reference_names = [upload.filename or f"reference-{idx + 1}" for idx, upload in enumerate(image_uploads)]
+    if len(image_uploads) + len(reference_urls) > _IMAGE_EDIT_REFERENCE_LIMIT:
+        raise ValidationError(
+            f"image edit supports up to {_IMAGE_EDIT_REFERENCE_LIMIT} reference images",
+            param="image",
+        )
+    reference_names = [
+        upload.filename or f"reference-{idx + 1}"
+        for idx, upload in enumerate(image_uploads)
+    ]
+    reference_names.extend(
+        _reference_name_from_url(url, idx)
+        for idx, url in enumerate(reference_urls)
+    )
 
     from app.products.openai.images import edit as image_edit
 
-    image_inputs = await _uploads_to_data_uris(image_uploads, mask=mask)
+    image_inputs = await _uploads_to_data_uris(image_uploads, mask=mask) if image_uploads else []
+    image_inputs.extend(
+        [
+            await _reference_url_to_data_uri(url, idx)
+            for idx, url in enumerate(reference_urls)
+        ]
+    )
     content = [{"type": "text", "text": prompt}]
     content.extend(
         {"type": "image_url", "image_url": {"url": image_input}}
@@ -351,7 +443,7 @@ async def webui_image_edits(
         model=model,
         messages=[{"role": "user", "content": content}],
         n=n,
-        size=size or "1024x1024",
+        size=edit_size,
         response_format=response_format or "url",
         stream=False,
         chat_format=False,
@@ -361,7 +453,7 @@ async def webui_image_edits(
         prompt=prompt,
         model=model,
         mode="edit",
-        size=size or "1024x1024",
+        size=edit_size,
         quality=quality_value,
         images=_images_from_payload(result),
         reference_names=reference_names,

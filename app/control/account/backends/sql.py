@@ -757,6 +757,9 @@ class SqlAccountRepository:
                     updates["last_fail_at"]     = None
                     updates["last_fail_reason"] = None
                     updates["state_reason"]     = None
+                elif patch.clear_last_failure:
+                    updates["last_fail_at"] = None
+                    updates["last_fail_reason"] = None
                 updates["ext"] = json.dumps(ext)
 
                 await conn.execute(

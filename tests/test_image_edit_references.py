@@ -301,6 +301,16 @@ class ImageGenerationOutputTests(unittest.TestCase):
 
 
 class ImageGenerationRetryTests(unittest.TestCase):
+    def test_image_retry_codes_include_cloudflare_524_timeout(self) -> None:
+        from app.products.openai import images
+
+        retry_codes = images._image_retry_codes(_FakeConfig({"retry.on_codes": ""}))
+
+        self.assertIn(504, retry_codes)
+        self.assertIn(524, retry_codes)
+        self.assertEqual(images._normalized_upstream_status(524), 504)
+        self.assertIn("Cloudflare 524", images._image_generation_upstream_error_message(524, ""))
+
     def test_media_pool_candidates_include_all_pools_with_rotation(self) -> None:
         from app.control.model.registry import get as get_model
         from app.products.openai import images

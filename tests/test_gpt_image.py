@@ -303,7 +303,12 @@ def test_gpt_image_edit_reference_upload_adds_azure_blob_header(monkeypatch) -> 
             pass
 
     async def fake_request(_session, method: str, url: str, **kwargs):
-        requests.append({"method": method, "url": url, **kwargs})
+        requests.append({
+            "method": method,
+            "url": url,
+            **kwargs,
+            "headers": dict(kwargs.get("headers") or {}),
+        })
         if method == "POST" and url.endswith("/backend-api/files"):
             return FakeResponse(
                 {
@@ -344,6 +349,98 @@ def test_gpt_image_edit_reference_upload_adds_azure_blob_header(monkeypatch) -> 
     assert headers["content-type"] == "image/png"
     assert headers["x-ms-blob-type"] == "BlockBlob"
     assert headers["x-ms-meta-origin"] == "chatgpt"
+
+
+def test_gpt_image_edit_reference_upload_headers_handle_custom_azure_sas_url() -> None:
+    headers = gpt_image._edit_reference_upload_headers(
+        {"requiredHeaders": {"x-ms-blob-type": ""}},
+        "https://uploads.example.test/ref.png?sv=2024-11-04&sr=b&sp=w&sig=test",
+        "image/png",
+    )
+
+    assert headers["x-ms-blob-type"] == "BlockBlob"
+
+
+def test_gpt_image_edit_reference_upload_retries_missing_blob_type(monkeypatch) -> None:
+    requests: list[dict[str, object]] = []
+
+    class FakeResponse:
+        status = 200
+
+        def __init__(
+            self,
+            payload: dict[str, object] | None = None,
+            *,
+            ok: bool = True,
+            status: int = 200,
+            body: str = "",
+        ) -> None:
+            self._payload = payload or {}
+            self.ok = ok
+            self.status = status
+            self._body = body
+
+        async def json(self, content_type=None):
+            return self._payload
+
+        async def text(self):
+            return self._body
+
+        def release(self) -> None:
+            pass
+
+    async def fake_request(_session, method: str, url: str, **kwargs):
+        requests.append({
+            "method": method,
+            "url": url,
+            **kwargs,
+            "headers": dict(kwargs.get("headers") or {}),
+        })
+        if method == "POST" and url.endswith("/backend-api/files"):
+            return FakeResponse(
+                {
+                    "file_id": "file_ref_1",
+                    "upload_url": "https://uploads.example.test/container/ref.png",
+                }
+            )
+        if method == "PUT" and len([item for item in requests if item["method"] == "PUT"]) == 1:
+            return FakeResponse(
+                ok=False,
+                status=400,
+                body=(
+                    "<Error><Code>MissingRequiredHeader</Code>"
+                    "<HeaderName>x-ms-blob-type</HeaderName></Error>"
+                ),
+            )
+        if method == "PUT":
+            assert kwargs["headers"]["x-ms-blob-type"] == "BlockBlob"
+            return FakeResponse()
+        if method == "POST" and url.endswith("/backend-api/files/file_ref_1/uploaded"):
+            return FakeResponse()
+        raise AssertionError(f"unexpected request {method} {url}")
+
+    monkeypatch.setattr(gpt_image, "_request", fake_request)
+    context = gpt_image._ChatGPTContext(
+        access_token="access-token",
+        device_id="device-id",
+        script="sdk.js",
+        dpl="build",
+    )
+
+    reference = asyncio.run(
+        gpt_image._upload_edit_reference(
+            None,
+            context,
+            "data:image/png;base64,aW1hZ2U=",
+            0,
+        )
+    )
+
+    put_requests = [request for request in requests if request["method"] == "PUT"]
+    assert reference.file_id == "file_ref_1"
+    assert len(put_requests) == 2
+    assert "x-ms-blob-type" not in put_requests[0]["headers"]
+    assert put_requests[1]["headers"]["x-ms-blob-type"] == "BlockBlob"
 
 
 def test_gpt_image_send_edit_conversation_uses_gpt_image_2(monkeypatch) -> None:
@@ -696,6 +793,108 @@ def test_gpt_image_duplicate_retryable_failure_does_not_block_after_cooldown() -
     assert gpt_image._record_blocked_access_token(blocked) == ""
 
 
+def test_repair_timed_out_gpt_image_accounts_clears_stale_failure(monkeypatch) -> None:
+    class FakeRepo:
+        def __init__(self) -> None:
+            self.patches: list[AccountPatch] = []
+
+        async def list_accounts(self, query):
+            assert query.include_deleted is False
+            return SimpleNamespace(
+                items=[
+                    AccountRecord(
+                        token="gpt_123",
+                        tags=["gpt"],
+                        status=AccountStatus.DISABLED,
+                        state_reason="GPT account record; excluded from Grok SSO pool",
+                        last_fail_at=gpt_image._now_ms() - 3600 * 1000,
+                        last_fail_reason="ChatGPT image generation timed out after 600s: timeout",
+                        ext={
+                            "gpt": True,
+                            "gpt_access_token": "timeout-token",
+                            "gpt_status": "timeout",
+                            "gpt_registration_error": "timeout",
+                            "gpt_cooldown_until": gpt_image._now_ms() - 60_000,
+                        },
+                    )
+                ],
+                total=1,
+            )
+
+        async def patch_accounts(self, patches):
+            self.patches.extend(patches)
+            return SimpleNamespace(patched=len(patches))
+
+    class Config:
+        def get_bool(self, *_args, **_kwargs):
+            return True
+
+        def get_float(self, key, default):
+            if key == "gpt_image.timeout_repair_after_s":
+                return 1800.0
+            return default
+
+    monkeypatch.setattr(gpt_image, "get_config", lambda: Config())
+    repo = FakeRepo()
+
+    repaired = asyncio.run(gpt_image.repair_timed_out_gpt_image_accounts(repo))
+
+    assert repaired == 1
+    patch = repo.patches[0]
+    assert patch.token == "gpt_123"
+    assert patch.status is None
+    assert patch.clear_last_failure is True
+    assert patch.clear_failures is False
+    assert patch.ext_merge["gpt_status"] == "available"
+    assert patch.ext_merge["gpt_registration_error"] is None
+    assert patch.ext_merge["gpt_cooldown_until"] == 0
+
+
+def test_repair_timed_out_gpt_image_accounts_keeps_recent_timeout(monkeypatch) -> None:
+    class FakeRepo:
+        def __init__(self) -> None:
+            self.patches: list[AccountPatch] = []
+
+        async def list_accounts(self, _query):
+            return SimpleNamespace(
+                items=[
+                    AccountRecord(
+                        token="gpt_123",
+                        tags=["gpt"],
+                        last_fail_at=gpt_image._now_ms(),
+                        last_fail_reason="ChatGPT image generation timed out after 600s: timeout",
+                        ext={
+                            "gpt": True,
+                            "gpt_access_token": "timeout-token",
+                            "gpt_status": "timeout",
+                        },
+                    )
+                ],
+                total=1,
+            )
+
+        async def patch_accounts(self, patches):
+            self.patches.extend(patches)
+            return SimpleNamespace(patched=len(patches))
+
+    class Config:
+        def get_bool(self, *_args, **_kwargs):
+            return True
+
+        def get_float(self, key, default):
+            if key == "gpt_image.timeout_repair_after_s":
+                return 1800.0
+            return default
+
+    monkeypatch.setattr(gpt_image, "get_config", lambda: Config())
+    repo = FakeRepo()
+
+    repaired = asyncio.run(gpt_image.repair_timed_out_gpt_image_accounts(repo))
+
+    assert repaired == 0
+    assert repo.patches == []
+
+
 def test_gpt_image_failure_patch_sets_reset_cooldown() -> None:
     class FakeRepo:
         def __init__(self) -> None:
@@ -722,6 +921,27 @@ def test_gpt_image_failure_patch_sets_reset_cooldown() -> None:
     assert status == "rate_limited"
     cooldown_until = repo.patches[0].ext_merge["gpt_cooldown_until"]
     assert cooldown_until > gpt_image._now_ms() + 7 * 3600 * 1000
+
+
+def test_gpt_image_524_is_retryable_timeout() -> None:
+    exc = UpstreamError("ChatGPT image edit upstream returned 524", status=524)
+
+    assert 524 in gpt_image._TRANSIENT_STATUSES
+    assert gpt_image._capability_failure_status(exc) == "timeout"
+
+
+def test_gpt_image_response_error_normalizes_cloudflare_524() -> None:
+    class FakeResponse:
+        status = 524
+
+        async def text(self):
+            return "cloudflare timeout"
+
+    exc = asyncio.run(gpt_image._response_error(FakeResponse(), "ChatGPT image-edit conversation failed"))
+
+    assert exc.status == 504
+    assert "Cloudflare 524" in exc.message
+    assert "cloudflare timeout" in exc.message
 
 
 def test_gpt_image_accounts_dedupe_tokens_and_prioritize_unified_gpt_records(monkeypatch) -> None:

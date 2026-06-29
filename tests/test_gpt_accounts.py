@@ -37,6 +37,29 @@ from app.products.web.admin.gpt_accounts import (
 )
 
 
+def _stub_gpt_remote_detail(
+    monkeypatch,
+    *,
+    email: str = "remote@example.test",
+    plan_type: str = "Plus",
+    image_quota: int = 9,
+) -> None:
+    async def fake_fetch_remote_detail(_access_token: str):
+        return {
+            "email": email,
+            "user_id": "user-remote",
+            "plan_type": plan_type,
+            "default_model_slug": "gpt-5",
+            "limits_progress": [{"feature_name": "image_gen", "remaining": image_quota}],
+            "image_quota": image_quota,
+            "image_restore_at": "2026-06-29T00:00:00Z",
+            "image_quota_unknown": False,
+            "account": {"plan_type": plan_type},
+        }
+
+    monkeypatch.setattr(gpt_accounts, "_fetch_gpt_remote_detail", fake_fetch_remote_detail)
+
+
 def test_gpt_account_ext_marks_oauth_token_account_unchecked() -> None:
     item = GPTAccountItem(
         access_token="Bearer access-token",
@@ -472,6 +495,8 @@ def test_maintainer_page_no_longer_exposes_ordinary_gpt_delete_controls() -> Non
 
 
 def test_gpt_account_login_returns_token_and_updates_existing_record(monkeypatch) -> None:
+    _stub_gpt_remote_detail(monkeypatch, email="user@example.test")
+
     class Repo:
         def __init__(self) -> None:
             self.patches = []
@@ -516,14 +541,19 @@ def test_gpt_account_login_returns_token_and_updates_existing_record(monkeypatch
 
     assert body["access_token"] == "returned-access-token"
     assert body["account"]["id"] == gpt_account_credential_record_token("user@example.test")
+    assert body["remote_refreshed"] == 1
+    assert body["remote_failed"] == 0
     assert calls[0]["email"] == "user@example.test"
     assert calls[0]["password"] == "secret"
     assert calls[0]["mail_token"] == "mail-token"
     assert repo.patches[0].ext_merge["gpt_access_token"] == "returned-access-token"
     assert repo.patches[0].ext_merge["gpt_status"] == "available"
+    assert repo.patches[1].ext_merge["gpt_default_model_slug"] == "gpt-5"
 
 
 def test_gpt_account_login_accepts_legacy_image_credentials(monkeypatch) -> None:
+    _stub_gpt_remote_detail(monkeypatch, email="legacy@example.test")
+
     class Repo:
         def __init__(self) -> None:
             self.patches = []
@@ -563,6 +593,7 @@ def test_gpt_account_login_accepts_legacy_image_credentials(monkeypatch) -> None
     body = orjson.loads(response.body)
 
     assert body["access_token"] == "returned-access-token"
+    assert body["remote_refreshed"] == 1
     assert calls[0]["email"] == "legacy@example.test"
     assert repo.patches[0].ext_merge["gpt"] is True
     assert repo.patches[0].ext_merge["gpt_access_token"] == "returned-access-token"
@@ -591,9 +622,13 @@ def test_gpt_account_login_extracts_token_from_session_json(monkeypatch) -> None
     assert body["access_token"] == "json-access-token"
     assert body["account"]["email"] == "user@example.test"
     assert body["account"]["saved"] is False
+    assert body["remote_refreshed"] == 0
+    assert body["remote_skipped"] == 1
 
 
 def test_gpt_account_login_updates_existing_email_record_without_account_ref(monkeypatch) -> None:
+    _stub_gpt_remote_detail(monkeypatch, email="user@example.test")
+
     existing = AccountRecord(
         token="gpt_existing_record",
         tags=["gpt"],
@@ -644,6 +679,7 @@ def test_gpt_account_login_updates_existing_email_record_without_account_ref(mon
     body = orjson.loads(response.body)
 
     assert body["account"]["id"] == "gpt_existing_record"
+    assert body["remote_refreshed"] == 1
     assert repo.upserts == []
     assert repo.patches[0].token == "gpt_existing_record"
     assert repo.patches[0].ext_merge["gpt_access_token"] == "new-access-token"
@@ -712,6 +748,8 @@ def test_gpt_account_login_start_uses_reference_oauth_url() -> None:
 
 
 def test_gpt_account_oauth_finish_exchanges_raw_callback_code(monkeypatch) -> None:
+    _stub_gpt_remote_detail(monkeypatch, email="image@example.test")
+
     class Repo:
         def __init__(self) -> None:
             self.upserts = []
@@ -754,12 +792,17 @@ def test_gpt_account_oauth_finish_exchanges_raw_callback_code(monkeypatch) -> No
     assert calls == [("session-1", "raw-callback-code")]
     assert body["access_token"] == "code-access-token"
     assert body["account"]["email"] == "image@example.test"
+    assert body["remote_refreshed"] == 1
+    assert body["remote_failed"] == 0
     assert repo.upserts[0].token == gpt_account_record_token("code-access-token")
     assert repo.upserts[0].ext["gpt_access_token"] == "code-access-token"
     assert repo.upserts[0].ext["gpt_email"] == "image@example.test"
+    assert repo.patches[1].ext_merge["gpt_default_model_slug"] == "gpt-5"
 
 
 def test_gpt_account_oauth_finish_updates_existing_email_record_without_account_ref(monkeypatch) -> None:
+    _stub_gpt_remote_detail(monkeypatch, email="image@example.test")
+
     existing = AccountRecord(
         token="gpt_existing_oauth_record",
         tags=["gpt"],
@@ -813,6 +856,7 @@ def test_gpt_account_oauth_finish_updates_existing_email_record_without_account_
     body = orjson.loads(response.body)
 
     assert body["account"]["id"] == "gpt_existing_oauth_record"
+    assert body["remote_refreshed"] == 1
     assert repo.upserts == []
     assert repo.patches[0].token == "gpt_existing_oauth_record"
     assert repo.patches[0].ext_merge["gpt_access_token"] == "new-oauth-token"
@@ -832,6 +876,8 @@ def test_gpt_account_oauth_finish_accepts_codexmanager_session_snapshot() -> Non
 
 
 def test_gpt_account_oauth_finish_saves_session_snapshot_without_oauth_exchange(monkeypatch) -> None:
+    _stub_gpt_remote_detail(monkeypatch, email="image@example.test")
+
     class Repo:
         def __init__(self) -> None:
             self.upserts = []
@@ -873,6 +919,7 @@ def test_gpt_account_oauth_finish_saves_session_snapshot_without_oauth_exchange(
 
     assert body["access_token"] == "snapshot-token"
     assert body["account"]["email"] == "image@example.test"
+    assert body["remote_refreshed"] == 1
     assert repo.upserts[0].token == gpt_account_record_token("snapshot-token")
     assert repo.upserts[0].ext["gpt_access_token"] == "snapshot-token"
     assert repo.upserts[0].ext["gpt_email"] == "image@example.test"
@@ -900,6 +947,8 @@ def test_gpt_account_oauth_finish_rejects_non_chatgpt_session_snapshot() -> None
 
 
 def test_gpt_account_oauth_finish_saves_tokens(monkeypatch) -> None:
+    _stub_gpt_remote_detail(monkeypatch, email="user@example.test")
+
     class Repo:
         def __init__(self) -> None:
             self.upserts = []
@@ -952,6 +1001,7 @@ def test_gpt_account_oauth_finish_saves_tokens(monkeypatch) -> None:
     ]
     assert body["access_token"] == "oauth-access-token"
     assert body["account"]["id"] == gpt_account_record_token("oauth-access-token")
+    assert body["remote_refreshed"] == 1
     assert repo.upserts[0].token == gpt_account_record_token("oauth-access-token")
     assert repo.upserts[0].ext["gpt_access_token"] == "oauth-access-token"
     assert "gpt_refresh_token" not in repo.upserts[0].ext

@@ -83,8 +83,8 @@ def test_code_preview_styles_are_present() -> None:
 def test_chat_page_busts_cached_preview_assets() -> None:
     html = CHAT_HTML.read_text(encoding="utf-8")
 
-    assert "/static/css/app.css?v={{APP_VERSION}}-downloads1" in html
-    assert "/static/js/webui/chat.js?v={{APP_VERSION}}-downloads1" in html
+    assert "/static/css/app.css?v={{APP_VERSION}}-imageref1" in html
+    assert "/static/js/webui/chat.js?v={{APP_VERSION}}-imageref1" in html
 
 
 def test_code_preview_page_and_route_exist() -> None:
@@ -261,6 +261,18 @@ def test_webui_chat_renders_document_links_as_downloads() -> None:
     assert ".msg-download-attachment" in css
     assert "from .attachments import router as attachments_router" in package
     assert "router.include_router(attachments_router)" in package
+
+
+def test_webui_chat_generated_images_can_be_referenced_in_studio() -> None:
+    js = _chat_js()
+    css = APP_CSS.read_text(encoding="utf-8")
+
+    assert "IMAGE_STUDIO_CACHE_ENDPOINT = '/webui/api/images/history/cache-url'" in js
+    assert "IMAGE_STUDIO_PENDING_REFERENCE_KEY = 'grokmanager.image_studio.pending_reference.v1'" in js
+    assert "function enhanceAssistantImageReferences(root)" in js
+    assert "openImageReferenceInStudio(url)" in js
+    assert "location.href = '/webui/image-studio'" in js
+    assert ".msg-media-reference-btn" in css
 
 
 def test_webui_attachment_download_helpers_are_restricted_to_asset_hosts() -> None:

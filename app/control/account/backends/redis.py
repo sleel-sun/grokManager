@@ -246,7 +246,6 @@ class RedisAccountRepository:
             if not h:
                 continue
             record = self._from_hash(patch.token, h)
-            qs = record.quota_set()
 
             updates: dict[str, str] = {
                 "updated_at": str(ts),
@@ -316,6 +315,9 @@ class RedisAccountRepository:
                 updates["last_fail_at"]     = ""
                 updates["last_fail_reason"] = ""
                 updates["state_reason"]     = ""
+            elif patch.clear_last_failure:
+                updates["last_fail_at"] = ""
+                updates["last_fail_reason"] = ""
             updates["ext"] = json.dumps(ext)
 
             await self._r.hset(key, mapping=updates)

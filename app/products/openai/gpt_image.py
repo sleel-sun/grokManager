@@ -12,7 +12,7 @@ import re
 import time
 from dataclasses import dataclass
 from typing import Any, AsyncGenerator
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 from uuid import uuid4
 
 import aiohttp
@@ -38,7 +38,7 @@ CLIENT_VERSION = "prod-be885abbfcfe7b1f511e88b3003d9ee44757fbad"
 TIMEZONE = "America/Los_Angeles"
 TIMEZONE_OFFSET_MIN = -480
 MAX_POW_ATTEMPTS = 500000
-_TRANSIENT_STATUSES = {429, 502, 503, 504}
+_TRANSIENT_STATUSES = {429, 502, 503, 504, 524}
 _FILE_ID_RE = re.compile(r"(file-service://|sediment://)([A-Za-z0-9_-]+)")
 _DATA_URI_RE = re.compile(r"^data:([^;,]+)?(;base64)?,(.*)$", re.S)
 _DATA_BUILD_RE = re.compile(r'data-build="([^"]*)"', re.I)
@@ -215,10 +215,15 @@ async def _response_error(response: aiohttp.ClientResponse, prefix: str) -> Upst
     except Exception:
         body = ""
     detail = body[:500]
-    message = f"{prefix}: upstream returned {response.status}"
+    status = 504 if response.status == 524 else response.status
+    message = (
+        f"{prefix}: upstream timed out (Cloudflare 524)"
+        if response.status == 524
+        else f"{prefix}: upstream returned {response.status}"
+    )
     if detail:
         message = f"{message}: {detail}"
-    return UpstreamError(message, status=response.status, body=detail)
+    return UpstreamError(message, status=status, body=detail)
 
 
 async def _request(
@@ -663,12 +668,20 @@ def _decode_data_uri(image_input: str) -> tuple[bytes, str]:
 
 def _is_azure_blob_url(url: str) -> bool:
     try:
-        hostname = (urlparse(url).hostname or "").lower()
+        parsed = urlparse(url)
     except ValueError:
         return False
-    return any(
+    hostname = (parsed.hostname or "").lower()
+    if any(
         hostname == suffix or hostname.endswith(f".{suffix}")
         for suffix in _AZURE_BLOB_HOST_SUFFIXES
+    ):
+        return True
+    query_keys = {key.lower() for key in parse_qs(parsed.query, keep_blank_values=True)}
+    return any(
+        key in query_keys for key in {"sv", "sr", "sp"}
+    ) and "sig" in query_keys and not any(
+        key.startswith("x-amz-") for key in query_keys
     )
 
 
@@ -689,6 +702,13 @@ def _merge_upload_headers(headers: dict[str, str], value: object) -> None:
         _set_header(headers, name, str(item))
 
 
+def _has_nonempty_header(headers: dict[str, str], name: str) -> bool:
+    return any(
+        key.lower() == name.lower() and str(value or "").strip()
+        for key, value in headers.items()
+    )
+
+
 def _edit_reference_upload_headers(
     payload: dict[str, Any],
     upload_url: str,
@@ -705,11 +725,20 @@ def _edit_reference_upload_headers(
         "upload_headers",
     ):
         _merge_upload_headers(headers, payload.get(key))
-    if _is_azure_blob_url(upload_url) and not any(
-        key.lower() == "x-ms-blob-type" for key in headers
-    ):
-        headers["x-ms-blob-type"] = "BlockBlob"
+    if _is_azure_blob_url(upload_url) and not _has_nonempty_header(headers, "x-ms-blob-type"):
+        _set_header(headers, "x-ms-blob-type", "BlockBlob")
     return headers
+
+
+async def _missing_blob_type_error(response: aiohttp.ClientResponse) -> bool:
+    if response.status != 400:
+        return False
+    try:
+        body = await response.text()
+    except Exception:
+        return False
+    lowered = body.lower()
+    return "missingrequiredheader" in lowered and "x-ms-blob-type" in lowered
 
 
 async def _upload_edit_reference(
@@ -752,16 +781,29 @@ async def _upload_edit_reference(
     if not file_id:
         raise UpstreamError("ChatGPT image-edit upload returned no file id", status=502)
     if upload_url:
+        upload_headers = _edit_reference_upload_headers(payload, upload_url, mime_type)
         upload_response = await _request(
             session,
             "PUT",
             upload_url,
-            headers=_edit_reference_upload_headers(payload, upload_url, mime_type),
+            headers=upload_headers,
             data=raw,
             timeout_s=60.0,
             retries=2,
             retry_statuses=_TRANSIENT_STATUSES,
         )
+        if not upload_response.ok and await _missing_blob_type_error(upload_response):
+            upload_response.release()
+            _set_header(upload_headers, "x-ms-blob-type", "BlockBlob")
+            upload_response = await _request(
+                session,
+                "PUT",
+                upload_url,
+                headers=upload_headers,
+                data=raw,
+                timeout_s=60.0,
+                retries=1,
+            )
         if not upload_response.ok:
             raise await _response_error(upload_response, "ChatGPT image-edit upload failed")
         complete_response = await _request(
@@ -1394,6 +1436,109 @@ def _record_blocked_access_token(record: Any) -> str:
     return access_token
 
 
+def _timeout_repair_after_s() -> float:
+    try:
+        value = get_config().get_float(
+            "gpt_image.timeout_repair_after_s",
+            _GENERATION_FAILURE_COOLDOWN_S,
+        )
+    except Exception:
+        value = _GENERATION_FAILURE_COOLDOWN_S
+    return max(0.0, float(value or 0.0))
+
+
+def _timeout_repair_enabled() -> bool:
+    try:
+        return get_config().get_bool("gpt_image.auto_repair_timeout_accounts", True)
+    except Exception:
+        return True
+
+
+def _has_timeout_marker(*values: Any) -> bool:
+    text = " ".join(str(value or "") for value in values).lower()
+    return "timeout" in text or "timed out" in text or "超时" in text
+
+
+def _timeout_repair_due(record: Any, ext: dict[str, Any], status_key: str, error_key: str, now: int) -> bool:
+    if _generation_cooldown_active(ext, status_key):
+        return False
+    status = str(ext.get(status_key) or "").strip().lower()
+    error = str(ext.get(error_key) or "")
+    reason = str(getattr(record, "last_fail_reason", "") or "")
+    if status != "timeout" and not _has_timeout_marker(error, reason):
+        return False
+    try:
+        last_fail_at = int(getattr(record, "last_fail_at", None) or 0)
+    except (TypeError, ValueError):
+        last_fail_at = 0
+    return not last_fail_at or now - last_fail_at >= int(_timeout_repair_after_s() * 1000)
+
+
+def _timeout_repair_status(ext: dict[str, Any]) -> str:
+    if _record_access_token(ext):
+        return "available"
+    email, password, mail_token = _record_credentials(ext)
+    return "login_required" if email and password and mail_token else "login_required"
+
+
+async def repair_timed_out_gpt_image_accounts(repo: Any | None = None) -> int:
+    """Clear stale transient timeout failures for GPT/GPT-image records.
+
+    GPT records intentionally stay persistently DISABLED so they do not enter
+    the Grok SSO pool; this repair only clears GPT capability failure fields.
+    """
+    if not _timeout_repair_enabled():
+        return 0
+    repo = repo or get_account_repository()
+    if repo is None:
+        return 0
+
+    now = _now_ms()
+    page_num = 1
+    page_size = 2000
+    patches: list[AccountPatch] = []
+    while True:
+        page = await repo.list_accounts(
+            ListAccountsQuery(
+                page=page_num,
+                page_size=page_size,
+                include_deleted=False,
+                sort_by="updated_at",
+                sort_desc=False,
+            )
+        )
+        for record in page.items:
+            if not _is_gpt_credential_record(record):
+                continue
+            ext = record.ext or {}
+            _access_key, status_key, error_key, _attempt_key = _record_patch_keys(ext)
+            if not _timeout_repair_due(record, ext, status_key, error_key, now):
+                continue
+            patches.append(
+                AccountPatch(
+                    token=record.token,
+                    clear_last_failure=True,
+                    ext_merge={
+                        status_key: _timeout_repair_status(ext),
+                        error_key: None,
+                        _last_checked_key(status_key): now,
+                        _cooldown_until_key(status_key): 0,
+                    },
+                )
+            )
+
+        if page_num * page_size >= page.total:
+            break
+        page_num += 1
+
+    if not patches:
+        return 0
+    result = await repo.patch_accounts(patches)
+    count = int(getattr(result, "patched", 0) or len(patches))
+    logger.info("gpt image timeout accounts auto-repaired: count={}", count)
+    return count
+
+
 async def _login_gpt_credentials_async(
     *,
     email: str,
@@ -1764,7 +1909,7 @@ def _capability_failure_status(exc: BaseException) -> str:
             return "invalid"
         if exc.status == 429 or any(marker in text for marker in _QUOTA_LIMIT_MARKERS):
             return "rate_limited"
-        if exc.status == 504 or "timed out" in text or "timeout" in text:
+        if exc.status in {504, 524} or "timed out" in text or "timeout" in text:
             return "timeout"
     if isinstance(exc, (asyncio.TimeoutError, TimeoutError)):
         return "timeout"
@@ -2033,4 +2178,10 @@ async def edit(
     }
 
 
-__all__ = ["GPTImageAccount", "generate", "edit", "test_gpt_account_record"]
+__all__ = [
+    "GPTImageAccount",
+    "generate",
+    "edit",
+    "test_gpt_account_record",
+    "repair_timed_out_gpt_image_accounts",
+]

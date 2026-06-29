@@ -3264,6 +3264,13 @@ function parseGptAccountLines(raw) {
   return accounts;
 }
 
+function gptRemoteRefreshText(data) {
+  const refreshed = Number((data && data.remote_refreshed) || 0);
+  const failed = Number((data && data.remote_failed) || 0);
+  if (!refreshed && !failed) return '';
+  return `，远端详情刷新 ${refreshed} 个${failed ? `，失败 ${failed} 个` : ''}`;
+}
+
 async function doGptAccountLogin() {
   const account = document.getElementById('gpt-login-account').value.trim();
   const email = document.getElementById('gpt-login-email').value.trim();
@@ -3287,7 +3294,8 @@ async function doGptAccountLogin() {
       save,
     });
     document.getElementById('gpt-login-token-result').value = data.access_token || '';
-    showToast('GPTChat 登录成功，已返回 token', 'success');
+    const remoteText = gptRemoteRefreshText(data);
+    showToast(`GPTChat 登录成功，已返回 token${remoteText}`, Number(data.remote_failed || 0) ? 'info' : 'success');
     await loadGptAccounts();
   } catch (e) {
     showToast(`GPTChat 登录失败: ${e.message}`, 'error');
@@ -3369,7 +3377,8 @@ async function finishGptAccountOAuthLogin(callbackOverride = '') {
     document.getElementById('gpt-login-token-result').value = data.access_token || '';
     gptOAuthSession = null;
     updateGptOAuthSessionUI();
-    showToast('GPTChat OAuth 登录成功，已返回 token', 'success');
+    const remoteText = gptRemoteRefreshText(data);
+    showToast(`GPTChat OAuth 登录成功，已返回 token${remoteText}`, Number(data.remote_failed || 0) ? 'info' : 'success');
     await loadGptAccounts();
   } catch (e) {
     showToast(`GPTChat OAuth 换 token 失败: ${e.message}`, 'error');
@@ -3404,11 +3413,8 @@ async function doAddGptAccounts() {
     showToast(`正在添加 ${accounts.length} 个 GPTChat 账号…`, 'info');
     const d = await _api('POST', '/gpt/accounts', { accounts });
     closeModal('modal-gpt-account-add');
-    const refreshed = Number(d.remote_refreshed || 0);
     const failed = Number(d.remote_failed || 0);
-    const remoteText = refreshed || failed
-      ? `，远端详情刷新 ${refreshed} 个${failed ? `，失败 ${failed} 个` : ''}`
-      : '';
+    const remoteText = gptRemoteRefreshText(d);
     showToast(`GPTChat 账号已添加：${d.count || accounts.length} 个${remoteText}`, failed ? 'info' : 'success');
     load();
   } catch (e) {
