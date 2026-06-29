@@ -265,12 +265,35 @@ async def lifespan(app: FastAPI):
             except Exception as exc:
                 logger.debug("console expired recovery loop error: error={}", exc)
 
+    async def _gpt_timeout_repair_loop() -> None:
+        from app.products.openai.gpt_image import repair_timed_out_gpt_image_accounts
+
+        while True:
+            try:
+                await repair_timed_out_gpt_image_accounts(repo)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.debug("gpt image timeout repair loop error: error={}", exc)
+            try:
+                interval = max(
+                    30.0,
+                    _config.get_float("gpt_image.timeout_repair_interval_s", 300.0),
+                )
+            except Exception:
+                interval = 300.0
+            await asyncio.sleep(interval)
+
     console_reset_task = (
         asyncio.create_task(_console_reset_loop(), name="console-quota-reset")
         if is_leader else None
     )
     console_recovery_task = (
         asyncio.create_task(_console_recovery_loop(), name="console-expired-recovery")
+        if is_leader else None
+    )
+    gpt_timeout_repair_task = (
+        asyncio.create_task(_gpt_timeout_repair_loop(), name="gpt-timeout-repair")
         if is_leader else None
     )
 
@@ -287,7 +310,7 @@ async def lifespan(app: FastAPI):
     except asyncio.CancelledError:
         pass
 
-    for task in (console_reset_task, console_recovery_task):
+    for task in (console_reset_task, console_recovery_task, gpt_timeout_repair_task):
         if task is None:
             continue
         task.cancel()

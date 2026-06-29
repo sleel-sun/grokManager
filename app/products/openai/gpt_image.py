@@ -11,12 +11,14 @@ import random
 import re
 import time
 from dataclasses import dataclass
+from io import BytesIO
 from typing import Any, AsyncGenerator
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 from uuid import uuid4
 
 import aiohttp
 import orjson
+from PIL import Image
 
 from app.control.account.commands import AccountPatch, ListAccountsQuery
 from app.control.account.runtime import get_account_repository
@@ -38,7 +40,7 @@ CLIENT_VERSION = "prod-be885abbfcfe7b1f511e88b3003d9ee44757fbad"
 TIMEZONE = "America/Los_Angeles"
 TIMEZONE_OFFSET_MIN = -480
 MAX_POW_ATTEMPTS = 500000
-_TRANSIENT_STATUSES = {429, 502, 503, 504}
+_TRANSIENT_STATUSES = {429, 502, 503, 504, 524}
 _FILE_ID_RE = re.compile(r"(file-service://|sediment://)([A-Za-z0-9_-]+)")
 _DATA_URI_RE = re.compile(r"^data:([^;,]+)?(;base64)?,(.*)$", re.S)
 _DATA_BUILD_RE = re.compile(r'data-build="([^"]*)"', re.I)
@@ -106,6 +108,8 @@ class _EditReference:
     name: str
     mime_type: str
     size: int
+    width: int
+    height: int
 
 
 def _app_url() -> str:
@@ -191,6 +195,7 @@ def _conversation_headers(
     proof_token: str | None,
     *,
     accept: str = "text/event-stream",
+    conduit_token: str = "",
 ) -> dict[str, str]:
     headers = {
         **_browser_headers(context.device_id),
@@ -204,6 +209,8 @@ def _conversation_headers(
     }
     if proof_token:
         headers["openai-sentinel-proof-token"] = proof_token
+    if conduit_token:
+        headers["x-conduit-token"] = conduit_token
     if accept == "text/event-stream":
         headers["x-oai-turn-trace-id"] = str(uuid4())
     return headers
@@ -215,10 +222,15 @@ async def _response_error(response: aiohttp.ClientResponse, prefix: str) -> Upst
     except Exception:
         body = ""
     detail = body[:500]
-    message = f"{prefix}: upstream returned {response.status}"
+    status = 504 if response.status == 524 else response.status
+    message = (
+        f"{prefix}: upstream timed out (Cloudflare 524)"
+        if response.status == 524
+        else f"{prefix}: upstream returned {response.status}"
+    )
     if detail:
         message = f"{message}: {detail}"
-    return UpstreamError(message, status=response.status, body=detail)
+    return UpstreamError(message, status=status, body=detail)
 
 
 async def _request(
@@ -409,6 +421,15 @@ def _upstream_model(requested_model: str, is_free: bool) -> str:
     return model or "gpt-4o"
 
 
+def _image_model_slug(requested_model: str) -> str:
+    model = _normalize_image_model(requested_model)
+    if model == GPT_IMAGE_MODEL:
+        return "gpt-5-3"
+    if model == CODEX_GPT_IMAGE_MODEL:
+        return CODEX_GPT_IMAGE_MODEL
+    return model or "auto"
+
+
 def _image_generation_prompt(prompt: str) -> str:
     user_prompt = str(prompt or "").strip()
     return (
@@ -506,6 +527,23 @@ def _extract_file_ids_recursive(value: Any, file_ids: list[str]) -> None:
             _extract_file_ids_recursive(item, file_ids)
 
 
+def _image_tool_message(value: dict[str, Any]) -> dict[str, Any]:
+    for candidate in (value, value.get("v")):
+        if not isinstance(candidate, dict):
+            continue
+        message = candidate.get("message")
+        if isinstance(message, dict):
+            return message
+    return {}
+
+
+def _is_image_tool_event(value: dict[str, Any]) -> bool:
+    message = _image_tool_message(value)
+    metadata = message.get("metadata") if isinstance(message.get("metadata"), dict) else {}
+    author = message.get("author") if isinstance(message.get("author"), dict) else {}
+    return author.get("role") == "tool" and metadata.get("async_task_type") == "image_gen"
+
+
 def _consume_sse_payload(
     payload: str,
     conversation_id: str,
@@ -516,16 +554,18 @@ def _consume_sse_payload(
         return conversation_id, False
     if payload == "[DONE]":
         return conversation_id, True
-    _extract_file_ids_from_text(payload, file_ids)
     try:
         obj = orjson.loads(payload)
     except Exception:
+        _extract_file_ids_from_text(payload, file_ids)
         return conversation_id, False
     if isinstance(obj, dict):
         conversation_id = str(obj.get("conversation_id") or conversation_id)
         nested = obj.get("v")
         if isinstance(nested, dict):
             conversation_id = str(nested.get("conversation_id") or conversation_id)
+        if _is_image_tool_event(obj):
+            _extract_file_ids_recursive(obj, file_ids)
         message = obj.get("message") if isinstance(obj.get("message"), dict) else {}
         content = message.get("content") if isinstance(message.get("content"), dict) else {}
         if content.get("content_type") == "text":
@@ -661,14 +701,32 @@ def _decode_data_uri(image_input: str) -> tuple[bytes, str]:
     return raw, mime_type
 
 
+def _image_metadata(raw: bytes, fallback_mime_type: str) -> tuple[int, int, str]:
+    try:
+        with Image.open(BytesIO(raw)) as image:
+            width, height = image.size
+            mime_type = Image.MIME.get(image.format or "", fallback_mime_type)
+    except Exception as exc:
+        raise ValidationError("Invalid image data", param="image") from exc
+    return int(width), int(height), (mime_type or fallback_mime_type)
+
+
 def _is_azure_blob_url(url: str) -> bool:
     try:
-        hostname = (urlparse(url).hostname or "").lower()
+        parsed = urlparse(url)
     except ValueError:
         return False
-    return any(
+    hostname = (parsed.hostname or "").lower()
+    if any(
         hostname == suffix or hostname.endswith(f".{suffix}")
         for suffix in _AZURE_BLOB_HOST_SUFFIXES
+    ):
+        return True
+    query_keys = {key.lower() for key in parse_qs(parsed.query, keep_blank_values=True)}
+    return any(
+        key in query_keys for key in {"sv", "sr", "sp"}
+    ) and "sig" in query_keys and not any(
+        key.startswith("x-amz-") for key in query_keys
     )
 
 
@@ -689,6 +747,13 @@ def _merge_upload_headers(headers: dict[str, str], value: object) -> None:
         _set_header(headers, name, str(item))
 
 
+def _has_nonempty_header(headers: dict[str, str], name: str) -> bool:
+    return any(
+        key.lower() == name.lower() and str(value or "").strip()
+        for key, value in headers.items()
+    )
+
+
 def _edit_reference_upload_headers(
     payload: dict[str, Any],
     upload_url: str,
@@ -705,11 +770,20 @@ def _edit_reference_upload_headers(
         "upload_headers",
     ):
         _merge_upload_headers(headers, payload.get(key))
-    if _is_azure_blob_url(upload_url) and not any(
-        key.lower() == "x-ms-blob-type" for key in headers
-    ):
-        headers["x-ms-blob-type"] = "BlockBlob"
+    if _is_azure_blob_url(upload_url) and not _has_nonempty_header(headers, "x-ms-blob-type"):
+        _set_header(headers, "x-ms-blob-type", "BlockBlob")
     return headers
+
+
+async def _missing_blob_type_error(response: aiohttp.ClientResponse) -> bool:
+    if response.status != 400:
+        return False
+    try:
+        body = await response.text()
+    except Exception:
+        return False
+    lowered = body.lower()
+    return "missingrequiredheader" in lowered and "x-ms-blob-type" in lowered
 
 
 async def _upload_edit_reference(
@@ -719,6 +793,7 @@ async def _upload_edit_reference(
     index: int,
 ) -> _EditReference:
     raw, mime_type = _decode_data_uri(image_input)
+    width, height, mime_type = _image_metadata(raw, mime_type)
     name = f"reference-{index + 1}.{_image_ext(mime_type)}"
     create_response = await _request(
         session,
@@ -734,6 +809,8 @@ async def _upload_edit_reference(
             "file_name": name,
             "file_size": len(raw),
             "use_case": "multimodal",
+            "width": width,
+            "height": height,
             "timezone_offset_min": TIMEZONE_OFFSET_MIN,
         },
         timeout_s=30.0,
@@ -752,16 +829,29 @@ async def _upload_edit_reference(
     if not file_id:
         raise UpstreamError("ChatGPT image-edit upload returned no file id", status=502)
     if upload_url:
+        upload_headers = _edit_reference_upload_headers(payload, upload_url, mime_type)
         upload_response = await _request(
             session,
             "PUT",
             upload_url,
-            headers=_edit_reference_upload_headers(payload, upload_url, mime_type),
+            headers=upload_headers,
             data=raw,
             timeout_s=60.0,
             retries=2,
             retry_statuses=_TRANSIENT_STATUSES,
         )
+        if not upload_response.ok and await _missing_blob_type_error(upload_response):
+            upload_response.release()
+            _set_header(upload_headers, "x-ms-blob-type", "BlockBlob")
+            upload_response = await _request(
+                session,
+                "PUT",
+                upload_url,
+                headers=upload_headers,
+                data=raw,
+                timeout_s=60.0,
+                retries=1,
+            )
         if not upload_response.ok:
             raise await _response_error(upload_response, "ChatGPT image-edit upload failed")
         complete_response = await _request(
@@ -780,16 +870,85 @@ async def _upload_edit_reference(
         )
         if not complete_response.ok:
             complete_response.release()
-    return _EditReference(file_id=file_id, name=name, mime_type=mime_type, size=len(raw))
+    return _EditReference(
+        file_id=file_id,
+        name=name,
+        mime_type=mime_type,
+        size=len(raw),
+        width=width,
+        height=height,
+    )
 
 
 def _edit_attachment_payload(reference: _EditReference) -> dict[str, Any]:
     return {
         "id": reference.file_id,
+        "mimeType": reference.mime_type,
         "name": reference.name,
-        "mime_type": reference.mime_type,
         "size": reference.size,
+        "width": reference.width,
+        "height": reference.height,
     }
+
+
+def _edit_reference_part(reference: _EditReference) -> dict[str, Any]:
+    return {
+        "content_type": "image_asset_pointer",
+        "asset_pointer": f"file-service://{reference.file_id}",
+        "width": reference.width,
+        "height": reference.height,
+        "size_bytes": reference.size,
+    }
+
+
+async def _prepare_image_conversation(
+    session: aiohttp.ClientSession,
+    context: _ChatGPTContext,
+    *,
+    prompt_text: str,
+    requested_model: str,
+    chat_token: str,
+    proof_token: str | None,
+) -> str:
+    response = await _request(
+        session,
+        "POST",
+        f"{BASE_URL}/backend-api/f/conversation/prepare",
+        headers=_conversation_headers(
+            context,
+            chat_token,
+            proof_token,
+            accept="*/*",
+        ),
+        json_body={
+            "action": "next",
+            "fork_from_shared_post": False,
+            "parent_message_id": str(uuid4()),
+            "model": _image_model_slug(requested_model),
+            "client_prepare_state": "success",
+            "timezone_offset_min": TIMEZONE_OFFSET_MIN,
+            "timezone": TIMEZONE,
+            "conversation_mode": {"kind": "primary_assistant"},
+            "system_hints": ["picture_v2"],
+            "partial_query": {
+                "id": str(uuid4()),
+                "author": {"role": "user"},
+                "content": {"content_type": "text", "parts": [prompt_text]},
+            },
+            "supports_buffering": True,
+            "supported_encodings": ["v1"],
+            "client_contextual_info": {"app_name": "chatgpt.com"},
+        },
+        timeout_s=60.0,
+        retry_statuses=_TRANSIENT_STATUSES,
+    )
+    if not response.ok:
+        raise await _response_error(response, "ChatGPT image-edit prepare failed")
+    payload = await response.json(content_type=None)
+    conduit_token = str(payload.get("conduit_token") or "").strip()
+    if not conduit_token:
+        raise UpstreamError("ChatGPT image-edit prepare returned no conduit token", status=502)
+    return conduit_token
 
 
 async def _send_edit_conversation(
@@ -808,14 +967,28 @@ async def _send_edit_conversation(
     chat_token, proof_info = await _chat_requirements(session, context)
     proof_token = _proof_token(context, proof_info)
     prompt_text = _image_edit_prompt(prompt, len(references))
+    conduit_token = await _prepare_image_conversation(
+        session,
+        context,
+        prompt_text=prompt_text,
+        requested_model=requested_model,
+        chat_token=chat_token,
+        proof_token=proof_token,
+    )
+    content_parts: list[Any] = [
+        _edit_reference_part(reference)
+        for reference in references
+    ]
+    content_parts.append(prompt_text)
     response = await _request(
         session,
         "POST",
-        f"{BASE_URL}/backend-api/conversation",
+        f"{BASE_URL}/backend-api/f/conversation",
         headers=_conversation_headers(
             context,
             chat_token,
             proof_token,
+            conduit_token=conduit_token,
         ),
         json_body={
             "action": "next",
@@ -823,35 +996,40 @@ async def _send_edit_conversation(
                 {
                     "id": str(uuid4()),
                     "author": {"role": "user"},
-                    "content": {"content_type": "text", "parts": [prompt_text]},
+                    "create_time": time.time(),
+                    "content": {
+                        "content_type": "multimodal_text",
+                        "parts": content_parts,
+                    },
                     "metadata": {
+                        "developer_mode_connector_ids": [],
+                        "selected_github_repos": [],
+                        "selected_all_github_repos": False,
                         "attachments": [
                             _edit_attachment_payload(reference)
                             for reference in references
-                        ]
+                        ],
+                        "system_hints": ["picture_v2"],
+                        "serialization_metadata": {"custom_symbol_offsets": []},
                     },
                 }
             ],
             "parent_message_id": str(uuid4()),
-            "model": _upstream_model(requested_model, is_free),
-            "history_and_training_disabled": False,
+            "model": _image_model_slug(requested_model),
+            "client_prepare_state": "sent",
             "timezone_offset_min": TIMEZONE_OFFSET_MIN,
             "timezone": TIMEZONE,
             "conversation_mode": {"kind": "primary_assistant"},
-            "conversation_origin": None,
-            "force_paragen": False,
-            "force_paragen_model_slug": "",
-            "force_rate_limit": False,
-            "force_use_sse": True,
+            "enable_message_followups": True,
             "paragen_cot_summary_display_override": "allow",
-            "paragen_stream_type_override": None,
-            "reset_rate_limits": False,
-            "suggestions": [],
-            "supported_encodings": [],
-            "system_hints": ["picture_v2", "image_edit"],
-            "variant_purpose": "comparison_implicit",
-            "websocket_request_id": str(uuid4()),
-            "client_contextual_info": _client_contextual_info(),
+            "force_parallel_switch": "auto",
+            "supports_buffering": True,
+            "supported_encodings": ["v1"],
+            "system_hints": ["picture_v2"],
+            "client_contextual_info": {
+                **_client_contextual_info(),
+                "app_name": "chatgpt.com",
+            },
         },
         timeout_s=180.0,
         retry_statuses=_TRANSIENT_STATUSES,
@@ -1394,6 +1572,109 @@ def _record_blocked_access_token(record: Any) -> str:
     return access_token
 
 
+def _timeout_repair_after_s() -> float:
+    try:
+        value = get_config().get_float(
+            "gpt_image.timeout_repair_after_s",
+            _GENERATION_FAILURE_COOLDOWN_S,
+        )
+    except Exception:
+        value = _GENERATION_FAILURE_COOLDOWN_S
+    return max(0.0, float(value or 0.0))
+
+
+def _timeout_repair_enabled() -> bool:
+    try:
+        return get_config().get_bool("gpt_image.auto_repair_timeout_accounts", True)
+    except Exception:
+        return True
+
+
+def _has_timeout_marker(*values: Any) -> bool:
+    text = " ".join(str(value or "") for value in values).lower()
+    return "timeout" in text or "timed out" in text or "超时" in text
+
+
+def _timeout_repair_due(record: Any, ext: dict[str, Any], status_key: str, error_key: str, now: int) -> bool:
+    if _generation_cooldown_active(ext, status_key):
+        return False
+    status = str(ext.get(status_key) or "").strip().lower()
+    error = str(ext.get(error_key) or "")
+    reason = str(getattr(record, "last_fail_reason", "") or "")
+    if status != "timeout" and not _has_timeout_marker(error, reason):
+        return False
+    try:
+        last_fail_at = int(getattr(record, "last_fail_at", None) or 0)
+    except (TypeError, ValueError):
+        last_fail_at = 0
+    return not last_fail_at or now - last_fail_at >= int(_timeout_repair_after_s() * 1000)
+
+
+def _timeout_repair_status(ext: dict[str, Any]) -> str:
+    if _record_access_token(ext):
+        return "available"
+    email, password, mail_token = _record_credentials(ext)
+    return "login_required" if email and password and mail_token else "login_required"
+
+
+async def repair_timed_out_gpt_image_accounts(repo: Any | None = None) -> int:
+    """Clear stale transient timeout failures for GPT/GPT-image records.
+
+    GPT records intentionally stay persistently DISABLED so they do not enter
+    the Grok SSO pool; this repair only clears GPT capability failure fields.
+    """
+    if not _timeout_repair_enabled():
+        return 0
+    repo = repo or get_account_repository()
+    if repo is None:
+        return 0
+
+    now = _now_ms()
+    page_num = 1
+    page_size = 2000
+    patches: list[AccountPatch] = []
+    while True:
+        page = await repo.list_accounts(
+            ListAccountsQuery(
+                page=page_num,
+                page_size=page_size,
+                include_deleted=False,
+                sort_by="updated_at",
+                sort_desc=False,
+            )
+        )
+        for record in page.items:
+            if not _is_gpt_credential_record(record):
+                continue
+            ext = record.ext or {}
+            _access_key, status_key, error_key, _attempt_key = _record_patch_keys(ext)
+            if not _timeout_repair_due(record, ext, status_key, error_key, now):
+                continue
+            patches.append(
+                AccountPatch(
+                    token=record.token,
+                    clear_last_failure=True,
+                    ext_merge={
+                        status_key: _timeout_repair_status(ext),
+                        error_key: None,
+                        _last_checked_key(status_key): now,
+                        _cooldown_until_key(status_key): 0,
+                    },
+                )
+            )
+
+        if page_num * page_size >= page.total:
+            break
+        page_num += 1
+
+    if not patches:
+        return 0
+    result = await repo.patch_accounts(patches)
+    count = int(getattr(result, "patched", 0) or len(patches))
+    logger.info("gpt image timeout accounts auto-repaired: count={}", count)
+    return count
+
+
 async def _login_gpt_credentials_async(
     *,
     email: str,
@@ -1529,6 +1810,12 @@ async def _patch_account_failure(
 
 
 async def _mark_account_failure(account: GPTImageAccount, exc: BaseException) -> None:
+    if _is_cloudflare_524_timeout(exc):
+        logger.info(
+            "gpt image cloudflare timeout skipped account cooldown: account={}",
+            account.record_token,
+        )
+        return
     repo = get_account_repository()
     if repo is None:
         return
@@ -1757,6 +2044,13 @@ def _failure_message(exc: BaseException) -> str:
     return message[:500]
 
 
+def _is_cloudflare_524_timeout(exc: BaseException) -> bool:
+    if not isinstance(exc, UpstreamError):
+        return False
+    text = _error_text(exc)
+    return exc.status in {504, 524} and "cloudflare" in text and "524" in text
+
+
 def _capability_failure_status(exc: BaseException) -> str:
     if isinstance(exc, UpstreamError):
         text = _error_text(exc)
@@ -1764,7 +2058,7 @@ def _capability_failure_status(exc: BaseException) -> str:
             return "invalid"
         if exc.status == 429 or any(marker in text for marker in _QUOTA_LIMIT_MARKERS):
             return "rate_limited"
-        if exc.status == 504 or "timed out" in text or "timeout" in text:
+        if exc.status in {504, 524} or "timed out" in text or "timeout" in text:
             return "timeout"
     if isinstance(exc, (asyncio.TimeoutError, TimeoutError)):
         return "timeout"
@@ -2033,4 +2327,10 @@ async def edit(
     }
 
 
-__all__ = ["GPTImageAccount", "generate", "edit", "test_gpt_account_record"]
+__all__ = [
+    "GPTImageAccount",
+    "generate",
+    "edit",
+    "test_gpt_account_record",
+    "repair_timed_out_gpt_image_accounts",
+]

@@ -32,11 +32,18 @@ def test_image_studio_page_route_and_header_entry_exist() -> None:
     assert "/static/js/auth.js?v={{APP_VERSION}}-usernsfw1" in html
     assert 'id="studioQuality"' in html
     assert 'id="studioReferencePreview"' in html
+    assert "/static/js/webui/image-studio.js?v={{APP_VERSION}}-studio3" in html
     assert "fetch(GENERATE_ENDPOINT" in js
     assert "fetch(EDIT_ENDPOINT" in js
     assert "HISTORY_ENDPOINT" in js
     assert "|| 'gpt-image-2'" in js
     assert "payload.edits.filter((item) => GPT_MODELS.has" in js
+    assert "data-reference-image" in js
+    assert "reference_url" in js
+    assert "const EDIT_SIZE = '1024x1024';" in js
+    assert "const size = EDIT_SIZE;" in js
+    assert "PENDING_REFERENCE_KEY = 'grokmanager.image_studio.pending_reference.v1'" in js
+    assert "function consumePendingReference()" in js
     assert "function clearPromptInput()" in js
     assert "clearPromptInput();" in js
     assert "restorePromptInput(prompt);" in js
@@ -214,6 +221,7 @@ def test_webui_image_edit_defaults_to_gpt_image_2(monkeypatch, tmp_path) -> None
     response = asyncio.run(
         image_studio_api.webui_image_edits(
             prompt="make it blue",
+            size="720x1280",
             image=[type("Upload", (), {"filename": "ref.png"})()],
             user=WebUIUser(
                 id="alice",
@@ -248,6 +256,53 @@ def test_webui_image_edit_defaults_to_gpt_image_2(monkeypatch, tmp_path) -> None
         }
     ]
     assert body["studio_session"]["model"] == "gpt-image-2"
+
+
+def test_webui_image_edit_accepts_generated_reference_url(monkeypatch, tmp_path) -> None:
+    calls: list[dict] = []
+    history_calls: list[dict] = []
+    file_id = "1234567890abcdef1234567890abcdef"
+    image_dir = tmp_path / "files" / "images"
+    image_dir.mkdir(parents=True)
+    (image_dir / f"{file_id}.png").write_bytes(b"ref")
+
+    async def fake_edit(**kwargs):
+        calls.append(kwargs)
+        return {"created": 1, "data": [{"url": "/v1/files/image?id=edited"}]}
+
+    async def fake_append_history_session(_user, **kwargs):
+        history_calls.append(kwargs)
+        return {"model": kwargs["model"], "reference_names": kwargs["reference_names"]}
+
+    monkeypatch.setattr("app.products.openai.images.edit", fake_edit)
+    monkeypatch.setattr("app.products.web.webui.images._append_history_session", fake_append_history_session)
+    monkeypatch.setattr("app.products.web.webui.images.image_files_dir", lambda: image_dir)
+    monkeypatch.setattr("app.products.web.webui.images.data_path", lambda *parts: tmp_path.joinpath(*parts))
+
+    response = asyncio.run(
+        image_studio_api.webui_image_edits(
+            prompt="make it cinematic",
+            reference_url=[f"/v1/files/image?id={file_id}"],
+            user=WebUIUser(
+                id="alice",
+                username="alice",
+                gpt_models=("gpt-image-2",),
+            ),
+        )
+    )
+    body = orjson.loads(response.body)
+
+    assert body["data"][0]["url"] == "/v1/files/image?id=edited"
+    content = calls[0]["messages"][0]["content"]
+    assert content == [
+        {"type": "text", "text": "make it cinematic"},
+        {
+            "type": "image_url",
+            "image_url": {"url": "data:image/png;base64,cmVm"},
+        },
+    ]
+    assert calls[0]["size"] == "1024x1024"
+    assert history_calls[0]["reference_names"] == ["generated-12345678"]
 
 
 def test_webui_image_history_delete_and_clear(monkeypatch, tmp_path) -> None:

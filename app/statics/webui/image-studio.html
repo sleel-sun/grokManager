@@ -464,6 +464,22 @@
       text-overflow:ellipsis;
       white-space:nowrap;
     }
+    .studio-output-actions {
+      display:flex;
+      flex:0 0 auto;
+      align-items:center;
+      gap:8px;
+    }
+    .studio-reference-link {
+      padding:0;
+      color:#5d6249;
+      font-size:11px;
+      font-weight:900;
+      transition:color .16s ease;
+    }
+    .studio-reference-link:hover {
+      color:#171511;
+    }
     .studio-download-link {
       flex:0 0 auto;
       color:#716a60;
@@ -697,6 +713,25 @@
       border-radius:18px;
       background:#ece6dc;
       box-shadow:0 8px 20px -16px rgba(15,23,42,.45);
+    }
+    .studio-reference-remove {
+      position:absolute;
+      top:-5px;
+      right:-5px;
+      width:20px;
+      height:20px;
+      border-radius:999px;
+      display:grid;
+      place-items:center;
+      background:#171511;
+      color:#fffaf0;
+      font-size:14px;
+      font-weight:900;
+      line-height:1;
+      box-shadow:0 8px 18px -10px rgba(15,23,42,.55);
+    }
+    .studio-reference-remove:hover {
+      background:#8f493e;
     }
     .studio-reference-more {
       width:64px;
@@ -962,8 +997,8 @@
   <script src="/static/js/i18n.js?v={{APP_VERSION}}"></script>
   <script src="/static/js/auth.js?v={{APP_VERSION}}-usernsfw1"></script>
   <script src="/static/js/toast.js?v={{APP_VERSION}}"></script>
-  <script src="/static/js/webui-header.js?v={{APP_VERSION}}-studio2"></script>
+  <script src="/static/js/webui-header.js?v={{APP_VERSION}}-studio3"></script>
   <script src="/static/js/footer.js?v={{APP_VERSION}}"></script>
-  <script src="/static/js/webui/image-studio.js?v={{APP_VERSION}}-studio2"></script>
+  <script src="/static/js/webui/image-studio.js?v={{APP_VERSION}}-studio3"></script>
 </body>
 </html>

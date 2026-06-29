@@ -122,7 +122,7 @@ reset_session_status_codes = [403]
 # [App 层] 换账号重试最大次数（0 = 不重试）
 max_retries = 1
 # [App 层] 触发换账号重试的 HTTP 状态码，英文逗号分隔
-on_codes = "429,401,502,503"
+on_codes = "429,401,502,503,504,524"
 
 
 [account.refresh]
@@ -173,6 +173,12 @@ login_otp_timeout_s = 90
 auto_login_credentials = true
 # 凭据登录失败后的重试冷却秒数，避免每次生图都重复等待邮箱验证码
 login_retry_cooldown_s = 300
+# 自动清理 GPT/GPT-image 账号的过期 timeout 临时失败状态
+auto_repair_timeout_accounts = true
+# timeout 失败多久后自动恢复账号参与重试，默认与生图失败冷却一致
+timeout_repair_after_s = 1800
+# timeout 账号自动修复扫描间隔秒数
+timeout_repair_interval_s = 300
 # ChatGPT GPT 图片生成总超时秒数；上游经常异步出图，默认给足轮询窗口
 timeout = 360
 # 每张 GPT 图片在同一个 HTTP 请求内最多尝试的账号数；调高会增加客户端等待时间

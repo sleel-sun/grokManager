@@ -7,6 +7,8 @@
   const MCP_TOOLS_ENDPOINT = '/webui/api/mcp/tools';
   const CODE_PREVIEWS_ENDPOINT = '/webui/api/code-previews';
   const ATTACHMENT_DOWNLOAD_ENDPOINT = '/webui/api/attachments/download';
+  const IMAGE_STUDIO_CACHE_ENDPOINT = '/webui/api/images/history/cache-url';
+  const IMAGE_STUDIO_PENDING_REFERENCE_KEY = 'grokmanager.image_studio.pending_reference.v1';
   const PREFERRED_MODEL = 'grok-4.20-0309';
   const STORE_KEY = 'grok2api_webui_chat_sessions_v1';
   const SIDEBAR_STORE_KEY = 'grok2api_webui_sidebar_collapsed_v1';
@@ -858,6 +860,10 @@
       || /\.(mp4|webm|mov|m4v|ogg)(\?|#|$)/.test(normalized);
   }
 
+  function isReferenceableImageUrl(value) {
+    return String(value || '').trim().toLowerCase().includes('/v1/files/image');
+  }
+
   function normalizeMediaContent(source) {
     const input = String(source || '').replace(/\[video\]\(([^)]+)\)/gi, '$1');
     return input.replace(/^(https?:\/\/\S+|\/v1\/files\/(?:image|video)\?id=\S+|data:image\/[^\s]+)$/gm, (match) => {
@@ -865,6 +871,75 @@
       if (isImageUrl(url)) return `![image](${url})`;
       if (isVideoUrl(url)) return `<video controls preload="metadata" src="${escapeHtml(url)}"></video>`;
       return match;
+    });
+  }
+
+  async function openImageReferenceInStudio(url) {
+    const cleanUrl = String(url || '').trim();
+    if (!isReferenceableImageUrl(cleanUrl)) return;
+    try {
+      sessionStorage.setItem(IMAGE_STUDIO_PENDING_REFERENCE_KEY, JSON.stringify({
+        url: cleanUrl,
+        name: text('webui.chat.referenceImageName', 'Chat image'),
+        created_at: Date.now(),
+      }));
+    } catch {}
+
+    try {
+      const res = await fetch(IMAGE_STUDIO_CACHE_ENDPOINT, {
+        method: 'POST',
+        headers: await webuiAuthHeaders(true),
+        body: JSON.stringify({
+          url: cleanUrl,
+          prompt: text('webui.chat.referenceImagePrompt', 'Referenced from chat'),
+          model: modelSelect.value || 'chat',
+          mode: 'cache',
+          size: '1024x1024',
+          quality: '1k',
+        }),
+      });
+      if (!res.ok) throw new Error(await res.text().catch(() => `HTTP ${res.status}`));
+    } catch (error) {
+      try {
+        sessionStorage.removeItem(IMAGE_STUDIO_PENDING_REFERENCE_KEY);
+      } catch {}
+      toast(error.message || String(error), 'error');
+      return;
+    }
+
+    location.href = '/webui/image-studio';
+  }
+
+  function appendAssistantImageActions(container, url, index) {
+    if (!container || container.querySelector('.msg-media-actions')) return;
+    const actionBar = document.createElement('div');
+    actionBar.className = 'msg-media-actions';
+
+    const referenceBtn = document.createElement('button');
+    referenceBtn.type = 'button';
+    referenceBtn.className = 'msg-media-reference-btn';
+    referenceBtn.textContent = text('webui.chat.referenceEdit', '引用编辑');
+    referenceBtn.dataset.referenceImage = url;
+    referenceBtn.dataset.referenceName = text('webui.chat.referenceImageLabel', 'Result {index}', { index: index + 1 });
+    referenceBtn.addEventListener('click', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      void openImageReferenceInStudio(url);
+    });
+
+    actionBar.appendChild(referenceBtn);
+    container.appendChild(actionBar);
+  }
+
+  function enhanceAssistantImageReferences(root) {
+    if (!root) return;
+    Array.from(root.querySelectorAll('img')).forEach((img, index) => {
+      const url = img.getAttribute('src') || '';
+      if (!isReferenceableImageUrl(url)) return;
+      const container = img.closest('.msg-inline-media') || img.parentElement;
+      if (!container) return;
+      container.classList.add('msg-generated-media');
+      appendAssistantImageActions(container, url, index);
     });
   }
 
@@ -1013,6 +1088,7 @@
           )).join(''));
         }
         card.innerHTML = parts.join('') || '<p></p>';
+        enhanceAssistantImageReferences(card);
         enhanceAttachmentDownloads(card);
         enhanceCodePreviews(card);
         return;
@@ -1055,6 +1131,7 @@
 
     if (role === 'assistant') {
       card.innerHTML = renderRichMarkdown(content);
+      enhanceAssistantImageReferences(card);
       enhanceAttachmentDownloads(card);
       enhanceCodePreviews(card);
       return;

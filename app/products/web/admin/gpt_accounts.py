@@ -18,13 +18,13 @@ from starlette.concurrency import run_in_threadpool
 
 from app.control.account.commands import AccountPatch, AccountUpsert, ListAccountsQuery
 from app.control.account.enums import AccountStatus
+from app.control.account.models import AccountRecord
 from app.platform.errors import AppError, ErrorKind, ValidationError
 from app.platform.runtime.batch import run_batch
 
 from . import get_repo
 
 if TYPE_CHECKING:
-    from app.control.account.models import AccountRecord
     from app.control.account.repository import AccountRepository
 
 
@@ -306,6 +306,55 @@ def _remote_detail_ext(detail: dict[str, Any], existing_ext: dict[str, Any]) -> 
     if existing_ext.get("gpt_image") and plan_type:
         ext_merge["gpt_image_is_free"] = plan_type.lower() in {"", "free", "basic"}
     return ext_merge
+
+
+def _record_with_updates(
+    record: "AccountRecord",
+    *,
+    ext_merge: dict[str, Any] | None = None,
+    add_tags: list[str] | None = None,
+    **updates: Any,
+) -> "AccountRecord":
+    next_updates = dict(updates)
+    if ext_merge:
+        next_updates["ext"] = {**(record.ext or {}), **ext_merge}
+    if add_tags:
+        next_updates["tags"] = list(dict.fromkeys([*(record.tags or []), *add_tags]))
+    return record.model_copy(update=next_updates)
+
+
+def _single_remote_refresh_counts(result: dict[str, Any] | None, *, skipped: bool = False) -> dict[str, Any]:
+    if skipped or result is None:
+        return {
+            "remote_refreshed": 0,
+            "remote_failed": 0,
+            "remote_skipped": 1,
+            "remote_error": None,
+        }
+    refreshed = bool(result.get("refreshed"))
+    return {
+        "remote_refreshed": 1 if refreshed else 0,
+        "remote_failed": 0 if refreshed else 1,
+        "remote_skipped": 0,
+        "remote_error": result.get("error"),
+    }
+
+
+async def _refresh_saved_gpt_account_response(
+    repo: "AccountRepository",
+    saved_record: "AccountRecord | None",
+    fallback_account: dict[str, Any],
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    if saved_record is None:
+        return fallback_account, _single_remote_refresh_counts(None, skipped=True)
+
+    refresh_result = await _refresh_gpt_record_remote_detail(repo, saved_record)
+    account_payload = refresh_result.get("account")
+    if isinstance(account_payload, dict):
+        account_payload = {**account_payload, "saved": True}
+    else:
+        account_payload = fallback_account
+    return account_payload, _single_remote_refresh_counts(refresh_result)
 
 
 class GPTAccountItem(BaseModel):
@@ -783,53 +832,66 @@ async def _refresh_gpt_record_remote_detail(
 
     try:
         detail = await _fetch_gpt_remote_detail(access_token)
+        ext_merge = _remote_detail_ext(detail, ext)
         await repo.patch_accounts(
             [
                 AccountPatch(
                     token=record.token,
-                    ext_merge=_remote_detail_ext(detail, ext),
+                    ext_merge=ext_merge,
                 )
             ]
         )
-        refreshed = next(iter(await repo.get_accounts([record.token])), record)
+        refreshed = _record_with_updates(record, ext_merge=ext_merge)
         return {"refreshed": True, "account": _serialize(refreshed)}
     except ValidationError as exc:
         message = str(exc)[:500]
         now = _now_ms()
+        ext_merge = {
+            "gpt_status": "invalid",
+            "gpt_registration_error": message,
+            "gpt_remote_error": message,
+            "gpt_last_remote_refresh_at": now,
+        }
         await repo.patch_accounts(
             [
                 AccountPatch(
                     token=record.token,
                     last_fail_at=now,
                     last_fail_reason=message,
-                    ext_merge={
-                        "gpt_status": "invalid",
-                        "gpt_registration_error": message,
-                        "gpt_remote_error": message,
-                        "gpt_last_remote_refresh_at": now,
-                    },
+                    ext_merge=ext_merge,
                 )
             ]
         )
-        refreshed = next(iter(await repo.get_accounts([record.token])), record)
+        refreshed = _record_with_updates(
+            record,
+            last_fail_at=now,
+            last_fail_reason=message,
+            ext_merge=ext_merge,
+        )
         return {"refreshed": False, "error": message, "account": _serialize(refreshed)}
     except Exception as exc:
         message = (str(exc) or exc.__class__.__name__)[:500]
         now = _now_ms()
+        ext_merge = {
+            "gpt_remote_error": message,
+            "gpt_last_remote_refresh_at": now,
+        }
         await repo.patch_accounts(
             [
                 AccountPatch(
                     token=record.token,
                     last_fail_at=now,
                     last_fail_reason=message,
-                    ext_merge={
-                        "gpt_remote_error": message,
-                        "gpt_last_remote_refresh_at": now,
-                    },
+                    ext_merge=ext_merge,
                 )
             ]
         )
-        refreshed = next(iter(await repo.get_accounts([record.token])), record)
+        refreshed = _record_with_updates(
+            record,
+            last_fail_at=now,
+            last_fail_reason=message,
+            ext_merge=ext_merge,
+        )
         return {"refreshed": False, "error": message, "account": _serialize(refreshed)}
 
 
@@ -1049,6 +1111,7 @@ async def finish_gpt_account_oauth(
         )
 
     saved_id = record.token if record else ""
+    saved_record: AccountRecord | None = None
     if req.save:
         if record is None:
             record = await _find_gpt_record_by_email(repo, email)
@@ -1072,6 +1135,13 @@ async def finish_gpt_account_oauth(
                         ext_merge=ext_merge,
                     )
                 ]
+            )
+            saved_record = _record_with_updates(
+                record,
+                status=AccountStatus.DISABLED,
+                state_reason="GPT account record; excluded from Grok SSO pool",
+                add_tags=[_TAG],
+                ext_merge=ext_merge,
             )
         else:
             item = GPTAccountItem(
@@ -1101,20 +1171,35 @@ async def finish_gpt_account_oauth(
                     )
                 ]
             )
-    saved_id = record.token if record else saved_id
+            saved_record = AccountRecord(
+                token=saved_id,
+                pool="basic",
+                tags=[_TAG],
+                status=AccountStatus.DISABLED,
+                state_reason="GPT account record; excluded from Grok SSO pool",
+                ext=_ext_for_item(item),
+            )
+    saved_id = saved_record.token if saved_record else (record.token if record else saved_id)
+    fallback_account = {
+        "id": saved_id,
+        "email": email or None,
+        "alias": alias or None,
+        "plan_type": plan_type or None,
+        "saved": bool(req.save),
+    }
+    account_payload, remote_counts = await _refresh_saved_gpt_account_response(
+        repo,
+        saved_record,
+        fallback_account,
+    )
 
     return _json(
         {
             "status": "success",
             "access_token": access_token,
             "access_token_masked": _mask(access_token),
-            "account": {
-                "id": saved_id,
-                "email": email or None,
-                "alias": alias or None,
-                "plan_type": plan_type or None,
-                "saved": bool(req.save),
-            },
+            "account": account_payload,
+            **remote_counts,
         }
     )
 
@@ -1181,10 +1266,23 @@ async def login_gpt_account(
         )
 
     saved_id = record.token if record else ""
+    saved_record: AccountRecord | None = None
     if req.save:
         if record is None:
             record = await _find_gpt_record_by_email(repo, email)
         if record:
+            ext_merge: dict[str, Any] = {
+                "gpt": True,
+                "gpt_access_token": access_token,
+                "gpt_email": email,
+                "gpt_alias": alias or None,
+                "gpt_password": password,
+                "gpt_mail_token": mail_token,
+                "gpt_email_provider": email_provider or None,
+                "gpt_plan_type": plan_type or None,
+                "gpt_status": "available",
+                "gpt_registration_error": None,
+            }
             await repo.patch_accounts(
                 [
                     AccountPatch(
@@ -1192,20 +1290,16 @@ async def login_gpt_account(
                         status=AccountStatus.DISABLED,
                         add_tags=[_TAG],
                         state_reason="GPT account record; excluded from Grok SSO pool",
-                        ext_merge={
-                            "gpt": True,
-                            "gpt_access_token": access_token,
-                            "gpt_email": email,
-                            "gpt_alias": alias or None,
-                            "gpt_password": password,
-                            "gpt_mail_token": mail_token,
-                            "gpt_email_provider": email_provider or None,
-                            "gpt_plan_type": plan_type or None,
-                            "gpt_status": "available",
-                            "gpt_registration_error": None,
-                        },
+                        ext_merge=ext_merge,
                     )
                 ]
+            )
+            saved_record = _record_with_updates(
+                record,
+                status=AccountStatus.DISABLED,
+                state_reason="GPT account record; excluded from Grok SSO pool",
+                add_tags=[_TAG],
+                ext_merge=ext_merge,
             )
         else:
             item = GPTAccountItem(
@@ -1238,21 +1332,36 @@ async def login_gpt_account(
                     )
                 ]
             )
-    saved_id = record.token if record else saved_id
+            saved_record = AccountRecord(
+                token=saved_id,
+                pool="basic",
+                tags=[_TAG],
+                status=AccountStatus.DISABLED,
+                state_reason="GPT account record; excluded from Grok SSO pool",
+                ext=_ext_for_item(item),
+            )
+    saved_id = saved_record.token if saved_record else (record.token if record else saved_id)
+    fallback_account = {
+        "id": saved_id,
+        "email": email,
+        "alias": alias or None,
+        "plan_type": plan_type or None,
+        "email_provider": email_provider or None,
+        "saved": bool(req.save),
+    }
+    account_payload, remote_counts = await _refresh_saved_gpt_account_response(
+        repo,
+        saved_record,
+        fallback_account,
+    )
 
     return _json(
         {
             "status": "success",
             "access_token": access_token,
             "access_token_masked": _mask(access_token),
-            "account": {
-                "id": saved_id,
-                "email": email,
-                "alias": alias or None,
-                "plan_type": plan_type or None,
-                "email_provider": email_provider or None,
-                "saved": bool(req.save),
-            },
+            "account": account_payload,
+            **remote_counts,
         }
     )
 

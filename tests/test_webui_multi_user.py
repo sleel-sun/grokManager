@@ -394,7 +394,7 @@ def test_webui_pages_use_same_auth_cache_buster() -> None:
         assert expected in html, f"{name} must not load a stale auth.js cache key"
 
     chat_html = (root / "app" / "statics" / "webui" / "chat.html").read_text(encoding="utf-8")
-    assert "/static/js/webui/chat.js?v={{APP_VERSION}}-downloads1" in chat_html
+    assert "/static/js/webui/chat.js?v={{APP_VERSION}}-imageref1" in chat_html
     masonry_html = (root / "app" / "statics" / "webui" / "masonry.html").read_text(encoding="utf-8")
     assert "/static/js/webui/masonry.js?v={{APP_VERSION}}-usernsfw1" in masonry_html
 

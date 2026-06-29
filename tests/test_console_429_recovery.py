@@ -63,6 +63,34 @@ def test_clear_failures_removes_console_429_counter(tmp_path):
     asyncio.run(run())
 
 
+def test_clear_last_failure_preserves_account_status(tmp_path):
+    async def run():
+        repo = LocalAccountRepository(tmp_path / "accounts.db")
+        await repo.initialize()
+        await repo.upsert_accounts([AccountUpsert(token="tok")])
+        await repo.patch_accounts([
+            AccountPatch(
+                token="tok",
+                status=AccountStatus.DISABLED,
+                state_reason="gpt_record",
+                last_fail_at=now_ms(),
+                last_fail_reason="timeout",
+            )
+        ])
+
+        await repo.patch_accounts([AccountPatch(token="tok", clear_last_failure=True)])
+
+        record = (await repo.get_accounts(["tok"]))[0]
+        assert record.status == AccountStatus.DISABLED
+        assert record.state_reason == "gpt_record"
+        assert record.last_fail_at is None
+        assert record.last_fail_reason is None
+
+        await repo.close()
+
+    asyncio.run(run())
+
+
 def test_recover_console_expired_accounts_restores_healthy_history(tmp_path):
     async def run():
         repo = LocalAccountRepository(tmp_path / "accounts.db")
