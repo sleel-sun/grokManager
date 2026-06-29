@@ -47,6 +47,7 @@ class WebUIImageGenerationRequest(BaseModel):
     size: str | None = "1024x1024"
     quality: str | None = "1k"
     response_format: str | None = "url"
+    session_id: str | None = ""
 
 
 class WebUIImageUrlCacheRequest(BaseModel):
@@ -291,14 +292,14 @@ async def _append_history_session(
     quality: str,
     images: list[dict[str, str]],
     reference_names: list[str] | None = None,
+    session_id: str | None = None,
 ) -> dict[str, Any] | None:
     if not images:
         return None
     now = int(time.time())
-    session = {
+    turn = {
         "id": uuid.uuid4().hex,
         "created_at": now,
-        "updated_at": now,
         "prompt": str(prompt or "").strip(),
         "model": model,
         "mode": mode,
@@ -308,9 +309,80 @@ async def _append_history_session(
         "reference_names": reference_names or [],
     }
     sessions = await _load_history(user)
-    sessions = [session, *sessions]
+    target_id = str(session_id or "").strip()
+    session = next(
+        (
+            item
+            for item in sessions
+            if isinstance(item, dict) and str(item.get("id") or "") == target_id
+        ),
+        None,
+    )
+    if session is not None:
+        turns = _history_session_turns(session)
+        session["turns"] = [*turns, turn]
+        session["updated_at"] = now
+        session["title"] = str(session.get("title") or session.get("prompt") or turn["prompt"])
+        # Keep top-level fields as the latest turn for older clients that do not
+        # understand the turns array yet.
+        session.update(
+            {
+                "prompt": turn["prompt"],
+                "model": model,
+                "mode": mode,
+                "size": size,
+                "quality": quality,
+                "images": images,
+                "reference_names": reference_names or [],
+            }
+        )
+        sessions = [session, *[item for item in sessions if item is not session]]
+    else:
+        session = {
+            "id": uuid.uuid4().hex,
+            "title": turn["prompt"],
+            "created_at": now,
+            "updated_at": now,
+            "prompt": turn["prompt"],
+            "model": model,
+            "mode": mode,
+            "size": size,
+            "quality": quality,
+            "images": images,
+            "reference_names": reference_names or [],
+            "turns": [turn],
+        }
+        sessions = [session, *sessions]
     await _save_history(user, sessions)
     return session
+
+
+def _history_session_turns(session: dict[str, Any]) -> list[dict[str, Any]]:
+    raw_turns = session.get("turns")
+    if isinstance(raw_turns, list):
+        turns = [
+            item
+            for item in raw_turns
+            if isinstance(item, dict) and isinstance(item.get("images"), list) and item.get("images")
+        ]
+        if turns:
+            return turns
+    images = session.get("images")
+    if not isinstance(images, list) or not images:
+        return []
+    return [
+        {
+            "id": uuid.uuid4().hex,
+            "created_at": int(session.get("created_at") or time.time()),
+            "prompt": str(session.get("prompt") or ""),
+            "model": str(session.get("model") or ""),
+            "mode": str(session.get("mode") or "generate"),
+            "size": str(session.get("size") or "1024x1024"),
+            "quality": str(session.get("quality") or "1k"),
+            "images": images,
+            "reference_names": session.get("reference_names") if isinstance(session.get("reference_names"), list) else [],
+        }
+    ]
 
 
 @router.get("/images/models")
@@ -377,6 +449,7 @@ async def webui_image_generations(
         size=req.size or "1024x1024",
         quality=quality,
         images=_images_from_payload(result),
+        session_id=getattr(req, "session_id", None),
     )
     if isinstance(result, dict):
         result["studio_session"] = session
@@ -397,6 +470,7 @@ async def webui_image_edits(
     size: Annotated[str, Form()] = "1024x1024",
     quality: Annotated[str, Form()] = "1k",
     response_format: Annotated[str, Form()] = "url",
+    session_id: Annotated[str, Form()] = "",
     user: WebUIUser = Depends(verify_webui_key),
 ):
     spec = model_registry.get(model)
@@ -457,6 +531,7 @@ async def webui_image_edits(
         quality=quality_value,
         images=_images_from_payload(result),
         reference_names=reference_names,
+        session_id=session_id,
     )
     if isinstance(result, dict):
         result["studio_session"] = session

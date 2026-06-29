@@ -32,7 +32,7 @@ def test_image_studio_page_route_and_header_entry_exist() -> None:
     assert "/static/js/auth.js?v={{APP_VERSION}}-usernsfw1" in html
     assert 'id="studioQuality"' in html
     assert 'id="studioReferencePreview"' in html
-    assert "/static/js/webui/image-studio.js?v={{APP_VERSION}}-studio3" in html
+    assert "/static/js/webui/image-studio.js?v={{APP_VERSION}}-studio4" in html
     assert "fetch(GENERATE_ENDPOINT" in js
     assert "fetch(EDIT_ENDPOINT" in js
     assert "HISTORY_ENDPOINT" in js
@@ -47,6 +47,9 @@ def test_image_studio_page_route_and_header_entry_exist() -> None:
     assert "function clearPromptInput()" in js
     assert "clearPromptInput();" in js
     assert "restorePromptInput(prompt);" in js
+    assert "session_id: sessionId || undefined" in js
+    assert "body.set('session_id', sessionId);" in js
+    assert "turns.map((turn, index) => renderTurn(session, turn, index)).join('')" in js
 
 
 def test_webui_image_generation_uses_webui_wrapper(monkeypatch, tmp_path) -> None:
@@ -142,6 +145,51 @@ def test_webui_image_generation_allows_premium_quality(monkeypatch, tmp_path) ->
 
     assert body["quality"] == "4k"
     assert "Output target: 4K high-detail image." in calls[0]["prompt"]
+
+
+def test_webui_image_generation_appends_to_existing_studio_session(monkeypatch, tmp_path) -> None:
+    async def fake_generate(**kwargs):
+        return {"created": 1, "data": [{"url": f"/v1/files/image?id={kwargs['prompt'].replace(' ', '-')}"}]}
+
+    monkeypatch.setattr("app.products.openai.images.generate", fake_generate)
+    monkeypatch.setattr("app.products.web.webui.images.data_path", lambda *parts: tmp_path.joinpath(*parts))
+
+    user = WebUIUser(id="alice", username="alice", gpt_models=("gpt-image-2",))
+    first = asyncio.run(
+        image_studio_api.webui_image_generations(
+            image_studio_api.WebUIImageGenerationRequest(
+                model="gpt-image-2",
+                prompt="first cat",
+                n=1,
+                size="1024x1024",
+            ),
+            user=user,
+        )
+    )
+    first_body = orjson.loads(first.body)
+    session_id = first_body["studio_session"]["id"]
+
+    second = asyncio.run(
+        image_studio_api.webui_image_generations(
+            image_studio_api.WebUIImageGenerationRequest(
+                model="gpt-image-2",
+                prompt="second dog",
+                n=1,
+                size="1024x1024",
+                session_id=session_id,
+            ),
+            user=user,
+        )
+    )
+    second_body = orjson.loads(second.body)
+    listed = asyncio.run(image_studio_api.webui_image_history(user=user))
+    history = orjson.loads(listed.body)["data"]
+
+    assert second_body["studio_session"]["id"] == session_id
+    assert len(history) == 1
+    assert [turn["prompt"] for turn in history[0]["turns"]] == ["first cat", "second dog"]
+    assert history[0]["title"] == "first cat"
+    assert history[0]["prompt"] == "second dog"
 
 
 def test_webui_image_models_are_filtered_by_user_gpt_permissions() -> None:
