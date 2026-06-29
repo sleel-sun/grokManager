@@ -338,6 +338,18 @@
     syncSubmitState();
   }
 
+  function clearPromptInput() {
+    if (!promptInput) return;
+    promptInput.value = '';
+    syncPromptCount();
+  }
+
+  function restorePromptInput(prompt) {
+    if (!promptInput || String(promptInput.value || '').trim()) return;
+    promptInput.value = prompt;
+    syncPromptCount();
+  }
+
   function imageFiles() {
     return Array.from((imageInput && imageInput.files) || []).filter((file) => file.type.startsWith('image/'));
   }
@@ -533,6 +545,7 @@
       return;
     }
     setRunning(true);
+    clearPromptInput();
     setStatus(mode === 'edit' ? '正在提交图像编辑任务...' : '正在提交文生图任务...', 'running');
     try {
       const result = mode === 'edit'
@@ -556,6 +569,7 @@
       toast('图片任务完成', 'success');
       if (resultsViewport) resultsViewport.scrollTo({ top: 0, behavior: 'smooth' });
     } catch (error) {
+      restorePromptInput(prompt);
       const message = (error && error.message) || String(error);
       setStatus(message, 'failed');
       toast(message, 'error');

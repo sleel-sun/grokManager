@@ -2,7 +2,7 @@
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import AliasChoices, BaseModel, Field
 
 
 class MessageItem(BaseModel):
@@ -16,7 +16,10 @@ class MessageItem(BaseModel):
 class ImageConfig(BaseModel):
     n:               int | None = Field(1, ge=1, le=10)
     size:            str | None = "1024x1024"
-    response_format: str | None = None
+    response_format: str | None = Field(
+        None,
+        validation_alias=AliasChoices("response_format", "responseFormat"),
+    )
 
 
 class VideoConfig(BaseModel):
@@ -52,7 +55,10 @@ class ImageGenerationRequest(BaseModel):
     prompt:          str
     n:               int | None = Field(1, ge=1, le=10)
     size:            str | None = "1024x1024"
-    response_format: str | None = "url"
+    response_format: str | None = Field(
+        None,
+        validation_alias=AliasChoices("response_format", "responseFormat"),
+    )
 
 
 class ImageEditRequest(BaseModel):
@@ -62,7 +68,10 @@ class ImageEditRequest(BaseModel):
     mask:            str | None = None
     n:               int | None = Field(1, ge=1, le=2)
     size:            str | None = "1024x1024"
-    response_format: str | None = "url"
+    response_format: str | None = Field(
+        None,
+        validation_alias=AliasChoices("response_format", "responseFormat"),
+    )
 
 
 class ResponsesCreateRequest(BaseModel):

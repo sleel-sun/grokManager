@@ -36,6 +36,7 @@ _TAG_RESPONSES = "OpenAI - Responses"
 _TAG_IMAGES = "OpenAI - Images"
 _TAG_VIDEOS = "OpenAI - Videos"
 _TAG_FILES = "OpenAI - Files"
+_STANDALONE_IMAGE_RESPONSE_FORMAT_DEFAULT = "b64_json"
 
 
 async def _available_pools(request: Request) -> frozenset[str]:
@@ -237,6 +238,10 @@ def _anthropic_model_payload(spec: ModelSpec, created: int) -> dict:
         "display_name": spec.public_name,
         "created_at": datetime.fromtimestamp(created, tz=timezone.utc).isoformat().replace("+00:00", "Z"),
     }
+
+
+def _standalone_image_response_format(response_format: str | None) -> str:
+    return response_format or _STANDALONE_IMAGE_RESPONSE_FORMAT_DEFAULT
 
 
 @router.get("/models", tags=[_TAG_MODELS], dependencies=[Depends(verify_api_key)])
@@ -818,7 +823,7 @@ async def image_generations(req: ImageGenerationRequest):
         prompt=req.prompt,
         n=req.n or 1,
         size=req.size or "1024x1024",
-        response_format=req.response_format or "url",
+        response_format=_standalone_image_response_format(req.response_format),
         stream=False,
         chat_format=False,
     )
@@ -919,7 +924,7 @@ async def image_edits(
     mask: Annotated[UploadFile | None, File()] = None,
     n: Annotated[int, Form()] = 1,
     size: Annotated[str, Form()] = "1024x1024",
-    response_format: Annotated[str, Form()] = "url",
+    response_format: Annotated[str, Form()] = _STANDALONE_IMAGE_RESPONSE_FORMAT_DEFAULT,
 ):
     spec = model_registry.get(model)
     if spec is None or not spec.enabled or not spec.is_image_edit():
