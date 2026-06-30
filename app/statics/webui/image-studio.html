@@ -429,11 +429,19 @@
     }
     .studio-image-link {
       display:block;
+      width:100%;
       aspect-ratio:1 / 1;
+      padding:0;
+      border:0;
       overflow:hidden;
       border-radius:22px;
       background:#ece6dc;
       box-shadow:0 1px 2px rgba(15,23,42,.04),0 20px 46px -34px rgba(15,23,42,.44);
+      cursor:zoom-in;
+    }
+    .studio-image-link:focus-visible {
+      outline:3px solid rgba(23,21,17,.34);
+      outline-offset:3px;
     }
     .studio-image-link img {
       display:block;
@@ -763,6 +771,94 @@
     .studio-status[data-state="failed"] {
       color:#b42318;
     }
+    .studio-preview-overlay {
+      background:rgba(14,13,11,.68);
+      backdrop-filter:blur(10px);
+    }
+    .studio-preview-modal {
+      width:min(1120px,94vw);
+      max-height:min(900px,92vh);
+      display:grid;
+      grid-template-rows:auto minmax(0,1fr) auto;
+      gap:12px;
+      padding:14px;
+      border:1px solid rgba(255,255,255,.1);
+      border-radius:26px;
+      background:#15130f;
+      color:#f9f5ed;
+      box-shadow:0 28px 90px rgba(0,0,0,.46);
+      transform:scale(.96) translateY(8px);
+      transition:transform .2s ease;
+    }
+    .modal-overlay.open .studio-preview-modal {
+      transform:none;
+    }
+    .studio-preview-head {
+      display:flex;
+      align-items:center;
+      justify-content:space-between;
+      gap:12px;
+      padding:2px 2px 0;
+    }
+    .studio-preview-title {
+      min-width:0;
+      overflow:hidden;
+      text-overflow:ellipsis;
+      white-space:nowrap;
+      font-size:14px;
+      font-weight:900;
+      letter-spacing:.01em;
+    }
+    .studio-preview-close {
+      width:36px;
+      height:36px;
+      display:inline-grid;
+      place-items:center;
+      flex:0 0 auto;
+      border:1px solid rgba(255,255,255,.14);
+      border-radius:999px;
+      color:#f9f5ed;
+      background:rgba(255,255,255,.08);
+      cursor:pointer;
+      transition:background .16s ease,transform .16s ease;
+    }
+    .studio-preview-close:hover {
+      background:rgba(255,255,255,.16);
+      transform:translateY(-1px);
+    }
+    .studio-preview-close svg {
+      width:18px;
+      height:18px;
+    }
+    .studio-preview-body {
+      min-height:0;
+      display:grid;
+      place-items:center;
+      overflow:auto;
+      border-radius:20px;
+      background:
+        radial-gradient(circle at 50% 30%, rgba(255,255,255,.16), rgba(255,255,255,.04) 42%, rgba(0,0,0,.12)),
+        linear-gradient(135deg, rgba(255,255,255,.06), rgba(255,255,255,.02));
+    }
+    .studio-preview-body img {
+      display:block;
+      max-width:100%;
+      max-height:78vh;
+      width:auto;
+      height:auto;
+      object-fit:contain;
+      border-radius:14px;
+    }
+    .studio-preview-caption {
+      min-height:18px;
+      overflow:hidden;
+      text-overflow:ellipsis;
+      white-space:nowrap;
+      color:rgba(249,245,237,.72);
+      font-size:12px;
+      line-height:1.45;
+      padding:0 2px 2px;
+    }
     .studio-hidden {
       display:none !important;
     }
@@ -785,12 +881,70 @@
     @media (max-width: 1000px) {
       .studio-shell {
         grid-template-columns:1fr;
+        grid-template-rows:auto minmax(0,1fr);
       }
       .studio-sidebar {
-        display:none;
+        grid-template-rows:auto auto minmax(0,1fr);
+        gap:10px;
+        min-height:0;
+        padding:12px 14px 10px;
+        border-right:0;
+        border-bottom:1px solid rgba(190,181,166,.42);
       }
       .studio-results-viewport {
         padding:34px 18px 28px;
+      }
+      .studio-side-top {
+        grid-template-columns:auto minmax(0,1fr);
+        align-items:end;
+        gap:8px 14px;
+      }
+      .studio-kicker {
+        grid-column:1 / -1;
+      }
+      .studio-side-title {
+        font-size:25px;
+      }
+      .studio-side-copy {
+        overflow:hidden;
+        white-space:nowrap;
+        text-overflow:ellipsis;
+      }
+      .studio-side-actions {
+        grid-template-columns:minmax(0,180px) auto;
+      }
+      .studio-side-list-wrap {
+        min-height:0;
+        gap:6px;
+      }
+      .studio-session-list {
+        display:flex;
+        gap:8px;
+        overflow-x:auto;
+        overflow-y:hidden;
+        padding:0 2px 4px 0;
+        scrollbar-width:none;
+      }
+      .studio-session-list::-webkit-scrollbar {
+        display:none;
+      }
+      .studio-session-list:empty::before {
+        min-width:220px;
+      }
+      .studio-side-session {
+        flex:0 0 min(238px, 78vw);
+        min-height:56px;
+        border-left:0;
+        border-top:2px solid transparent;
+        border-radius:16px;
+        background:rgba(255,255,255,.4);
+      }
+      .studio-side-session:hover,
+      .studio-side-session.is-active {
+        border-color:#171511;
+      }
+      .studio-side-health {
+        display:none;
       }
     }
     @media (max-width: 720px) {
@@ -803,6 +957,24 @@
       }
       .studio-results-viewport {
         padding:18px 12px 22px;
+      }
+      .studio-sidebar {
+        gap:8px;
+        padding:10px 10px 8px;
+      }
+      .studio-side-top {
+        display:none;
+      }
+      .studio-side-actions {
+        grid-template-columns:minmax(0,1fr) auto;
+      }
+      .studio-side-list-head {
+        font-size:10px;
+      }
+      .studio-side-session {
+        flex-basis:min(218px, 74vw);
+        min-height:52px;
+        padding:8px 9px;
       }
       .studio-turn-user {
         max-width:92%;
@@ -994,11 +1166,28 @@
     </section>
   </main>
 
+  <div id="studioImagePreviewModal" class="modal-overlay studio-preview-overlay" aria-hidden="true">
+    <div class="studio-preview-modal" role="dialog" aria-modal="true" aria-labelledby="studioImagePreviewTitle">
+      <div class="studio-preview-head">
+        <div id="studioImagePreviewTitle" class="studio-preview-title">图片预览</div>
+        <button id="studioImagePreviewClose" class="studio-preview-close" type="button" aria-label="关闭图片预览" title="关闭">
+          <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+            <path d="M7 7l10 10M17 7 7 17" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"></path>
+          </svg>
+        </button>
+      </div>
+      <div class="studio-preview-body">
+        <img id="studioImagePreviewImg" alt="">
+      </div>
+      <div id="studioImagePreviewCaption" class="studio-preview-caption"></div>
+    </div>
+  </div>
+
   <script src="/static/js/i18n.js?v={{APP_VERSION}}"></script>
   <script src="/static/js/auth.js?v={{APP_VERSION}}-usernsfw1"></script>
   <script src="/static/js/toast.js?v={{APP_VERSION}}"></script>
   <script src="/static/js/webui-header.js?v={{APP_VERSION}}-studio3"></script>
   <script src="/static/js/footer.js?v={{APP_VERSION}}"></script>
-  <script src="/static/js/webui/image-studio.js?v={{APP_VERSION}}-studio3"></script>
+  <script src="/static/js/webui/image-studio.js?v={{APP_VERSION}}-studio5"></script>
 </body>
 </html>

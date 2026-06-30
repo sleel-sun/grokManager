@@ -75,6 +75,10 @@
   const sessionModalInput = document.getElementById('sessionModalInput');
   const sessionModalCancel = document.getElementById('sessionModalCancel');
   const sessionModalConfirm = document.getElementById('sessionModalConfirm');
+  const imagePreviewModal = document.getElementById('imagePreviewModal');
+  const imagePreviewImg = document.getElementById('imagePreviewImg');
+  const imagePreviewCaption = document.getElementById('imagePreviewCaption');
+  const imagePreviewClose = document.getElementById('imagePreviewClose');
 
   let sessions = [];
   let currentSessionId = '';
@@ -156,6 +160,13 @@
     }
   }
 
+  function sanitizeImageUrl(value) {
+    const raw = String(value || '').trim();
+    if (raw.toLowerCase().startsWith('data:image/')) return raw;
+    const safeUrl = sanitizeUrl(raw);
+    return safeUrl && isImageUrl(safeUrl) ? safeUrl : '';
+  }
+
   function sanitizeRenderedHtml(html) {
     const template = document.createElement('template');
     template.innerHTML = html;
@@ -177,6 +188,9 @@
         const value = attr.value || '';
         if (name.startsWith('on')) {
           el.removeAttribute(attr.name);
+          return;
+        }
+        if (name === 'src' && tag === 'img' && sanitizeImageUrl(value)) {
           return;
         }
         if ((name === 'href' || name === 'src') && !sanitizeUrl(value)) {
@@ -864,6 +878,44 @@
     return String(value || '').trim().toLowerCase().includes('/v1/files/image');
   }
 
+  function buildImagePreviewCaption(url, alt) {
+    const cleanAlt = String(alt || '').trim();
+    if (cleanAlt && cleanAlt.toLowerCase() !== 'image') return cleanAlt;
+    const cleanUrl = String(url || '').trim();
+    if (!cleanUrl || cleanUrl.toLowerCase().startsWith('data:image/')) {
+      return text('webui.chat.imagePreviewTitle', 'Image preview');
+    }
+    try {
+      const parsed = new URL(cleanUrl, window.location.origin);
+      return decodeURIComponent(parsed.pathname.split('/').filter(Boolean).pop() || parsed.hostname || cleanUrl);
+    } catch {
+      return cleanUrl;
+    }
+  }
+
+  function openImagePreview(url, alt) {
+    if (!imagePreviewModal || !imagePreviewImg) return;
+    const safeUrl = sanitizeImageUrl(url);
+    if (!safeUrl) return;
+    imagePreviewImg.src = safeUrl;
+    imagePreviewImg.alt = String(alt || text('webui.chat.imagePreviewTitle', 'Image preview'));
+    if (imagePreviewCaption) imagePreviewCaption.textContent = buildImagePreviewCaption(safeUrl, alt);
+    imagePreviewModal.classList.add('open');
+    imagePreviewModal.setAttribute('aria-hidden', 'false');
+    if (imagePreviewClose) imagePreviewClose.focus();
+  }
+
+  function closeImagePreview() {
+    if (!imagePreviewModal) return;
+    imagePreviewModal.classList.remove('open');
+    imagePreviewModal.setAttribute('aria-hidden', 'true');
+    if (imagePreviewImg) {
+      imagePreviewImg.removeAttribute('src');
+      imagePreviewImg.alt = '';
+    }
+    if (imagePreviewCaption) imagePreviewCaption.textContent = '';
+  }
+
   function normalizeMediaContent(source) {
     const input = String(source || '').replace(/\[video\]\(([^)]+)\)/gi, '$1');
     return input.replace(/^(https?:\/\/\S+|\/v1\/files\/(?:image|video)\?id=\S+|data:image\/[^\s]+)$/gm, (match) => {
@@ -940,6 +992,42 @@
       if (!container) return;
       container.classList.add('msg-generated-media');
       appendAssistantImageActions(container, url, index);
+    });
+  }
+
+  function enhanceImagePreviews(root) {
+    if (!root || typeof root.querySelectorAll !== 'function') return;
+
+    root.querySelectorAll('a[href]').forEach((link) => {
+      if (link.closest('pre, code')) return;
+      const href = link.getAttribute('href') || '';
+      if (!isImageUrl(href) || link.dataset.imagePreviewEnhanced === 'true') return;
+      link.dataset.imagePreviewEnhanced = 'true';
+      link.classList.add('msg-image-preview-link');
+      link.removeAttribute('target');
+      link.addEventListener('click', (event) => {
+        event.preventDefault();
+        openImagePreview(href, link.textContent || '');
+      });
+    });
+
+    root.querySelectorAll('img').forEach((img) => {
+      const src = img.getAttribute('src') || '';
+      if (!isImageUrl(src) || img.dataset.imagePreviewEnhanced === 'true') return;
+      img.dataset.imagePreviewEnhanced = 'true';
+      img.classList.add('msg-previewable-image');
+      img.setAttribute('role', 'button');
+      img.tabIndex = 0;
+      img.addEventListener('click', (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        openImagePreview(src, img.getAttribute('alt') || '');
+      });
+      img.addEventListener('keydown', (event) => {
+        if (event.key !== 'Enter' && event.key !== ' ') return;
+        event.preventDefault();
+        openImagePreview(src, img.getAttribute('alt') || '');
+      });
     });
   }
 
@@ -1089,6 +1177,7 @@
         }
         card.innerHTML = parts.join('') || '<p></p>';
         enhanceAssistantImageReferences(card);
+        enhanceImagePreviews(card);
         enhanceAttachmentDownloads(card);
         enhanceCodePreviews(card);
         return;
@@ -1126,12 +1215,14 @@
         body.appendChild(attachments);
       }
       card.replaceChildren(body);
+      enhanceImagePreviews(card);
       return;
     }
 
     if (role === 'assistant') {
       card.innerHTML = renderRichMarkdown(content);
       enhanceAssistantImageReferences(card);
+      enhanceImagePreviews(card);
       enhanceAttachmentDownloads(card);
       enhanceCodePreviews(card);
       return;
@@ -2828,6 +2919,12 @@
       if (event.target === mcpModal) closeMcpModal();
     });
   }
+  if (imagePreviewClose) imagePreviewClose.addEventListener('click', closeImagePreview);
+  if (imagePreviewModal) {
+    imagePreviewModal.addEventListener('click', (event) => {
+      if (event.target === imagePreviewModal) closeImagePreview();
+    });
+  }
   if (mcpEnabled) {
     mcpEnabled.addEventListener('change', () => {
       mcpSettings.enabled = Boolean(mcpEnabled.checked);
@@ -2894,6 +2991,11 @@
     if (event.key === 'Enter' && !event.shiftKey) {
       event.preventDefault();
       sendMessage();
+    }
+  });
+  document.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape' && imagePreviewModal && imagePreviewModal.classList.contains('open')) {
+      closeImagePreview();
     }
   });
 

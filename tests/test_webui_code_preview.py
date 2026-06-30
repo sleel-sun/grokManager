@@ -275,6 +275,19 @@ def test_webui_chat_generated_images_can_be_referenced_in_studio() -> None:
     assert ".msg-media-reference-btn" in css
 
 
+def test_webui_chat_images_preview_in_modal() -> None:
+    html = CHAT_HTML.read_text(encoding="utf-8")
+    js = _chat_js()
+    css = APP_CSS.read_text(encoding="utf-8")
+
+    assert 'id="imagePreviewModal"' in html
+    assert "function enhanceImagePreviews(root)" in js
+    assert "openImagePreview(href, link.textContent || '')" in js
+    assert "event.preventDefault()" in js
+    assert ".image-preview-modal" in css
+    assert ".msg-previewable-image" in css
+
+
 def test_webui_attachment_download_helpers_are_restricted_to_asset_hosts() -> None:
     assert (
         attachments_module._validate_download_reference(

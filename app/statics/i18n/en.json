@@ -78,6 +78,7 @@
       "previewSaveFailed": "Failed to save preview URL",
       "previewFrameTitle": "Code preview",
       "previewOpenFailed": "Preview popup was blocked",
+      "imagePreviewTitle": "Image preview",
       "search": {
         "button": "Search",
         "onButton": "Search on",

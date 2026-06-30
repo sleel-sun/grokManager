@@ -39,6 +39,10 @@
   const modelHint = document.getElementById('studioModelHint');
   const historyHint = document.getElementById('studioHistoryHint');
   const resultsViewport = document.getElementById('studioResultsViewport');
+  const imagePreviewModal = document.getElementById('studioImagePreviewModal');
+  const imagePreviewImg = document.getElementById('studioImagePreviewImg');
+  const imagePreviewCaption = document.getElementById('studioImagePreviewCaption');
+  const imagePreviewClose = document.getElementById('studioImagePreviewClose');
 
   let mode = 'generate';
   let running = false;
@@ -70,6 +74,53 @@
     statusEl.dataset.state = state;
   }
 
+  function sanitizeImageUrl(value) {
+    const raw = String(value || '').trim();
+    if (!raw) return '';
+    if (raw.toLowerCase().startsWith('data:image/')) return raw;
+    try {
+      const parsed = new URL(raw, window.location.origin);
+      return ['http:', 'https:'].includes(parsed.protocol) ? parsed.href : '';
+    } catch {
+      return '';
+    }
+  }
+
+  function previewCaption(url, fallback) {
+    const label = String(fallback || '').trim();
+    if (label) return label;
+    try {
+      const parsed = new URL(url, window.location.origin);
+      return decodeURIComponent(parsed.pathname.split('/').filter(Boolean).pop() || '图片预览');
+    } catch {
+      return '图片预览';
+    }
+  }
+
+  function openImagePreview(url, label) {
+    if (!imagePreviewModal || !imagePreviewImg) return;
+    const safeUrl = sanitizeImageUrl(url);
+    if (!safeUrl) return;
+    const caption = previewCaption(safeUrl, label);
+    imagePreviewImg.src = safeUrl;
+    imagePreviewImg.alt = caption;
+    if (imagePreviewCaption) imagePreviewCaption.textContent = caption;
+    imagePreviewModal.classList.add('open');
+    imagePreviewModal.setAttribute('aria-hidden', 'false');
+    if (imagePreviewClose) imagePreviewClose.focus();
+  }
+
+  function closeImagePreview() {
+    if (!imagePreviewModal) return;
+    imagePreviewModal.classList.remove('open');
+    imagePreviewModal.setAttribute('aria-hidden', 'true');
+    if (imagePreviewImg) {
+      imagePreviewImg.removeAttribute('src');
+      imagePreviewImg.alt = '';
+    }
+    if (imagePreviewCaption) imagePreviewCaption.textContent = '';
+  }
+
   function readHistory() {
     try {
       const parsed = JSON.parse(localStorage.getItem(HISTORY_KEY) || '[]');
@@ -85,28 +136,67 @@
     } catch {}
   }
 
-  function normalizeSession(session) {
-    if (!session || typeof session !== 'object') return null;
-    const images = Array.isArray(session.images)
-      ? session.images
+  function normalizeImageItems(items, fallbackUrl = '') {
+    const images = Array.isArray(items)
+      ? items
         .map((item) => (typeof item === 'string' ? { url: item } : item))
         .filter((item) => item && item.url)
       : [];
-    if (!images.length && session.url) images.push({ url: session.url });
-    if (!images.length) return null;
+    if (!images.length && fallbackUrl) images.push({ url: fallbackUrl });
+    return images;
+  }
 
+  function normalizeMode(value) {
+    const raw = String(value || '').toLowerCase();
+    if (raw === 'edit' || raw === 'cache') return raw;
+    return 'generate';
+  }
+
+  function normalizeTurn(turn, fallbackCreatedAt) {
+    if (!turn || typeof turn !== 'object') return null;
+    const images = normalizeImageItems(turn.images, turn.url);
+    if (!images.length) return null;
+    const createdAt = Number(turn.created_at || turn.createdAt || fallbackCreatedAt || Date.now());
+    return {
+      id: String(turn.id || `${createdAt}-${Math.random()}`),
+      prompt: String(turn.prompt || ''),
+      model: String(turn.model || 'model'),
+      mode: normalizeMode(turn.mode),
+      size: String(turn.size || '1024x1024'),
+      quality: String(turn.quality || '1k'),
+      created_at: createdAt,
+      reference_names: Array.isArray(turn.reference_names) ? turn.reference_names : [],
+      images,
+    };
+  }
+
+  function normalizeSession(session) {
+    if (!session || typeof session !== 'object') return null;
     const createdAt = Number(session.created_at || session.createdAt || Date.now());
+    let turns = Array.isArray(session.turns)
+      ? session.turns.map((turn) => normalizeTurn(turn, createdAt)).filter(Boolean)
+      : [];
+    if (!turns.length) {
+      const legacyTurn = normalizeTurn(session, createdAt);
+      if (legacyTurn) turns = [legacyTurn];
+    }
+    if (!turns.length) return null;
+
+    const latest = turns[turns.length - 1];
+    const title = String(session.title || turns[0].prompt || session.prompt || '');
     return {
       id: String(session.id || `${createdAt}-${Math.random()}`),
-      prompt: String(session.prompt || ''),
-      model: String(session.model || 'model'),
-      mode: session.mode === 'edit' ? 'edit' : 'generate',
-      size: String(session.size || '1024x1024'),
-      quality: String(session.quality || '1k'),
+      title,
+      prompt: String(session.prompt || latest.prompt || title),
+      model: String(session.model || latest.model || 'model'),
+      mode: normalizeMode(session.mode || latest.mode),
+      size: String(session.size || latest.size || '1024x1024'),
+      quality: String(session.quality || latest.quality || '1k'),
       created_at: createdAt,
-      updated_at: Number(session.updated_at || session.updatedAt || createdAt),
-      reference_names: Array.isArray(session.reference_names) ? session.reference_names : [],
-      images,
+      updated_at: Number(session.updated_at || session.updatedAt || latest.created_at || createdAt),
+      reference_names: Array.isArray(session.reference_names) ? session.reference_names : latest.reference_names,
+      images: turns.flatMap((turn) => turn.images),
+      turns,
     };
   }
 
@@ -143,10 +233,50 @@
     return data.map(imageUrlFromItem).filter(Boolean);
   }
 
+  function activeAppendSessionId() {
+    return !draftMode && selectedSessionId ? selectedSessionId : '';
+  }
+
   function addHistory({ images, prompt, model, mode: sessionMode, size, quality }) {
     const now = Date.now();
+    const turn = normalizeTurn({
+      id: `${now}-${Math.random().toString(36).slice(2, 8)}`,
+      prompt,
+      model,
+      mode: sessionMode,
+      size,
+      quality,
+      created_at: now,
+      images: images.map((url) => ({ url })),
+    }, now);
+    if (!turn) return;
+
+    const existingSessions = historySessions();
+    const existing = activeAppendSessionId()
+      ? existingSessions.find((session) => session.id === selectedSessionId)
+      : null;
+    if (existing) {
+      const turns = Array.isArray(existing.turns) && existing.turns.length
+        ? existing.turns.slice()
+        : [normalizeTurn(existing, existing.created_at)].filter(Boolean);
+      existing.turns = [...turns, turn];
+      existing.updated_at = now;
+      existing.prompt = turn.prompt;
+      existing.model = turn.model;
+      existing.mode = turn.mode;
+      existing.size = turn.size;
+      existing.quality = turn.quality;
+      existing.images = existing.turns.flatMap((item) => item.images);
+      history = [existing, ...existingSessions.filter((session) => session.id !== existing.id)].slice(0, HISTORY_LIMIT);
+      draftMode = false;
+      writeHistory();
+      renderHistory();
+      return;
+    }
+
     const session = normalizeSession({
       id: `${now}`,
+      title: prompt,
       prompt,
       model,
       mode: sessionMode,
@@ -155,6 +285,7 @@
       created_at: now,
       updated_at: now,
       images: images.map((url) => ({ url })),
+      turns: [turn],
     });
     if (!session) return;
     history = [session, ...historySessions()].slice(0, HISTORY_LIMIT);
@@ -171,7 +302,9 @@
   }
 
   function modeLabel(value) {
-    return value === 'edit' ? '图像编辑' : '文生图';
+    if (value === 'edit') return '图像编辑';
+    if (value === 'cache') return '引用图';
+    return '文生图';
   }
 
   function shortPrompt(value) {
@@ -184,27 +317,32 @@
     if (!sessionList) return;
     sessionList.innerHTML = sessions.map((session) => {
       const active = selected && selected.id === session.id ? ' is-active' : '';
-      const meta = `${modeLabel(session.mode)} · ${session.images.length} 张 · ${formatDate(session.created_at)}`;
+      const turnCount = Array.isArray(session.turns) ? session.turns.length : 1;
+      const imageCount = Array.isArray(session.images) ? session.images.length : 0;
+      const meta = `${turnCount} 轮 · ${imageCount} 张 · ${formatDate(session.updated_at || session.created_at)}`;
       return `<button class="studio-side-session${active}" type="button" data-select-session="${escapeHtml(session.id)}">
-        <span class="studio-side-session-title" title="${escapeHtml(session.prompt)}">${escapeHtml(shortPrompt(session.prompt))}</span>
+        <span class="studio-side-session-title" title="${escapeHtml(session.title || session.prompt)}">${escapeHtml(shortPrompt(session.title || session.prompt))}</span>
         <span class="studio-side-session-meta" title="${escapeHtml(meta)}">${escapeHtml(meta)}</span>
       </button>`;
     }).join('');
   }
 
-  function renderSelectedSession(session) {
-    const prompt = session.prompt || 'Untitled';
-    const meta = `${modeLabel(session.mode)} · ${session.model} · ${String(session.quality || '1k').toUpperCase()} · ${session.size} · ${formatDate(session.created_at)}`;
-    const refs = session.reference_names.length
-      ? `<span class="studio-tag">参考图 ${escapeHtml(session.reference_names.join(', '))}</span>`
+  function renderTurn(session, turn, index) {
+    const prompt = turn.prompt || 'Untitled';
+    const meta = `${modeLabel(turn.mode)} · ${turn.model} · ${String(turn.quality || '1k').toUpperCase()} · ${turn.size} · ${formatDate(turn.created_at)}`;
+    const refs = turn.reference_names.length
+      ? `<span class="studio-tag">参考图 ${escapeHtml(turn.reference_names.join(', '))}</span>`
       : '';
-    const images = session.images.map((image, index) => {
+    const deleteButton = index === 0
+      ? `<button class="studio-delete-btn" type="button" data-delete-session="${escapeHtml(session.id)}">删除会话</button>`
+      : '';
+    const images = turn.images.map((image, imageIndex) => {
       const url = escapeHtml(image.url);
-      const label = `结果 ${index + 1}`;
+      const label = `结果 ${imageIndex + 1}`;
       return `<article class="studio-output">
-        <a class="studio-image-link" href="${url}" target="_blank" rel="noopener">
+        <button class="studio-image-link" type="button" data-preview-image="${url}" data-preview-title="${escapeHtml(label)}" aria-label="预览${escapeHtml(label)}">
           <img src="${url}" alt="${escapeHtml(prompt)}" loading="lazy">
-        </a>
+        </button>
         <div class="studio-output-body">
           <span class="studio-output-title">${escapeHtml(label)}</span>
           <span class="studio-output-actions">
@@ -215,29 +353,34 @@
       </article>`;
     }).join('');
 
-    return `<article class="studio-turn" data-session-id="${escapeHtml(session.id)}">
+    return `<article class="studio-turn" data-session-id="${escapeHtml(session.id)}" data-turn-id="${escapeHtml(turn.id)}">
       <div class="studio-turn-user">
         <div class="studio-turn-meta">
-          <span>${escapeHtml(modeLabel(session.mode))}</span>
-          <span>${escapeHtml(formatDate(session.created_at))}</span>
+          <span>${escapeHtml(modeLabel(turn.mode))}</span>
+          <span>${escapeHtml(formatDate(turn.created_at))}</span>
         </div>
         <div class="studio-user-bubble">${escapeHtml(prompt)}</div>
       </div>
       <div class="studio-result-wrap">
         <div class="studio-result-toolbar">
           <div class="studio-result-tags">
-            <span class="studio-tag">${escapeHtml(session.images.length)} 张</span>
-            <span class="studio-tag">${escapeHtml(session.model)}</span>
-            <span class="studio-tag">${escapeHtml(String(session.quality || '1k').toUpperCase())}</span>
-            <span class="studio-tag">${escapeHtml(session.size)}</span>
+            <span class="studio-tag">${escapeHtml(turn.images.length)} 张</span>
+            <span class="studio-tag">${escapeHtml(turn.model)}</span>
+            <span class="studio-tag">${escapeHtml(String(turn.quality || '1k').toUpperCase())}</span>
+            <span class="studio-tag">${escapeHtml(turn.size)}</span>
             ${refs}
           </div>
-          <button class="studio-delete-btn" type="button" data-delete-session="${escapeHtml(session.id)}">删除</button>
+          ${deleteButton}
         </div>
         <div class="studio-session-images">${images}</div>
         <div class="studio-output-meta" title="${escapeHtml(meta)}">${escapeHtml(meta)}</div>
       </div>
     </article>`;
+  }
+
+  function renderSelectedSession(session) {
+    const turns = Array.isArray(session.turns) && session.turns.length ? session.turns : [session];
+    return turns.map((turn, index) => renderTurn(session, turn, index)).join('');
   }
 
   function renderHistory() {
@@ -574,6 +717,7 @@
     const n = Number((countSelect && countSelect.value) || 1);
     const size = (sizeSelect && sizeSelect.value) || '1024x1024';
     const quality = (qualitySelect && qualitySelect.value) || '1k';
+    const sessionId = activeAppendSessionId();
     const res = await fetch(GENERATE_ENDPOINT, {
       method: 'POST',
       headers: await webuiAuthHeaders(true),
@@ -584,6 +728,7 @@
         size,
         quality,
         response_format: 'url',
+        session_id: sessionId || undefined,
       }),
     });
     if (!res.ok) throw new Error(await responseError(res));
@@ -599,6 +744,7 @@
     const n = Math.min(Number((countSelect && countSelect.value) || 1), 2);
     const size = EDIT_SIZE;
     const quality = (qualitySelect && qualitySelect.value) || '1k';
+    const sessionId = activeAppendSessionId();
     const body = new FormData();
     body.set('model', model);
     body.set('prompt', prompt);
@@ -606,6 +752,7 @@
     body.set('size', size);
     body.set('quality', quality);
     body.set('response_format', 'url');
+    if (sessionId) body.set('session_id', sessionId);
     referenced.forEach((item) => body.append('reference_url', item.url));
     files.slice(0, Math.max(0, 5 - referenced.length)).forEach((file) => body.append('image', file));
 
@@ -650,7 +797,7 @@
       }
       setStatus(`完成，返回 ${result.images.length} 张图片`, 'completed');
       toast('图片任务完成', 'success');
-      if (resultsViewport) resultsViewport.scrollTo({ top: 0, behavior: 'smooth' });
+      if (resultsViewport) resultsViewport.scrollTo({ top: resultsViewport.scrollHeight, behavior: 'smooth' });
     } catch (error) {
       restorePromptInput(prompt);
       const message = (error && error.message) || String(error);
@@ -803,6 +950,12 @@
 
   if (output) {
     output.addEventListener('click', async (event) => {
+      const previewButton = event.target instanceof Element ? event.target.closest('[data-preview-image]') : null;
+      if (previewButton instanceof HTMLButtonElement) {
+        event.preventDefault();
+        openImagePreview(previewButton.dataset.previewImage || '', previewButton.dataset.previewTitle || '');
+        return;
+      }
       const referenceButton = event.target instanceof Element ? event.target.closest('[data-reference-image]') : null;
       if (referenceButton instanceof HTMLButtonElement) {
         addReferenceUrl(referenceButton.dataset.referenceImage || '', referenceButton.dataset.referenceName || '');
@@ -825,6 +978,13 @@
         const message = (error && error.message) || String(error);
         toast(message, 'error');
       }
+    });
+  }
+
+  if (imagePreviewClose) imagePreviewClose.addEventListener('click', closeImagePreview);
+  if (imagePreviewModal) {
+    imagePreviewModal.addEventListener('click', (event) => {
+      if (event.target === imagePreviewModal) closeImagePreview();
     });
   }
 
@@ -855,6 +1015,12 @@
       if (files.length) appendImageFiles(files);
     });
   }
+
+  document.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape' && imagePreviewModal && imagePreviewModal.classList.contains('open')) {
+      closeImagePreview();
+    }
+  });
 
   window.addEventListener('beforeunload', revokeReferencePreviewUrls);
 
