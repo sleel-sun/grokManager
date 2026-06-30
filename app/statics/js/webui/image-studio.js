@@ -39,6 +39,10 @@
   const modelHint = document.getElementById('studioModelHint');
   const historyHint = document.getElementById('studioHistoryHint');
   const resultsViewport = document.getElementById('studioResultsViewport');
+  const imagePreviewModal = document.getElementById('studioImagePreviewModal');
+  const imagePreviewImg = document.getElementById('studioImagePreviewImg');
+  const imagePreviewCaption = document.getElementById('studioImagePreviewCaption');
+  const imagePreviewClose = document.getElementById('studioImagePreviewClose');
 
   let mode = 'generate';
   let running = false;
@@ -68,6 +72,53 @@
     if (!statusEl) return;
     statusEl.textContent = message;
     statusEl.dataset.state = state;
+  }
+
+  function sanitizeImageUrl(value) {
+    const raw = String(value || '').trim();
+    if (!raw) return '';
+    if (raw.toLowerCase().startsWith('data:image/')) return raw;
+    try {
+      const parsed = new URL(raw, window.location.origin);
+      return ['http:', 'https:'].includes(parsed.protocol) ? parsed.href : '';
+    } catch {
+      return '';
+    }
+  }
+
+  function previewCaption(url, fallback) {
+    const label = String(fallback || '').trim();
+    if (label) return label;
+    try {
+      const parsed = new URL(url, window.location.origin);
+      return decodeURIComponent(parsed.pathname.split('/').filter(Boolean).pop() || '图片预览');
+    } catch {
+      return '图片预览';
+    }
+  }
+
+  function openImagePreview(url, label) {
+    if (!imagePreviewModal || !imagePreviewImg) return;
+    const safeUrl = sanitizeImageUrl(url);
+    if (!safeUrl) return;
+    const caption = previewCaption(safeUrl, label);
+    imagePreviewImg.src = safeUrl;
+    imagePreviewImg.alt = caption;
+    if (imagePreviewCaption) imagePreviewCaption.textContent = caption;
+    imagePreviewModal.classList.add('open');
+    imagePreviewModal.setAttribute('aria-hidden', 'false');
+    if (imagePreviewClose) imagePreviewClose.focus();
+  }
+
+  function closeImagePreview() {
+    if (!imagePreviewModal) return;
+    imagePreviewModal.classList.remove('open');
+    imagePreviewModal.setAttribute('aria-hidden', 'true');
+    if (imagePreviewImg) {
+      imagePreviewImg.removeAttribute('src');
+      imagePreviewImg.alt = '';
+    }
+    if (imagePreviewCaption) imagePreviewCaption.textContent = '';
   }
 
   function readHistory() {
@@ -289,9 +340,9 @@
       const url = escapeHtml(image.url);
       const label = `结果 ${imageIndex + 1}`;
       return `<article class="studio-output">
-        <a class="studio-image-link" href="${url}" target="_blank" rel="noopener">
+        <button class="studio-image-link" type="button" data-preview-image="${url}" data-preview-title="${escapeHtml(label)}" aria-label="预览${escapeHtml(label)}">
           <img src="${url}" alt="${escapeHtml(prompt)}" loading="lazy">
-        </a>
+        </button>
         <div class="studio-output-body">
           <span class="studio-output-title">${escapeHtml(label)}</span>
           <span class="studio-output-actions">
@@ -899,6 +950,12 @@
 
   if (output) {
     output.addEventListener('click', async (event) => {
+      const previewButton = event.target instanceof Element ? event.target.closest('[data-preview-image]') : null;
+      if (previewButton instanceof HTMLButtonElement) {
+        event.preventDefault();
+        openImagePreview(previewButton.dataset.previewImage || '', previewButton.dataset.previewTitle || '');
+        return;
+      }
       const referenceButton = event.target instanceof Element ? event.target.closest('[data-reference-image]') : null;
       if (referenceButton instanceof HTMLButtonElement) {
         addReferenceUrl(referenceButton.dataset.referenceImage || '', referenceButton.dataset.referenceName || '');
@@ -921,6 +978,13 @@
         const message = (error && error.message) || String(error);
         toast(message, 'error');
       }
+    });
+  }
+
+  if (imagePreviewClose) imagePreviewClose.addEventListener('click', closeImagePreview);
+  if (imagePreviewModal) {
+    imagePreviewModal.addEventListener('click', (event) => {
+      if (event.target === imagePreviewModal) closeImagePreview();
     });
   }
 
@@ -951,6 +1015,12 @@
       if (files.length) appendImageFiles(files);
     });
   }
+
+  document.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape' && imagePreviewModal && imagePreviewModal.classList.contains('open')) {
+      closeImagePreview();
+    }
+  });
 
   window.addEventListener('beforeunload', revokeReferencePreviewUrls);
 
