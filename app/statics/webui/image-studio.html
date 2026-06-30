@@ -785,12 +785,70 @@
     @media (max-width: 1000px) {
       .studio-shell {
         grid-template-columns:1fr;
+        grid-template-rows:auto minmax(0,1fr);
       }
       .studio-sidebar {
-        display:none;
+        grid-template-rows:auto auto minmax(0,1fr);
+        gap:10px;
+        min-height:0;
+        padding:12px 14px 10px;
+        border-right:0;
+        border-bottom:1px solid rgba(190,181,166,.42);
       }
       .studio-results-viewport {
         padding:34px 18px 28px;
+      }
+      .studio-side-top {
+        grid-template-columns:auto minmax(0,1fr);
+        align-items:end;
+        gap:8px 14px;
+      }
+      .studio-kicker {
+        grid-column:1 / -1;
+      }
+      .studio-side-title {
+        font-size:25px;
+      }
+      .studio-side-copy {
+        overflow:hidden;
+        white-space:nowrap;
+        text-overflow:ellipsis;
+      }
+      .studio-side-actions {
+        grid-template-columns:minmax(0,180px) auto;
+      }
+      .studio-side-list-wrap {
+        min-height:0;
+        gap:6px;
+      }
+      .studio-session-list {
+        display:flex;
+        gap:8px;
+        overflow-x:auto;
+        overflow-y:hidden;
+        padding:0 2px 4px 0;
+        scrollbar-width:none;
+      }
+      .studio-session-list::-webkit-scrollbar {
+        display:none;
+      }
+      .studio-session-list:empty::before {
+        min-width:220px;
+      }
+      .studio-side-session {
+        flex:0 0 min(238px, 78vw);
+        min-height:56px;
+        border-left:0;
+        border-top:2px solid transparent;
+        border-radius:16px;
+        background:rgba(255,255,255,.4);
+      }
+      .studio-side-session:hover,
+      .studio-side-session.is-active {
+        border-color:#171511;
+      }
+      .studio-side-health {
+        display:none;
       }
     }
     @media (max-width: 720px) {
@@ -803,6 +861,24 @@
       }
       .studio-results-viewport {
         padding:18px 12px 22px;
+      }
+      .studio-sidebar {
+        gap:8px;
+        padding:10px 10px 8px;
+      }
+      .studio-side-top {
+        display:none;
+      }
+      .studio-side-actions {
+        grid-template-columns:minmax(0,1fr) auto;
+      }
+      .studio-side-list-head {
+        font-size:10px;
+      }
+      .studio-side-session {
+        flex-basis:min(218px, 74vw);
+        min-height:52px;
+        padding:8px 9px;
       }
       .studio-turn-user {
         max-width:92%;
