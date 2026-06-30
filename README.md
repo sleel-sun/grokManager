@@ -317,8 +317,13 @@ uv run grokmanager-maintainer --count 5 --workers 2  # 2 个并发 worker × 每
 | 缓存管理 | `/admin/cache` |
 | WebUI 登录页 | `/webui/login` |
 | Web Chat | `/webui/chat` |
+| 画图工作台 | `/webui/image-studio` |
 | Masonry | `/webui/masonry` |
 | ChatKit | `/webui/chatkit` |
+
+### 画图工作台
+
+`/webui/image-studio` 提供面向图片生成与图片编辑的对话式工作台，支持历史会话、参考图上传、服务端历史同步和结果图片管理。生成结果中的图片点击后会在当前页面弹窗预览，不会默认打开图片链接；下载和引用编辑操作仍在图片卡片下方保留。
 
 ### 鉴权规则
 
