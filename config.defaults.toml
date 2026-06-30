@@ -166,6 +166,16 @@ registration_attempts_per_account = 2
 otp_timeout_s = 90
 # 注册后补登录阶段等待 ChatGPT 邮箱验证码的秒数。
 login_otp_timeout_s = 90
+# 定时从 ChatGPT 远端拉取账号资料、套餐和图片额度，并更新 GPT 账号列表展示。
+remote_refresh_enabled = true
+# GPT 账号远端资料刷新扫描间隔秒数。
+remote_refresh_interval_s = 3600
+# 单个 GPT 账号远端资料超过多久视为过期；默认与扫描间隔一致。
+remote_refresh_stale_after_s = 3600
+# GPT 远端资料刷新并发数；启动时会限制在 1-10。
+remote_refresh_concurrency = 3
+# 每轮最多刷新账号数；0 = 不限制。
+remote_refresh_limit = 0
 
 
 [gpt_image]
@@ -181,6 +191,8 @@ timeout_repair_after_s = 1800
 timeout_repair_interval_s = 300
 # ChatGPT GPT 图片生成总超时秒数；上游经常异步出图，默认给足轮询窗口
 timeout = 360
+# 单个 GPT 图片账号一次尝试最多等待秒数；超时后换下一个账号，避免单号卡死耗尽总超时
+account_attempt_timeout_s = 120
 # 每张 GPT 图片在同一个 HTTP 请求内最多尝试的账号数；调高会增加客户端等待时间
 max_account_attempts_per_image = 4
 

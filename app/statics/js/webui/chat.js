@@ -9,6 +9,8 @@
   const ATTACHMENT_DOWNLOAD_ENDPOINT = '/webui/api/attachments/download';
   const IMAGE_STUDIO_CACHE_ENDPOINT = '/webui/api/images/history/cache-url';
   const IMAGE_STUDIO_PENDING_REFERENCE_KEY = 'grokmanager.image_studio.pending_reference.v1';
+  const IMAGE_STUDIO_PENDING_PROMPT_KEY = 'grokmanager.image_studio.pending_prompt.v1';
+  const BOUND_IMAGE_LIMIT = 24;
   const PREFERRED_MODEL = 'grok-4.20-0309';
   const STORE_KEY = 'grok2api_webui_chat_sessions_v1';
   const SIDEBAR_STORE_KEY = 'grok2api_webui_sidebar_collapsed_v1';
@@ -962,7 +964,298 @@
     location.href = '/webui/image-studio';
   }
 
+  const IMAGE_PROMPT_LABEL_RE = /(?:^|\n)\s*(?:>\s*)?(?:#{1,6}\s*)?(?:[-*+]\s*|\d+\.\s*)?(?:\*\*)?\s*(?:(?:下面|以下|这里|这是|为你|可用|最终|优化后|生成的|适合[^：:\n]{0,24}的|图片生成|图像生成|AI\s*绘画)[^：:\n]{0,36})?(?:生图提示词?|文生图提示词?|绘图提示词?|图像提示词?|图片提示词?|画图提示词?|图片生成提示词?|图像生成提示词?|AI\s*绘画\s*(?:提示词?|prompt)|(?:正向|英文|中文|最终|优化后)?提示词|midjourney\s*(?:提示词?|prompt)|stable\s*diffusion\s*(?:提示词?|prompt)|sd\s*提示词?|dall[-\s]?e\s*prompt|(?:image\s+(?:generation\s+)?prompt|drawing\s+prompt|art\s+prompt|prompt)\b)\s*(?:#?\d{1,6})?\s*(?:\*\*)?\s*(?:\([^)\n]{0,24}\)|（[^）\n]{0,24}）)?\s*(?:如下|如下所示)?\s*[:：\-|]?\s*/i;
+  const IMAGE_PROMPT_TABLE_LABEL_RE = /^(?!(?:负面|反向)\s*提示词?$)(?:生图提示词?|文生图提示词?|绘图提示词?|图像提示词?|图片提示词?|画图提示词?|图片生成提示词?|图像生成提示词?|AI\s*绘画\s*(?:提示词?|prompt)|(?:正向|英文|中文|最终|优化后)?提示词|midjourney\s*(?:提示词?|prompt)|stable\s*diffusion\s*(?:提示词?|prompt)|sd\s*提示词?|dall[-\s]?e\s*prompt|(?:image\s+(?:generation\s+)?prompt|drawing\s+prompt|art\s+prompt|prompt))(?:#?\d{1,6})?$/i;
+  const IMAGE_PROMPT_STOP_RE = /^\s*(?:#{1,6}\s+|(?:[-*+]\s*)?(?:\*\*)?\s*(?:负面提示词|反向提示词|negative\s+prompt|参数|设置|说明|解析|解释|notes?|参考|建议|用途|尺寸|比例|风格说明|中文翻译|翻译|模型|种子|seed|style\s*notes?)\b)/i;
+  const IMAGE_PROMPT_TERMINAL_STOP_RE = /^\s*(?:#{1,6}\s+|(?:[-*+]\s*)?(?:\*\*)?\s*(?:设置|说明|解析|解释|notes?|参考|建议|用途|中文翻译|翻译|模型推荐|使用方法|用法)\b)/i;
+  const IMAGE_PROMPT_VISUAL_RE = /(cinematic|photorealistic|ultra[- ]?detailed|illustration|render|lighting|composition|camera|lens|portrait|landscape|scene|style|8k|--ar|photo|image|anime|watercolor|oil painting|cyberpunk|fantasy|surreal|character|poster|logo|画面|镜头|光影|构图|写实|插画|摄影|风格|高清|细节|色彩|场景|人物|背景|氛围|照片|图像|动漫|水彩|油画|科幻|奇幻|超现实|角色|海报|城市|森林|海边|建筑|室内|室外|猫|狗|女孩|男孩)/i;
+  const STRUCTURED_PROMPT_KEY_RE = /^\s*(?:[-*+]\s*)?(?:\*\*)?(?:主体|主角|对象|角色|人物|场景|环境|背景|风格|画风|构图|镜头|机位|视角|光线|光影|色彩|配色|细节|材质|氛围|动作|表情|服装|质量|比例|尺寸|参数|正向提示词?|负面提示词?|反向提示词?|subject|character|scene|environment|background|style|composition|camera|view|lighting|color|palette|details?|material|mood|action|quality|aspect\s*ratio|size|parameters?|negative\s*prompt)\s*(?:\*\*)?\s*[:：=]/i;
+
+  function normalizePromptCandidate(value) {
+    let candidate = String(value || '').replace(/\r\n?/g, '\n').trim();
+    if (!candidate) return '';
+
+    const leadingFence = candidate.match(/^```[^\n`]*\n([\s\S]*?)```/);
+    if (leadingFence) {
+      candidate = leadingFence[1].trim();
+    }
+
+    return candidate
+      .replace(/^```[^\n`]*\n?/, '')
+      .replace(/```$/g, '')
+      .replace(/^(?:如下|如下所示|为|是)\s*[:：]?\s*/i, '')
+      .replace(/^\d{1,6}\s*\n+/, '')
+      .replace(/^["'“”]+|["'“”]+$/g, '')
+      .trim();
+  }
+
+  function looksLikeStructuredPrompt(value) {
+    const candidate = normalizePromptCandidate(value);
+    if (!candidate) return false;
+    if (/^\s*[\[{]/.test(candidate) && /"(?:prompt|subject|scene|style|主体|场景|风格|构图|镜头|光线|负面提示词)"/i.test(candidate)) {
+      return true;
+    }
+    const structuredLines = candidate
+      .split('\n')
+      .map((line) => line.trim())
+      .filter((line) => STRUCTURED_PROMPT_KEY_RE.test(line));
+    return structuredLines.length >= 2;
+  }
+
+  function promptShouldStopAtLine(line, structured) {
+    if (IMAGE_PROMPT_TERMINAL_STOP_RE.test(line)) return true;
+    return !structured && IMAGE_PROMPT_STOP_RE.test(line);
+  }
+
+  function cleanImagePromptCandidate(value) {
+    let candidate = normalizePromptCandidate(value);
+    if (!candidate) return '';
+
+    const lines = candidate.split('\n');
+    const kept = [];
+    const structured = looksLikeStructuredPrompt(candidate);
+    for (const line of lines) {
+      if (kept.length && promptShouldStopAtLine(line, structured)) break;
+      kept.push(line);
+    }
+
+    candidate = normalizePromptCandidate(kept.join('\n'));
+
+    return candidate.length <= 4000 ? candidate : '';
+  }
+
+  function extractFencedPrompt(source) {
+    const blocks = [];
+    String(source || '').replace(/```([^\n`]*)\n([\s\S]*?)```/g, (match, lang, body, offset) => {
+      blocks.push({ lang: String(lang || '').trim().toLowerCase(), body, offset });
+      return match;
+    });
+    if (!blocks.length) return '';
+
+    const labeled = blocks.find((block) => /prompt|txt|text|md|markdown/.test(block.lang));
+    const nearby = blocks.find((block) => {
+      const before = String(source || '').slice(Math.max(0, block.offset - 80), block.offset);
+      return IMAGE_PROMPT_LABEL_RE.test(before);
+    });
+    const structured = blocks.find((block) => looksLikeStructuredPrompt(block.body));
+    const visual = blocks.find((block) => looksLikeStandaloneImagePrompt(cleanImagePromptCandidate(block.body)));
+    const selected = labeled || nearby || (blocks.length === 1 ? (structured || visual) : null);
+    return selected ? cleanImagePromptCandidate(selected.body) : '';
+  }
+
+  function isOffsetInsideFencedBlock(source, offset) {
+    const fenceRe = /```[^\n`]*\n[\s\S]*?```/g;
+    let match;
+    while ((match = fenceRe.exec(source)) !== null) {
+      if (offset > match.index && offset < match.index + match[0].length) return true;
+    }
+    return false;
+  }
+
+  function findImagePromptLabel(source) {
+    const labelRe = new RegExp(IMAGE_PROMPT_LABEL_RE.source, 'ig');
+    let match;
+    while ((match = labelRe.exec(source)) !== null) {
+      const offset = match.index || 0;
+      const lineStart = source.lastIndexOf('\n', offset) + 1;
+      const lineEnd = source.indexOf('\n', offset);
+      const labelLine = source.slice(lineStart, lineEnd < 0 ? source.length : lineEnd);
+      if (!/(?:负面提示词|反向提示词|negative\s+prompt)/i.test(labelLine) && !isOffsetInsideFencedBlock(source, offset)) {
+        return match;
+      }
+      if (!match[0]) labelRe.lastIndex += 1;
+    }
+    return null;
+  }
+
+  function cleanTableCell(value) {
+    return String(value || '')
+      .trim()
+      .replace(/^\*\*|\*\*$/g, '')
+      .replace(/^`|`$/g, '')
+      .replace(/^["'“”]+|["'“”]+$/g, '')
+      .trim();
+  }
+
+  function extractTablePrompt(source) {
+    const lines = String(source || '').replace(/\r\n?/g, '\n').split('\n');
+    for (const line of lines) {
+      if (!line.includes('|')) continue;
+      const cells = line.split('|').map(cleanTableCell).filter(Boolean);
+      if (cells.length < 2) continue;
+      if (cells.every((cell) => /^:?-{3,}:?$/.test(cell))) continue;
+      const labelIndex = cells.findIndex((cell) => IMAGE_PROMPT_TABLE_LABEL_RE.test(cell));
+      if (labelIndex < 0) continue;
+      const promptCell = cells.find((cell, index) => index !== labelIndex && !/^:?-{3,}:?$/.test(cell));
+      const prompt = cleanImagePromptCandidate(promptCell || '');
+      if (/^(?:类型|内容|说明|项目|字段|值|value|content|description)$/i.test(prompt)) continue;
+      if (prompt.length < 8 && !IMAGE_PROMPT_VISUAL_RE.test(prompt)) continue;
+      if (prompt) return prompt;
+    }
+    return '';
+  }
+
+  function looksLikeStandaloneImagePrompt(value) {
+    const candidate = String(value || '').trim();
+    if (candidate.length < 24 || candidate.length > 1200) return false;
+    if (/```|<\/?[a-z][\s>]/i.test(candidate)) return false;
+    if (/[?？]\s*$/.test(candidate)) return false;
+    if (!IMAGE_PROMPT_VISUAL_RE.test(candidate)) return false;
+    if (/^\s*(?:#{1,6}|[-*]\s+|\d+\.\s+)/m.test(candidate)) return false;
+    return true;
+  }
+
+  function extractImagePromptCandidate(content) {
+    const source = (extractTextContent(content) || (typeof content === 'string' ? content : '')).trim();
+    if (!source) return '';
+
+    const tablePrompt = extractTablePrompt(source);
+    if (tablePrompt) return tablePrompt;
+
+    const labelMatch = findImagePromptLabel(source);
+    if (labelMatch) {
+      const candidate = cleanImagePromptCandidate(source.slice((labelMatch.index || 0) + labelMatch[0].length));
+      if (candidate) return candidate;
+    }
+
+    const fenced = extractFencedPrompt(source);
+    if (fenced) return fenced;
+
+    const standalone = cleanImagePromptCandidate(source);
+    return looksLikeStandaloneImagePrompt(standalone) ? standalone : '';
+  }
+
+  function generatedImagesForMessage(message) {
+    const rawItems = []
+      .concat(Array.isArray(message && message.generated_images) ? message.generated_images : [])
+      .concat(Array.isArray(message && message.generatedImages) ? message.generatedImages : []);
+    const seen = new Set();
+    return rawItems
+      .map((item) => (typeof item === 'string' ? { url: item } : item))
+      .filter((item) => item && item.url)
+      .map((item) => {
+        const url = sanitizeImageUrl(item.url);
+        if (!url || seen.has(url)) return null;
+        seen.add(url);
+        return {
+          ...item,
+          url,
+          prompt: String(item.prompt || ''),
+        };
+      })
+      .filter(Boolean)
+      .slice(-BOUND_IMAGE_LIMIT);
+  }
+
+  function ensureMessageId(messageIndex) {
+    const session = getCurrentSession();
+    const message = session && session.messages && session.messages[messageIndex];
+    if (!session || !message || message.role !== 'assistant') return '';
+    if (!message.id) {
+      message.id = `msg_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+      session.updatedAt = Date.now();
+      persistStore();
+    }
+    return String(message.id);
+  }
+
+  function openImagePromptInStudio(messageIndex, prompt) {
+    const session = getCurrentSession();
+    const message = session && session.messages && session.messages[messageIndex];
+    const cleanPrompt = String(prompt || '').trim();
+    if (!session || !message || !cleanPrompt) return;
+
+    const messageId = ensureMessageId(messageIndex);
+    try {
+      sessionStorage.setItem(IMAGE_STUDIO_PENDING_PROMPT_KEY, JSON.stringify({
+        prompt: cleanPrompt,
+        auto_generate: true,
+        created_at: Date.now(),
+        bind: {
+          store_key: storeKey,
+          storage_scope: currentStorageScope,
+          session_id: session.id,
+          message_id: messageId,
+          message_index: messageIndex,
+          message_created_at: Number(message.createdAt) || 0,
+        },
+      }));
+    } catch (error) {
+      toast(error.message || String(error), 'error');
+      return;
+    }
+
+    location.href = '/webui/image-studio';
+  }
+
+  function appendImagePromptAction(card, content, messageIndex) {
+    if (!card || messageIndex < 0) return;
+    const prompt = extractImagePromptCandidate(content);
+    if (!prompt) return;
+
+    const action = document.createElement('div');
+    action.className = 'msg-image-prompt-action';
+
+    const label = document.createElement('div');
+    label.className = 'msg-image-prompt-label';
+    label.textContent = text('webui.chat.imagePromptLabel', 'Image prompt');
+
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'msg-image-prompt-btn';
+    button.textContent = text('webui.chat.imagePromptGenerate', 'Generate image');
+    button.title = text('webui.chat.imagePromptGenerateTitle', 'Open Draw and generate an image from this prompt');
+    button.addEventListener('click', () => {
+      openImagePromptInStudio(messageIndex, prompt);
+    });
+
+    action.appendChild(label);
+    action.appendChild(button);
+    card.appendChild(action);
+  }
+
+  function appendBoundGeneratedImages(card, messageIndex) {
+    const message = messageIndex >= 0 ? messages[messageIndex] : null;
+    const images = generatedImagesForMessage(message);
+    if (!card || !images.length) return;
+
+    const shell = document.createElement('div');
+    shell.className = 'msg-bound-images';
+
+    const title = document.createElement('div');
+    title.className = 'msg-bound-images-title';
+    title.textContent = text('webui.chat.boundImagesTitle', 'Generated here');
+
+    const grid = document.createElement('div');
+    grid.className = 'msg-bound-images-grid';
+    images.forEach((item, index) => {
+      const media = document.createElement('div');
+      media.className = 'msg-inline-media msg-generated-media msg-bound-image';
+      const img = document.createElement('img');
+      img.src = item.url;
+      img.alt = item.prompt || text('webui.chat.boundImagesTitle', 'Generated here');
+      img.loading = 'lazy';
+      media.appendChild(img);
+      appendAssistantImageActions(media, item.url, index);
+      grid.appendChild(media);
+    });
+
+    shell.appendChild(title);
+    shell.appendChild(grid);
+    card.appendChild(shell);
+  }
+
+  function enhanceAssistantMessage(card, content, messageIndex) {
+    enhanceAssistantImageReferences(card);
+    enhanceAttachmentDownloads(card);
+    enhanceCodePreviews(card);
+    appendImagePromptAction(card, content, messageIndex);
+    appendBoundGeneratedImages(card, messageIndex);
+    enhanceImagePreviews(card);
+  }
+
   function appendAssistantImageActions(container, url, index) {
+    if (!isReferenceableImageUrl(url)) return;
     if (!container || container.querySelector('.msg-media-actions')) return;
     const actionBar = document.createElement('div');
     actionBar.className = 'msg-media-actions';
@@ -1162,7 +1455,7 @@
     return parts.join('\n\n');
   }
 
-  function renderMessageContent(card, role, content) {
+  function renderMessageContent(card, role, content, messageIndex = -1) {
     if (Array.isArray(content)) {
       const textContent = extractTextContent(content);
       const imageUrls = extractImageUrls(content);
@@ -1176,10 +1469,7 @@
           )).join(''));
         }
         card.innerHTML = parts.join('') || '<p></p>';
-        enhanceAssistantImageReferences(card);
-        enhanceImagePreviews(card);
-        enhanceAttachmentDownloads(card);
-        enhanceCodePreviews(card);
+        enhanceAssistantMessage(card, content, messageIndex);
         return;
       }
 
@@ -1221,10 +1511,7 @@
 
     if (role === 'assistant') {
       card.innerHTML = renderRichMarkdown(content);
-      enhanceAssistantImageReferences(card);
-      enhanceImagePreviews(card);
-      enhanceAttachmentDownloads(card);
-      enhanceCodePreviews(card);
+      enhanceAssistantMessage(card, content, messageIndex);
       return;
     }
     card.textContent = content;
@@ -2242,7 +2529,7 @@
     } else if (isAssistantWaiting) {
       renderAssistantWaiting(card);
     } else {
-      renderMessageContent(card, role, initialText);
+      renderMessageContent(card, role, initialText, messageIndex);
     }
 
     const entry = {
@@ -2385,7 +2672,7 @@
     entry.renderFrame = 0;
     if (entry.waiting) return;
     if (hasMessageContent(entry.text)) {
-      renderMessageContent(entry.card, 'assistant', entry.text);
+      renderMessageContent(entry.card, 'assistant', entry.text, entry.messageIndex);
     } else {
       entry.card.innerHTML = '';
     }
@@ -2418,8 +2705,8 @@
   function finalizeAssistantEntry(entry, messageIndex) {
     if (!entry) return;
     entry.waiting = false;
-    flushAssistantEntry(entry);
     entry.messageIndex = messageIndex;
+    flushAssistantEntry(entry);
     syncAssistantActions(entry);
     scrollThread();
   }

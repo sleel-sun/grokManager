@@ -33,6 +33,7 @@ from app.products.web.admin.gpt_accounts import (
     gpt_account_credential_record_token,
     gpt_account_record_token,
     login_gpt_account,
+    refresh_stale_gpt_account_remote_details,
     start_gpt_account_oauth,
 )
 
@@ -443,6 +444,90 @@ def test_add_gpt_accounts_refreshes_remote_detail_after_save() -> None:
     assert record.ext["gpt_email"] == "remote@example.test"
     assert record.ext["gpt_plan_type"] == "Plus"
     assert record.ext["gpt_image_quota"] == 9
+
+
+def test_stale_gpt_remote_refresh_updates_due_token_accounts(monkeypatch) -> None:
+    now_ms = 1_000_000
+
+    class Repo:
+        def __init__(self) -> None:
+            self.records = [
+                AccountRecord(
+                    token="gpt_due",
+                    tags=["gpt"],
+                    ext={
+                        "gpt": True,
+                        "gpt_access_token": "due-token",
+                        "gpt_status": "available",
+                    },
+                ),
+                AccountRecord(
+                    token="gpt_fresh",
+                    tags=["gpt"],
+                    ext={
+                        "gpt": True,
+                        "gpt_access_token": "fresh-token",
+                        "gpt_status": "available",
+                        "gpt_last_remote_refresh_at": now_ms,
+                    },
+                ),
+                AccountRecord(
+                    token="gpt_login_required",
+                    tags=["gpt"],
+                    ext={
+                        "gpt": True,
+                        "gpt_email": "login@example.test",
+                        "gpt_status": "login_required",
+                    },
+                ),
+            ]
+            self.patches = []
+
+        async def list_accounts(self, _query):
+            return SimpleNamespace(items=self.records, total=len(self.records))
+
+        async def patch_accounts(self, patches):
+            self.patches.extend(patches)
+
+    async def fake_fetch_remote_detail(access_token: str):
+        assert access_token == "due-token"
+        return {
+            "email": "due@example.test",
+            "user_id": "user-due",
+            "plan_type": "Plus",
+            "default_model_slug": "gpt-5",
+            "limits_progress": [{"feature_name": "image_gen", "remaining": 7}],
+            "image_quota": 7,
+            "image_restore_at": "2026-06-29T00:00:00Z",
+            "image_quota_unknown": False,
+            "account": {"plan_type": "Plus"},
+        }
+
+    monkeypatch.setattr(gpt_accounts, "_now_ms", lambda: now_ms)
+    monkeypatch.setattr(gpt_accounts, "_fetch_gpt_remote_detail", fake_fetch_remote_detail)
+
+    repo = Repo()
+    result = asyncio.run(
+        refresh_stale_gpt_account_remote_details(
+            repo,
+            max_age_ms=3600 * 1000,
+            concurrency=2,
+        )
+    )
+
+    assert result == {
+        "checked": 3,
+        "eligible": 2,
+        "due": 1,
+        "refreshed": 1,
+        "failed": 0,
+        "skipped": 2,
+    }
+    assert len(repo.patches) == 1
+    assert repo.patches[0].token == "gpt_due"
+    assert repo.patches[0].ext_merge["gpt_email"] == "due@example.test"
+    assert repo.patches[0].ext_merge["gpt_plan_type"] == "Plus"
+    assert repo.patches[0].ext_merge["gpt_image_quota"] == 7
 
 
 def test_gpt_remote_detail_ext_maps_profile_plan_and_quota() -> None:

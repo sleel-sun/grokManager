@@ -284,6 +284,53 @@ async def lifespan(app: FastAPI):
                 interval = 300.0
             await asyncio.sleep(interval)
 
+    async def _gpt_remote_refresh_loop() -> None:
+        from app.products.web.admin.gpt_accounts import (
+            refresh_stale_gpt_account_remote_details,
+        )
+
+        while True:
+            try:
+                await _config.load()
+                enabled = _config.get_bool("gpt.remote_refresh_enabled", True)
+                interval = max(
+                    60.0,
+                    _config.get_float("gpt.remote_refresh_interval_s", 3600.0),
+                )
+                if enabled:
+                    stale_after_s = max(
+                        0.0,
+                        _config.get_float("gpt.remote_refresh_stale_after_s", interval),
+                    )
+                    concurrency = min(
+                        10,
+                        max(1, _config.get_int("gpt.remote_refresh_concurrency", 3)),
+                    )
+                    limit = max(0, _config.get_int("gpt.remote_refresh_limit", 0))
+                    result = await refresh_stale_gpt_account_remote_details(
+                        repo,
+                        max_age_ms=int(stale_after_s * 1000),
+                        concurrency=concurrency,
+                        limit=limit,
+                    )
+                    if result["due"] or result["failed"]:
+                        logger.info(
+                            "gpt remote refresh completed: checked={} eligible={} due={} "
+                            "refreshed={} failed={} skipped={}",
+                            result["checked"],
+                            result["eligible"],
+                            result["due"],
+                            result["refreshed"],
+                            result["failed"],
+                            result["skipped"],
+                        )
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.debug("gpt remote refresh loop error: error={}", exc)
+                interval = 300.0
+            await asyncio.sleep(interval)
+
     console_reset_task = (
         asyncio.create_task(_console_reset_loop(), name="console-quota-reset")
         if is_leader else None
@@ -294,6 +341,10 @@ async def lifespan(app: FastAPI):
     )
     gpt_timeout_repair_task = (
         asyncio.create_task(_gpt_timeout_repair_loop(), name="gpt-timeout-repair")
+        if is_leader else None
+    )
+    gpt_remote_refresh_task = (
+        asyncio.create_task(_gpt_remote_refresh_loop(), name="gpt-remote-refresh")
         if is_leader else None
     )
 
@@ -310,7 +361,12 @@ async def lifespan(app: FastAPI):
     except asyncio.CancelledError:
         pass
 
-    for task in (console_reset_task, console_recovery_task, gpt_timeout_repair_task):
+    for task in (
+        console_reset_task,
+        console_recovery_task,
+        gpt_timeout_repair_task,
+        gpt_remote_refresh_task,
+    ):
         if task is None:
             continue
         task.cancel()

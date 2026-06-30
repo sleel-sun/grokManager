@@ -79,6 +79,10 @@
       "previewFrameTitle": "Code preview",
       "previewOpenFailed": "Preview popup was blocked",
       "imagePreviewTitle": "Image preview",
+      "imagePromptLabel": "Image prompt",
+      "imagePromptGenerate": "Generate image",
+      "imagePromptGenerateTitle": "Open Draw and generate an image from this prompt",
+      "boundImagesTitle": "Generated from this prompt",
       "search": {
         "button": "Search",
         "onButton": "Search on",

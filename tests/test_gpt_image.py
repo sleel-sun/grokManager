@@ -1374,6 +1374,44 @@ def test_gpt_image_run_generation_uses_single_request_timeout_budget(monkeypatch
     assert attempts[0][1] <= 1.1
 
 
+def test_gpt_image_run_generation_caps_per_account_attempt_timeout(monkeypatch) -> None:
+    accounts = [
+        gpt_image.GPTImageAccount(record_token="gptimg_1", access_token="token-1"),
+        gpt_image.GPTImageAccount(record_token="gptimg_2", access_token="token-2"),
+    ]
+    attempts: list[tuple[str, float | None]] = []
+
+    async def fake_accounts():
+        return accounts
+
+    async def fake_generate(account, prompt, model, *, timeout_s=None):
+        attempts.append((account.record_token, timeout_s))
+        if account.record_token == "gptimg_1":
+            raise UpstreamError("ChatGPT image generation timed out after 120s", status=504)
+        return gpt_image._GeneratedImage(b64_json="aW1hZ2U=")
+
+    async def mark_failure(account, exc):
+        return None
+
+    async def mark_success(account):
+        return None
+
+    monkeypatch.setattr(gpt_image, "_gpt_image_accounts", fake_accounts)
+    monkeypatch.setattr(gpt_image, "_generation_timeout_s", lambda: 600.0)
+    monkeypatch.setattr(gpt_image, "_account_attempt_timeout_s", lambda: 120.0)
+    monkeypatch.setattr(gpt_image, "_max_account_attempts_per_image", lambda count: 2)
+    monkeypatch.setattr(gpt_image, "_generate_one", fake_generate)
+    monkeypatch.setattr(gpt_image, "_mark_account_failure", mark_failure)
+    monkeypatch.setattr(gpt_image, "_mark_account_success", mark_success)
+
+    result = asyncio.run(gpt_image._run_generation("draw", "gpt-image-2", 1))
+
+    assert [item[0] for item in attempts] == ["gptimg_1", "gptimg_2"]
+    assert attempts[0][1] == 120.0
+    assert attempts[1][1] == 120.0
+    assert result[0].b64_json == "aW1hZ2U="
+
+
 def test_gpt_image_run_generation_prefers_quota_failure_detail(monkeypatch) -> None:
     accounts = [
         gpt_image.GPTImageAccount(record_token="gpt_1", access_token="token-1"),

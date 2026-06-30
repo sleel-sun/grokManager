@@ -415,6 +415,7 @@ _ALLOWED_SIZES = {"1280x720", "720x1280", "1792x1024", "1024x1792", "1024x1024"}
 _EFFORT_VALUES = {"none", "minimal", "low", "medium", "high", "xhigh"}
 _LITE_IMAGE_MODELS = {"grok-imagine-image-lite"}
 _GPT_IMAGE_MODELS = {"gpt-image-1", "gpt-image-2", "codex-gpt-image-2"}
+_DEFAULT_GPT_IMAGE_MODEL = "gpt-image-2"
 
 
 def _validate_chat(req: ChatCompletionRequest) -> None:
@@ -455,6 +456,16 @@ def _validate_image_n(model_name: str, n: int, *, param: str) -> None:
             f"n must be between 1 and {max_n} for model {model_name!r}",
             param=param,
         )
+
+
+def _external_image_generation_model(model_name: str) -> str:
+    """Route standalone OpenAI-compatible image generation to GPT by default."""
+    if model_name in _GPT_IMAGE_MODELS:
+        return model_name
+    spec = model_registry.get(model_name)
+    if spec is not None and spec.enabled and spec.is_image():
+        return _DEFAULT_GPT_IMAGE_MODEL
+    return model_name
 
 
 def _validate_image_edit_n(n: int, *, param: str) -> None:
@@ -814,12 +825,13 @@ async def image_generations(req: ImageGenerationRequest):
         raise ValidationError(
             f"Model {req.model!r} is not an image model", param="model"
         )
-    _validate_image_n(req.model, req.n or 1, param="n")
+    effective_model = _external_image_generation_model(req.model)
+    _validate_image_n(effective_model, req.n or 1, param="n")
 
     from .images import generate as img_gen
 
     result = await img_gen(
-        model=req.model,
+        model=effective_model,
         prompt=req.prompt,
         n=req.n or 1,
         size=req.size or "1024x1024",

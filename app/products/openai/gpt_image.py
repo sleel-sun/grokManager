@@ -52,6 +52,7 @@ _AZURE_BLOB_HOST_SUFFIXES = (
     "blob.core.cloudapi.de",
 )
 _DEFAULT_GENERATION_TIMEOUT_S = 360.0
+_DEFAULT_ACCOUNT_ATTEMPT_TIMEOUT_S = 120.0
 _INVALID_CREDENTIAL_MARKERS = (
     "invalidated auth token",
     "invalid token",
@@ -122,6 +123,17 @@ def _generation_timeout_s() -> float:
     except Exception:
         value = _DEFAULT_GENERATION_TIMEOUT_S
     return max(5.0, float(value or _DEFAULT_GENERATION_TIMEOUT_S))
+
+
+def _account_attempt_timeout_s() -> float:
+    try:
+        value = get_config().get_float(
+            "gpt_image.account_attempt_timeout_s",
+            _DEFAULT_ACCOUNT_ATTEMPT_TIMEOUT_S,
+        )
+    except Exception:
+        value = _DEFAULT_ACCOUNT_ATTEMPT_TIMEOUT_S
+    return max(5.0, float(value or _DEFAULT_ACCOUNT_ATTEMPT_TIMEOUT_S))
 
 
 def _max_account_attempts_per_image(account_count: int) -> int:
@@ -2076,6 +2088,7 @@ async def _run_generation(prompt: str, model: str, n: int) -> list[_GeneratedIma
     last_exc: BaseException | None = None
     account_index = 0
     max_attempts = _max_account_attempts_per_image(len(accounts))
+    attempt_timeout_s = _account_attempt_timeout_s()
     for _ in range(n):
         generated = False
         for _attempt in range(max_attempts):
@@ -2091,7 +2104,14 @@ async def _run_generation(prompt: str, model: str, n: int) -> list[_GeneratedIma
                 failures.append((last_exc.status, str(last_exc)))
                 break
             try:
-                images.append(await _generate_one(account, prompt, model, timeout_s=remaining_s))
+                images.append(
+                    await _generate_one(
+                        account,
+                        prompt,
+                        model,
+                        timeout_s=min(remaining_s, attempt_timeout_s),
+                    )
+                )
                 await _mark_account_success(account)
                 generated = True
                 break
@@ -2160,6 +2180,7 @@ async def _run_edit(
     last_exc: BaseException | None = None
     account_index = 0
     max_attempts = _max_account_attempts_per_image(len(accounts))
+    attempt_timeout_s = _account_attempt_timeout_s()
     for _ in range(n):
         edited = False
         for _attempt in range(max_attempts):
@@ -2176,7 +2197,13 @@ async def _run_edit(
                 break
             try:
                 images.append(
-                    await _edit_one(account, prompt, image_inputs, model, timeout_s=remaining_s)
+                    await _edit_one(
+                        account,
+                        prompt,
+                        image_inputs,
+                        model,
+                        timeout_s=min(remaining_s, attempt_timeout_s),
+                    )
                 )
                 await _mark_account_success(account)
                 edited = True

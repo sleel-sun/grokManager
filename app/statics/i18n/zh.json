@@ -79,6 +79,10 @@
       "previewFrameTitle": "代码预览",
       "previewOpenFailed": "预览窗口被浏览器拦截",
       "imagePreviewTitle": "图片预览",
+      "imagePromptLabel": "生图提示词",
+      "imagePromptGenerate": "生成图片",
+      "imagePromptGenerateTitle": "打开画图页并用此提示词生成图片",
+      "boundImagesTitle": "由此提示词生成",
       "search": {
         "button": "联网",
         "onButton": "联网中",
