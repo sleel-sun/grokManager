@@ -1,6 +1,6 @@
 """Anthropic Messages API router (/v1/messages)."""
 
-from typing import Any
+from typing import Any, Literal
 
 import orjson
 from fastapi import APIRouter, Depends
@@ -10,8 +10,8 @@ from pydantic import BaseModel
 from app.platform.auth.middleware import verify_api_key
 from app.platform.errors import AppError, ValidationError
 from app.platform.tokens import estimate_prompt_tokens, estimate_tokens
-from app.control.model import registry as model_registry
 from app.products._upstream_headers import build_upstream_response_headers
+from app.products.anthropic.compat import resolve_anthropic_model_spec
 
 
 router = APIRouter(prefix="/v1", dependencies=[Depends(verify_api_key)])
@@ -21,7 +21,7 @@ _SSE_HEADERS = {"Cache-Control": "no-cache", "Connection": "keep-alive", "X-Acce
 
 
 def _message_model_spec(model: str):
-    spec = model_registry.get(model)
+    spec = resolve_anthropic_model_spec(model)
     if spec is None or not spec.enabled or not spec.is_chat():
         raise ValidationError(
             f"Model {model!r} does not exist or you do not have access to it.",
@@ -57,6 +57,7 @@ class MessagesRequest(BaseModel):
     top_p:       float | None = None
     tools:       list[dict] | None = None
     tool_choice: Any = None
+    tool_scope:  Literal["auto", "client_only"] | None = None
     thinking:    Any = None          # {type:"enabled", budget_tokens:N} — used to enable thinking output
 
 
@@ -119,6 +120,7 @@ async def messages_endpoint(req: MessagesRequest):
         top_p        = req.top_p or 0.95,
         tools        = req.tools or None,
         tool_choice  = req.tool_choice,
+        tool_scope   = req.tool_scope,
     )
 
     upstream_headers = build_upstream_response_headers(spec)

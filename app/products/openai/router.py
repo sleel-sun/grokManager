@@ -4,6 +4,8 @@ import asyncio
 import base64
 import binascii
 import mimetypes
+import os
+import time
 from io import BytesIO
 from typing import Annotated, AsyncGenerator, AsyncIterable, Literal
 
@@ -18,9 +20,16 @@ from app.platform.logging.logger import logger
 from app.platform.storage import image_files_dir, video_files_dir
 from app.control.model import registry as model_registry
 from app.control.model.spec import ModelSpec
+from app.products.anthropic.compat import (
+    CLAUDE_MODEL_ALIASES,
+    claude_alias_display_name,
+    is_claude_model_alias,
+    resolve_anthropic_model_spec,
+)
 from app.products._upstream_headers import build_upstream_response_headers
 from .schemas import (
     ChatCompletionRequest,
+    CompletionRequest,
     ImageGenerationRequest,
     VideoConfig,
     ImageConfig,
@@ -31,6 +40,7 @@ from .chat import completions as chat_completions
 router = APIRouter(prefix="/v1")
 _POOL_ID_TO_NAME = {0: "basic", 1: "super", 2: "heavy"}
 _TAG_MODELS = "OpenAI - Models"
+_TAG_COMPLETIONS = "OpenAI - Completions"
 _TAG_CHAT = "OpenAI - Chat"
 _TAG_RESPONSES = "OpenAI - Responses"
 _TAG_IMAGES = "OpenAI - Images"
@@ -164,6 +174,50 @@ def _model_generation_metadata(spec: ModelSpec) -> dict:
     }
 
 
+def _openai_compat_metadata(spec: ModelSpec) -> dict:
+    """Expose OpenAI-compatible feature flags for client model filters."""
+    if not spec.is_chat():
+        return {
+            "openai_compatible": False,
+            "supports_function_calling": False,
+            "supports_tool_calling": False,
+            "supports_parallel_tool_calls": False,
+            "supported_parameters": [],
+            "interfaces": [],
+            "features": {
+                "chat": False,
+                "function_calling": False,
+                "tool_calling": False,
+            },
+        }
+
+    return {
+        "openai_compatible": True,
+        "supports_function_calling": True,
+        "supports_tool_calling": True,
+        "supports_parallel_tool_calls": True,
+        "supported_parameters": [
+            "messages",
+            "temperature",
+            "top_p",
+            "stream",
+            "tools",
+            "tool_choice",
+            "parallel_tool_calls",
+            "reasoning_effort",
+        ],
+        "interfaces": [
+            "openai.chat.completions",
+            "openai.responses",
+        ],
+        "features": {
+            "chat": True,
+            "function_calling": True,
+            "tool_calling": True,
+        },
+    }
+
+
 def _model_pool_names(spec: ModelSpec) -> list[str]:
     return [_POOL_ID_TO_NAME[pool_id] for pool_id in spec.pool_candidates()]
 
@@ -206,6 +260,8 @@ def _openai_model_payload(
     available_pools: frozenset[str] | None = None,
 ) -> dict:
     capabilities = _model_capability_names(spec)
+    if spec.is_chat():
+        capabilities.extend(["function_calling", "tool_calling"])
     primary_type = _model_primary_type(spec)
     return {
         "id": spec.model_name,
@@ -220,6 +276,7 @@ def _openai_model_payload(
         "availability": _model_availability_payload(spec, available_pools),
         "routing": _model_routing_payload(spec),
         **_model_generation_metadata(spec),
+        **_openai_compat_metadata(spec),
     }
 
 
@@ -236,6 +293,18 @@ def _anthropic_model_payload(spec: ModelSpec, created: int) -> dict:
         "type": "model",
         "id": spec.model_name,
         "display_name": spec.public_name,
+        "created_at": datetime.fromtimestamp(created, tz=timezone.utc).isoformat().replace("+00:00", "Z"),
+    }
+
+
+def _anthropic_named_model_payload(model_id: str, display_name: str, created: int) -> dict:
+    """Return an Anthropic model payload for a compatibility alias."""
+    from datetime import datetime, timezone
+
+    return {
+        "type": "model",
+        "id": model_id,
+        "display_name": display_name,
         "created_at": datetime.fromtimestamp(created, tz=timezone.utc).isoformat().replace("+00:00", "Z"),
     }
 
@@ -257,10 +326,14 @@ async def list_models(
 
     if _is_anthropic_client(anthropic_version):
         data = [
+            _anthropic_named_model_payload(model_id, display_name, created)
+            for model_id, display_name in CLAUDE_MODEL_ALIASES
+        ]
+        data.extend([
             _anthropic_model_payload(m, created)
             for m in available
             if _is_anthropic_visible_model(m)
-        ]
+        ])
         return JSONResponse(
             {
                 "data": data,
@@ -288,7 +361,11 @@ async def get_model_endpoint(
 ):
     import time
 
-    spec = model_registry.get(model_id)
+    spec = (
+        resolve_anthropic_model_spec(model_id)
+        if _is_anthropic_client(anthropic_version)
+        else model_registry.get(model_id)
+    )
     pools = await _available_pools(request)
     is_anthropic = _is_anthropic_client(anthropic_version)
     if (
@@ -319,6 +396,14 @@ async def get_model_endpoint(
 
     created = int(time.time())
     if is_anthropic:
+        if is_claude_model_alias(model_id):
+            return JSONResponse(
+                _anthropic_named_model_payload(
+                    model_id,
+                    claude_alias_display_name(model_id),
+                    created,
+                )
+            )
         return JSONResponse(_anthropic_model_payload(spec, created))
     return JSONResponse(_openai_model_payload(spec, created, pools))
 
@@ -578,6 +663,239 @@ async def _uploads_to_data_uris(
     return image_inputs
 
 
+# ---------------------------------------------------------------------------
+# /v1/completions (legacy OpenAI text completions)
+# ---------------------------------------------------------------------------
+
+
+def _completion_id() -> str:
+    return f"cmpl-{int(time.time() * 1000)}{os.urandom(4).hex()}"
+
+
+def _completion_prompts(prompt: str | list[str]) -> list[str]:
+    if isinstance(prompt, str):
+        return [prompt]
+    return [item for item in prompt if isinstance(item, str)]
+
+
+def _validate_completion(req: CompletionRequest) -> ModelSpec:
+    spec = model_registry.get(req.model)
+    if spec is None or not spec.enabled:
+        raise ValidationError(
+            f"Model {req.model!r} does not exist or you do not have access to it.",
+            param="model",
+            code="model_not_found",
+        )
+    if not spec.is_chat():
+        raise ValidationError(
+            f"Model {req.model!r} is not a text completion model",
+            param="model",
+        )
+    prompts = _completion_prompts(req.prompt)
+    if not prompts:
+        raise ValidationError("prompt cannot be empty", param="prompt")
+    if req.stream and (len(prompts) != 1 or (req.n or 1) != 1):
+        raise ValidationError(
+            "streaming completions require a single prompt and n=1",
+            param="stream",
+        )
+    return spec
+
+
+def _chat_text_from_completion_result(result: dict) -> tuple[str, str | None]:
+    choice = (result.get("choices") or [{}])[0]
+    message = choice.get("message") or {}
+    content = message.get("content", "")
+    if isinstance(content, list):
+        text = "".join(
+            str(part.get("text") or "")
+            for part in content
+            if isinstance(part, dict)
+        )
+    else:
+        text = str(content or "")
+    return text, choice.get("finish_reason")
+
+
+def _sum_completion_usage(usages: list[dict]) -> dict:
+    prompt_tokens = sum(int(usage.get("prompt_tokens") or 0) for usage in usages)
+    completion_tokens = sum(
+        int(usage.get("completion_tokens") or 0) for usage in usages
+    )
+    return {
+        "prompt_tokens": prompt_tokens,
+        "completion_tokens": completion_tokens,
+        "total_tokens": prompt_tokens + completion_tokens,
+    }
+
+
+def _completion_response(
+    *,
+    model: str,
+    choices: list[dict],
+    usages: list[dict],
+) -> dict:
+    return {
+        "id": _completion_id(),
+        "object": "text_completion",
+        "created": int(time.time()),
+        "model": model,
+        "choices": choices,
+        "usage": _sum_completion_usage(usages),
+    }
+
+
+def _completion_chunk(
+    *,
+    response_id: str,
+    model: str,
+    text: str,
+    finish_reason: str | None = None,
+    index: int = 0,
+) -> dict:
+    return {
+        "id": response_id,
+        "object": "text_completion.chunk",
+        "created": int(time.time()),
+        "model": model,
+        "choices": [{
+            "text": text,
+            "index": index,
+            "logprobs": None,
+            "finish_reason": finish_reason,
+        }],
+    }
+
+
+def _sse_frames(chunk: str) -> list[tuple[str | None, str | None, str]]:
+    frames: list[tuple[str | None, str | None, str]] = []
+    for raw in str(chunk).split("\n\n"):
+        if not raw.strip():
+            continue
+        event: str | None = None
+        data_lines: list[str] = []
+        for line in raw.splitlines():
+            if line.startswith("event:"):
+                event = line.removeprefix("event:").strip()
+            elif line.startswith("data:"):
+                data_lines.append(line.removeprefix("data:").strip())
+        data = "\n".join(data_lines) if data_lines else None
+        frames.append((event, data, raw + "\n\n"))
+    return frames
+
+
+async def _completion_stream_from_chat(
+    stream: AsyncIterable[str],
+    *,
+    model: str,
+) -> AsyncGenerator[str, None]:
+    response_id = _completion_id()
+    async for chunk in stream:
+        for event, data, raw in _sse_frames(chunk):
+            if event == "error":
+                yield raw
+                continue
+            if data == "[DONE]":
+                yield "data: [DONE]\n\n"
+                continue
+            if not data:
+                continue
+            try:
+                obj = orjson.loads(data)
+            except orjson.JSONDecodeError:
+                continue
+            choice = (obj.get("choices") or [{}])[0]
+            delta = choice.get("delta") or {}
+            text = delta.get("content")
+            finish_reason = choice.get("finish_reason")
+            if text is None and finish_reason is None:
+                continue
+            payload = _completion_chunk(
+                response_id=response_id,
+                model=model,
+                text=str(text or ""),
+                finish_reason=finish_reason,
+                index=int(choice.get("index") or 0),
+            )
+            yield f"data: {orjson.dumps(payload).decode()}\n\n"
+
+
+@router.post(
+    "/completions", tags=[_TAG_COMPLETIONS], dependencies=[Depends(verify_api_key)]
+)
+async def completions_endpoint(req: CompletionRequest):
+    spec = _validate_completion(req)
+    prompts = _completion_prompts(req.prompt)
+    n = req.n or 1
+    upstream_headers = build_upstream_response_headers(spec)
+
+    if req.stream:
+        result = await chat_completions(
+            model=req.model,
+            messages=[{"role": "user", "content": prompts[0]}],
+            stream=True,
+            emit_think=False,
+            temperature=req.temperature or 0.8,
+            top_p=req.top_p or 0.95,
+        )
+        if isinstance(result, dict):
+            text, finish_reason = _chat_text_from_completion_result(result)
+            if req.echo:
+                text = prompts[0] + text
+            payload = _completion_chunk(
+                response_id=_completion_id(),
+                model=req.model,
+                text=text,
+                finish_reason=finish_reason or "stop",
+            )
+
+            async def _single_chunk():
+                yield f"data: {orjson.dumps(payload).decode()}\n\n"
+                yield "data: [DONE]\n\n"
+
+            stream_result: AsyncIterable[str] = _single_chunk()
+        else:
+            stream_result = _completion_stream_from_chat(result, model=req.model)
+
+        return StreamingResponse(
+            _sse_with_heartbeat(_safe_sse(stream_result)),
+            media_type="text/event-stream",
+            headers={**_SSE_HEADERS, **upstream_headers},
+        )
+
+    choices: list[dict] = []
+    usages: list[dict] = []
+    index = 0
+    for prompt in prompts:
+        for _ in range(n):
+            result = await chat_completions(
+                model=req.model,
+                messages=[{"role": "user", "content": prompt}],
+                stream=False,
+                emit_think=False,
+                temperature=req.temperature or 0.8,
+                top_p=req.top_p or 0.95,
+            )
+            if not isinstance(result, dict):
+                raise ValidationError("completion returned a stream unexpectedly")
+            text, finish_reason = _chat_text_from_completion_result(result)
+            if req.echo:
+                text = prompt + text
+            choices.append({
+                "text": text,
+                "index": index,
+                "logprobs": None,
+                "finish_reason": finish_reason or "stop",
+            })
+            usages.append(result.get("usage") or {})
+            index += 1
+
+    return JSONResponse(
+        _completion_response(model=req.model, choices=choices, usages=usages),
+        headers=upstream_headers,
+    )
+
+
 @router.post(
     "/chat/completions", tags=[_TAG_CHAT], dependencies=[Depends(verify_api_key)]
 )
@@ -676,6 +994,7 @@ async def chat_completions_endpoint(req: ChatCompletionRequest):
                 emit_think=emit_think,
                 tools=req.tools,
                 tool_choice=req.tool_choice,
+                tool_scope=req.tool_scope,
                 temperature=req.temperature or 0.8,
                 top_p=req.top_p or 0.95,
                 request_overrides=request_overrides,
@@ -798,6 +1117,7 @@ async def responses_endpoint(req: ResponsesCreateRequest):
         top_p=req.top_p or 0.95,
         tools=req.tools or None,
         tool_choice=req.tool_choice,
+        tool_scope=req.tool_scope,
         request_overrides=request_overrides,
     )
 

@@ -152,8 +152,14 @@ def _raise_chat_status_error(
             status=status_code,
             body=body,
         )
+    message = f"Chat upstream returned {status_code}"
+    if status_code == 403 and _is_cloudflare_challenge_body(body):
+        message = (
+            f"{message} (Cloudflare/WAF block; configure proxy.clearance "
+            "manual cf_cookies/user_agent or FlareSolverr, then restart)"
+        )
     raise UpstreamError(
-        f"Chat upstream returned {status_code}",
+        message,
         status=status_code,
         body=body,
     )
@@ -250,6 +256,8 @@ _CLOUDFLARE_CHALLENGE_MARKERS = (
     "cf-challenge",
     "cf-mitigated",
     "cloudflare",
+    "request was blocked",
+    "you have been blocked",
 )
 _CHAT_ACCOUNT_RETRY_MIN_RETRIES = 20
 _CHAT_TRANSPORT_RETRY_MAX_RETRIES = 2
@@ -272,6 +280,11 @@ def _is_transient_transport_error(exc: UpstreamError) -> bool:
         return False
     haystack = f"{exc} {_upstream_body(exc)}".lower()
     return any(marker in haystack for marker in _TRANSIENT_TRANSPORT_MARKERS)
+
+
+def _is_cloudflare_challenge_body(body: str) -> bool:
+    haystack = (body or "").lower()
+    return any(marker in haystack for marker in _CLOUDFLARE_CHALLENGE_MARKERS)
 
 
 def _is_account_scoped_forbidden(exc: UpstreamError) -> bool:
@@ -329,6 +342,89 @@ _CONSOLE_ONLY_REQUEST_OVERRIDE_KEYS = frozenset(
         "tool_choice",
     }
 )
+_UPSTREAM_TOOL_REQUEST_OVERRIDE_KEYS = frozenset(
+    {
+        "deepsearchPreset",
+        "tools",
+        "tool_choice",
+    }
+)
+_CLIENT_ONLY_APP_CHAT_REQUEST_OVERRIDES = {
+    "disableSearch": True,
+    "enableImageGeneration": False,
+    "enableImageStreaming": False,
+    "searchAllConnectors": False,
+}
+_CLIENT_ONLY_TOOL_OVERRIDE_NAMES = frozenset(
+    {
+        "gmailSearch",
+        "googleCalendarSearch",
+        "outlookSearch",
+        "outlookCalendarSearch",
+        "googleDriveSearch",
+        "webSearch",
+        "xSearch",
+        "xKeywordSearch",
+        "xSemanticSearch",
+        "browsePage",
+        "searchImages",
+        "imageSearch",
+        "codeExecution",
+        "codeInterpreter",
+        "imageGen",
+        "videoGen",
+    }
+)
+
+
+def _client_tools_only(tool_scope: str | None) -> bool:
+    return str(tool_scope or "").strip().lower() == "client_only"
+
+
+def _strip_upstream_tool_request_overrides(
+    request_overrides: dict | None,
+) -> dict | None:
+    if not request_overrides:
+        return None
+    cleaned = {
+        key: value
+        for key, value in request_overrides.items()
+        if value is not None and key not in _UPSTREAM_TOOL_REQUEST_OVERRIDE_KEYS
+    }
+    return cleaned or None
+
+
+def _client_only_app_chat_request_overrides(
+    request_overrides: dict | None,
+) -> dict[str, Any]:
+    cleaned = _strip_upstream_tool_request_overrides(request_overrides) or {}
+    cleaned.update(_CLIENT_ONLY_APP_CHAT_REQUEST_OVERRIDES)
+    return cleaned
+
+
+def _client_only_tool_overrides(
+    tool_overrides: dict | None = None,
+) -> dict[str, bool]:
+    merged = dict(tool_overrides or {})
+    for name in _CLIENT_ONLY_TOOL_OVERRIDE_NAMES:
+        merged[name] = False
+    return merged
+
+
+def _is_client_function_tool(tool: Any) -> bool:
+    if not isinstance(tool, dict) or tool.get("type") != "function":
+        return False
+    function = tool.get("function")
+    if isinstance(function, dict):
+        return bool(str(function.get("name") or "").strip())
+    return bool(str(tool.get("name") or "").strip())
+
+
+def _client_function_tools(tools: list[Any] | None) -> list[dict[str, Any]] | None:
+    if not tools:
+        return None
+    filtered = [tool for tool in tools if _is_client_function_tool(tool)]
+    return filtered or None
 
 
 def _uses_console_responses_transport(
@@ -359,7 +455,14 @@ def _prepare_console_request_tools(
     spec: ModelSpec,
     cfg: Any,
     request_overrides: dict | None,
+    client_tools_only: bool = False,
 ) -> tuple[list[dict[str, Any]] | None, dict | None]:
+    if client_tools_only:
+        return (
+            _client_function_tools(tools),
+            _strip_upstream_tool_request_overrides(request_overrides),
+        )
+
     local_tools, console_tools = split_console_server_tools(tools, spec)
     if spec.uses_console_responses() and cfg.get_bool(
         "features.console_default_search",
@@ -653,6 +756,7 @@ async def _stream_chat(
     request_overrides: dict | None = None,
     messages: list[dict] | None = None,
     timeout_s: float = 120.0,
+    client_tools_only: bool = False,
 ) -> AsyncGenerator[str, None]:
     """Yield raw SSE lines from the selected upstream chat endpoint."""
     proxy = await get_proxy_runtime()
@@ -665,6 +769,11 @@ async def _stream_chat(
     )
 
     if use_console_transport:
+        console_request_overrides = (
+            _strip_upstream_tool_request_overrides(request_overrides)
+            if client_tools_only
+            else request_overrides
+        )
         endpoint = plan.endpoint if plan else CONSOLE_RESPONSES
         origin = plan.origin if plan else "https://console.x.ai"
         referer = plan.referer if plan else "https://console.x.ai/"
@@ -675,7 +784,7 @@ async def _stream_chat(
             stream=True,
             public_model=spec.model_name,
             spec=spec,
-            request_overrides=request_overrides,
+            request_overrides=console_request_overrides,
             messages=messages,
         )
         transport_context = "Console Responses transport failed"
@@ -687,17 +796,24 @@ async def _stream_chat(
         referer = plan.referer if plan else "https://grok.com/"
         content_type = plan.content_type if plan else "application/json"
         attachments = await _prepare_file_attachments(token, files)
+        legacy_request_overrides = (
+            _legacy_chat_request_overrides(request_overrides)
+            if is_console_attachment_fallback
+            else request_overrides
+        )
+        effective_tool_overrides = tool_overrides
+        if client_tools_only:
+            legacy_request_overrides = _client_only_app_chat_request_overrides(
+                legacy_request_overrides
+            )
+            effective_tool_overrides = _client_only_tool_overrides(tool_overrides)
         payload = build_chat_payload(
             message=message,
             mode_id=ModeId.FAST if is_console_attachment_fallback else mode_id,
             file_attachments=attachments,
-            tool_overrides=tool_overrides,
+            tool_overrides=effective_tool_overrides,
             model_config_override=model_config_override,
-            request_overrides=(
-                _legacy_chat_request_overrides(request_overrides)
-                if is_console_attachment_fallback
-                else request_overrides
-            ),
+            request_overrides=legacy_request_overrides,
         )
         transport_context = "Chat transport failed"
         stream_context = "Chat stream read failed"
@@ -766,6 +882,7 @@ async def completions(
     emit_think: bool | None = None,
     tools: list[dict] | None = None,
     tool_choice: Any = None,
+    tool_scope: str | None = None,
     temperature: float = 0.8,
     top_p: float = 0.95,
     request_overrides: dict | None = None,
@@ -804,6 +921,7 @@ async def completions(
     retry_codes = _configured_retry_codes(cfg)
     response_id = make_response_id()
     timeout_s = cfg.get_float("chat.timeout", 120.0)
+    client_tools_only = _client_tools_only(tool_scope)
 
     # ── Tool call setup ───────────────────────────────────────────────────────
     tool_names: list[str] = []
@@ -813,10 +931,11 @@ async def completions(
         spec=spec,
         cfg=cfg,
         request_overrides=request_overrides,
+        client_tools_only=client_tools_only,
     )
     native_tool_names = (
         client_function_tool_names(tools)
-        if _uses_console_responses_transport(spec, files)
+        if not client_tools_only and _uses_console_responses_transport(spec, files)
         else set()
     )
     if local_tools:
@@ -865,6 +984,7 @@ async def completions(
                             request_overrides=request_overrides,
                             messages=messages if native_tool_names else None,
                             timeout_s=timeout_s,
+                            client_tools_only=client_tools_only,
                         ):
                             event_type, data = classify_line(line)
                             if event_type == "done":
@@ -1164,6 +1284,7 @@ async def completions(
                     request_overrides=request_overrides,
                     messages=messages if native_tool_names else None,
                     timeout_s=timeout_s,
+                    client_tools_only=client_tools_only,
                 ):
                     event_type, data = classify_line(line)
                     if event_type == "done":

@@ -11,7 +11,7 @@ FastAPI just delegates to these coroutines once parameters are bound.
 import asyncio
 import json
 import unittest
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from app.control.account.enums import AccountStatus
 
@@ -82,6 +82,31 @@ class MessagesEndpointValidationTests(unittest.TestCase):
                     "stream": False,
                 }
             )
+
+    def test_messages_accepts_claude_code_model_alias(self) -> None:
+        from app.products.anthropic.router import MessagesRequest, messages_endpoint
+
+        req = MessagesRequest.model_validate(
+            {
+                "model": "claude-sonnet-4-20250514",
+                "messages": [{"role": "user", "content": "Hello"}],
+                "stream": False,
+            }
+        )
+        fake_response = {
+            "id": "msg_test",
+            "type": "message",
+            "role": "assistant",
+            "model": "claude-sonnet-4-20250514",
+            "content": [{"type": "text", "text": "ok"}],
+            "stop_reason": "end_turn",
+            "stop_sequence": None,
+            "usage": {"input_tokens": 1, "output_tokens": 1},
+        }
+        with patch("app.products.anthropic.messages.create", AsyncMock(return_value=fake_response)):
+            response = asyncio.run(messages_endpoint(req))
+
+        self.assertEqual(_body(response)["model"], "claude-sonnet-4-20250514")
 
 
 class CountTokensEndpointTests(unittest.TestCase):
@@ -169,6 +194,15 @@ class CountTokensEndpointTests(unittest.TestCase):
                 }
             )
 
+    def test_count_tokens_accepts_claude_code_model_alias(self) -> None:
+        resp = self._call(
+            {
+                "model": "claude-sonnet-4-20250514",
+                "messages": [{"role": "user", "content": "Hello"}],
+            }
+        )
+        self.assertGreater(_body(resp)["input_tokens"], 0)
+
 
 # ---------------------------------------------------------------------------
 # /v1/models content negotiation
@@ -225,8 +259,15 @@ class ModelsContentNegotiationTests(unittest.TestCase):
         self.assertEqual(body["first_id"], first["id"])
         self.assertEqual(body["last_id"], body["data"][-1]["id"])
 
+    def test_list_models_anthropic_header_includes_claude_code_aliases_first(self) -> None:
+        body = _body(self._list_models(anthropic_version="2023-06-01"))
+
+        self.assertEqual(body["data"][0]["id"], "claude-sonnet-4-5-20250929")
+        ids = {item["id"] for item in body["data"]}
+        self.assertIn("claude-sonnet-4-20250514", ids)
+
     def test_list_models_anthropic_header_exposes_only_chat_models(self) -> None:
-        from app.control.model.registry import get
+        from app.products.anthropic.compat import resolve_anthropic_model_spec
 
         body = _body(self._list_models(anthropic_version="2023-06-01"))
         ids = {item["id"] for item in body["data"]}
@@ -237,7 +278,7 @@ class ModelsContentNegotiationTests(unittest.TestCase):
         self.assertNotIn("grok-imagine-image", ids)
         self.assertNotIn("grok-imagine-video", ids)
         for model_id in ids:
-            spec = get(model_id)
+            spec = resolve_anthropic_model_spec(model_id)
             self.assertIsNotNone(spec)
             self.assertTrue(spec.is_chat(), model_id)
 
@@ -261,6 +302,16 @@ class ModelsContentNegotiationTests(unittest.TestCase):
         self.assertEqual(body["id"], model)
         self.assertIn("display_name", body)
         self.assertTrue(body["created_at"].endswith("Z"))
+
+    def test_get_model_anthropic_header_returns_claude_code_alias(self) -> None:
+        model = "claude-sonnet-4-20250514"
+        body = _body(
+            self._get_model(model, anthropic_version="2023-06-01")
+        )
+
+        self.assertEqual(body["type"], "model")
+        self.assertEqual(body["id"], model)
+        self.assertEqual(body["display_name"], "Claude Sonnet 4")
 
     def test_get_model_default_returns_openai_format(self) -> None:
         model = "grok-4.3"
@@ -322,7 +373,16 @@ class ModelPayloadHelperTests(unittest.TestCase):
         self.assertEqual(payload["owned_by"], "xai")
         self.assertEqual(payload["created"], 0)
         self.assertEqual(payload["capability"], "chat")
-        self.assertEqual(payload["capabilities"], ["chat"])
+        self.assertEqual(payload["capabilities"], ["chat", "function_calling", "tool_calling"])
+        self.assertTrue(payload["openai_compatible"])
+        self.assertTrue(payload["supports_function_calling"])
+        self.assertTrue(payload["supports_tool_calling"])
+        self.assertTrue(payload["supports_parallel_tool_calls"])
+        self.assertIn("tools", payload["supported_parameters"])
+        self.assertIn("tool_choice", payload["supported_parameters"])
+        self.assertEqual(payload["interfaces"], ["openai.chat.completions", "openai.responses"])
+        self.assertTrue(payload["features"]["chat"])
+        self.assertTrue(payload["features"]["tool_calling"])
         self.assertEqual(payload["type"], "chat")
         self.assertEqual(payload["model_type"], "chat")
         self.assertEqual(payload["input_modalities"], ["text"])
@@ -351,6 +411,9 @@ class ModelPayloadHelperTests(unittest.TestCase):
         self.assertEqual(payload["id"], "grok-imagine-image")
         self.assertEqual(payload["capability"], "image")
         self.assertEqual(payload["capabilities"], ["image"])
+        self.assertFalse(payload["openai_compatible"])
+        self.assertFalse(payload["supports_tool_calling"])
+        self.assertEqual(payload["supported_parameters"], [])
         self.assertEqual(payload["type"], "image")
         self.assertEqual(payload["model_type"], "image")
         self.assertEqual(payload["input_modalities"], ["text"])

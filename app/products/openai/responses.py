@@ -25,6 +25,7 @@ from app.products._account_selection import reserve_account
 
 from .chat import (
     _chat_max_retries,
+    _client_tools_only,
     _extract_message,
     _fail_sync,
     _feedback_kind,
@@ -236,6 +237,7 @@ async def create(
     top_p:        float,
     tools:        list[dict] | None = None,
     tool_choice:  Any = None,
+    tool_scope:   str | None = None,
     request_overrides: dict | None = None,
 ) -> dict | AsyncGenerator[str, None]:
 
@@ -253,14 +255,20 @@ async def create(
     # Tool prompt injection — only modify the message text, never the Grok payload
     # Normalise to Chat Completions format first (Responses API uses a flat structure)
     tool_names: list[str] = []
+    client_tools_only = _client_tools_only(tool_scope)
     local_tools, request_overrides = _prepare_console_request_tools(
         tools=tools,
         tool_choice=tool_choice,
         spec=spec,
         cfg=cfg,
         request_overrides=request_overrides,
+        client_tools_only=client_tools_only,
     )
-    native_tool_names = client_function_tool_names(tools) if spec.uses_console_responses() else set()
+    native_tool_names = (
+        client_function_tool_names(tools)
+        if not client_tools_only and spec.uses_console_responses()
+        else set()
+    )
     if local_tools:
         chat_tools = _to_chat_tools(local_tools)
         tool_names = extract_tool_names(chat_tools)
@@ -329,6 +337,7 @@ async def create(
                         request_overrides=request_overrides,
                         messages  = messages if native_tool_names else None,
                         timeout_s = timeout_s,
+                        client_tools_only=client_tools_only,
                     ):
                         if tool_calls_emitted:
                             break
@@ -722,6 +731,7 @@ async def create(
                     request_overrides=request_overrides,
                     messages  = messages if native_tool_names else None,
                     timeout_s = timeout_s,
+                    client_tools_only=client_tools_only,
                 ):
                     event_type, data = classify_line(line)
                     if event_type == "done":

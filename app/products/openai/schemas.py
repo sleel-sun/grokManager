@@ -40,6 +40,7 @@ class ChatCompletionRequest(BaseModel):
     video_config:        VideoConfig | None         = None
     tools:               list[dict[str, Any]] | None = None
     tool_choice:         str | dict[str, Any] | None = None
+    tool_scope:          Literal["auto", "client_only"] | None = None
     parallel_tool_calls: bool | None                = True
     max_tokens:          int | None                 = None
     deepsearch:          Literal["default", "deeper"] | None = Field(
@@ -48,6 +49,26 @@ class ChatCompletionRequest(BaseModel):
     # WebUI-only MCP orchestration options. The public /v1 endpoint accepts but
     # ignores this field; /webui/api/chat/completions handles it explicitly.
     mcp:                 dict[str, Any] | None      = None
+
+
+class CompletionRequest(BaseModel):
+    """Legacy OpenAI Completions API — /v1/completions."""
+
+    model_config = {"extra": "ignore"}
+
+    model:       str
+    prompt:      str | list[str]
+    stream:      bool | None = None
+    temperature: float | None = 0.8
+    top_p:       float | None = 0.95
+    max_tokens:  int | None = None
+    n:           int | None = Field(1, ge=1)
+    stop:        str | list[str] | None = None
+    suffix:      str | None = None
+    echo:        bool | None = False
+    logprobs:    int | None = None
+    best_of:     int | None = None
+    user:        str | None = None
 
 
 class ImageGenerationRequest(BaseModel):
@@ -91,6 +112,7 @@ class ResponsesCreateRequest(BaseModel):
     max_output_tokens:    int | None            = None
     tools:                list[Any] | None      = None
     tool_choice:          Any | None            = None
+    tool_scope:           Literal["auto", "client_only"] | None = None
     previous_response_id: str | None            = None
     store:                bool | None           = None
     metadata:             dict[str, Any] | None = None
@@ -104,7 +126,7 @@ class ResponsesCreateRequest(BaseModel):
 
 
 __all__ = [
-    "MessageItem", "ImageConfig", "VideoConfig",
+    "MessageItem", "ImageConfig", "VideoConfig", "CompletionRequest",
     "ChatCompletionRequest", "ImageGenerationRequest", "ImageEditRequest",
     "ResponsesCreateRequest",
 ]
