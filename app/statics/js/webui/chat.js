@@ -7,10 +7,14 @@
   const MCP_TOOLS_ENDPOINT = '/webui/api/mcp/tools';
   const CODE_PREVIEWS_ENDPOINT = '/webui/api/code-previews';
   const ATTACHMENT_DOWNLOAD_ENDPOINT = '/webui/api/attachments/download';
+  const LINK_REDIRECT_ENDPOINT = '/webui/redirect';
   const IMAGE_STUDIO_CACHE_ENDPOINT = '/webui/api/images/history/cache-url';
   const IMAGE_STUDIO_PENDING_REFERENCE_KEY = 'grokmanager.image_studio.pending_reference.v1';
   const IMAGE_STUDIO_PENDING_PROMPT_KEY = 'grokmanager.image_studio.pending_prompt.v1';
   const BOUND_IMAGE_LIMIT = 24;
+  const STREAM_TEXT_FLUSH_MS = 90;
+  const STREAM_TEXT_FLUSH_CHARS = 48;
+  const STREAM_TEXT_BOUNDARY_RE = /[\n。！？.!?；;：:]$/;
   const PREFERRED_MODEL = 'grok-4.20-0309';
   const STORE_KEY = 'grok2api_webui_chat_sessions_v1';
   const SIDEBAR_STORE_KEY = 'grok2api_webui_sidebar_collapsed_v1';
@@ -263,6 +267,40 @@
     url.searchParams.set('url', href);
     if (filename) url.searchParams.set('filename', filename);
     return url.href;
+  }
+
+  function shouldRedirectLinkHref(href) {
+    try {
+      const url = new URL(href, window.location.origin);
+      return ['http:', 'https:'].includes(url.protocol) && url.origin !== window.location.origin;
+    } catch {
+      return false;
+    }
+  }
+
+  function redirectedLinkHref(href) {
+    const url = new URL(LINK_REDIRECT_ENDPOINT, window.location.origin);
+    url.searchParams.set('url', href);
+    return url.href;
+  }
+
+  function enhanceExternalLinkRedirects(root) {
+    if (!root || typeof root.querySelectorAll !== 'function') return;
+    root.querySelectorAll('a[href]').forEach((link) => {
+      if (link.closest('pre, code, .msg-download-attachment')) return;
+      if (link.classList.contains('msg-image-preview-link')) return;
+      if (link.dataset.redirectEnhanced === 'true') return;
+
+      const originalHref = link.getAttribute('href') || '';
+      const safeHref = sanitizeUrl(originalHref);
+      if (!safeHref || !shouldRedirectLinkHref(safeHref)) return;
+
+      link.dataset.redirectEnhanced = 'true';
+      link.dataset.originalHref = safeHref;
+      link.href = redirectedLinkHref(safeHref);
+      link.setAttribute('target', '_blank');
+      link.setAttribute('rel', 'noreferrer noopener');
+    });
   }
 
   function normalizeAttachmentContent(source) {
@@ -1252,6 +1290,7 @@
     appendImagePromptAction(card, content, messageIndex);
     appendBoundGeneratedImages(card, messageIndex);
     enhanceImagePreviews(card);
+    enhanceExternalLinkRedirects(card);
   }
 
   function appendAssistantImageActions(container, url, index) {
@@ -2545,6 +2584,9 @@
       likeBtn: null,
       dislikeBtn: null,
       renderFrame: 0,
+      pendingText: '',
+      pendingReasoning: '',
+      streamFlushTimer: 0,
     };
 
     if (role === 'assistant') {
@@ -2702,8 +2744,46 @@
     renderAssistantEntry(entry);
   }
 
+  function flushAssistantStreamBuffers(entry) {
+    if (!entry) return;
+    if (entry.streamFlushTimer) {
+      window.clearTimeout(entry.streamFlushTimer);
+      entry.streamFlushTimer = 0;
+    }
+
+    const textDelta = entry.pendingText || '';
+    const reasoningDelta = entry.pendingReasoning || '';
+    if (!textDelta && !reasoningDelta) return;
+
+    entry.pendingText = '';
+    entry.pendingReasoning = '';
+    if (entry.waiting) entry.waiting = false;
+    if (textDelta) entry.text += textDelta;
+    if (reasoningDelta) entry.reasoningText += reasoningDelta;
+    scheduleAssistantEntryRender(entry);
+  }
+
+  function scheduleAssistantStreamFlush(entry) {
+    if (!entry) return;
+    const pending = `${entry.pendingText || ''}${entry.pendingReasoning || ''}`;
+    if (!pending) return;
+
+    if (pending.length >= STREAM_TEXT_FLUSH_CHARS || STREAM_TEXT_BOUNDARY_RE.test(pending)) {
+      flushAssistantStreamBuffers(entry);
+      return;
+    }
+
+    if (!entry.streamFlushTimer) {
+      entry.streamFlushTimer = window.setTimeout(() => {
+        entry.streamFlushTimer = 0;
+        flushAssistantStreamBuffers(entry);
+      }, STREAM_TEXT_FLUSH_MS);
+    }
+  }
+
   function finalizeAssistantEntry(entry, messageIndex) {
     if (!entry) return;
+    flushAssistantStreamBuffers(entry);
     entry.waiting = false;
     entry.messageIndex = messageIndex;
     flushAssistantEntry(entry);
@@ -2712,9 +2792,9 @@
   }
 
   function updateAssistant(entry, delta) {
-    if (entry.waiting) entry.waiting = false;
-    entry.text += delta;
-    scheduleAssistantEntryRender(entry);
+    if (!entry || !delta) return;
+    entry.pendingText += delta;
+    scheduleAssistantStreamFlush(entry);
   }
 
   function updateMcpStatus(entry, payload) {
@@ -2722,6 +2802,7 @@
     const label = formatMcpStatus(payload);
     if (!label) return;
     setStatus(label);
+    flushAssistantStreamBuffers(entry);
     if (hasMessageContent(entry.text)) return;
     entry.waiting = false;
     entry.card.innerHTML = `<div class="msg-mcp-status"><span class="msg-loading-spinner" aria-hidden="true"></span><span>${escapeHtml(label)}</span></div>`;
@@ -2729,9 +2810,9 @@
   }
 
   function updateReasoning(entry, delta) {
-    if (entry.waiting) entry.waiting = false;
-    entry.reasoningText += delta;
-    scheduleAssistantEntryRender(entry);
+    if (!entry || !delta) return;
+    entry.pendingReasoning += delta;
+    scheduleAssistantStreamFlush(entry);
   }
 
   function renderThread() {
@@ -3023,6 +3104,7 @@
           return false;
         }
         if (payload === '[DONE]') {
+          flushAssistantStreamBuffers(assistantEntry);
           const finalReasoning = hasVisibleReasoning(assistantEntry.reasoningText) ? assistantEntry.reasoningText : '';
           messages.push({
             role: 'assistant',
@@ -3081,6 +3163,7 @@
 
       if (buffer.trim() && handleStreamChunk(buffer)) return;
 
+      flushAssistantStreamBuffers(assistantEntry);
       const finalReasoning = hasVisibleReasoning(assistantEntry.reasoningText) ? assistantEntry.reasoningText : '';
       messages.push({
         role: 'assistant',
@@ -3094,6 +3177,7 @@
       setStatus(text('webui.chat.statusDone', 'Completed'));
     } catch (error) {
       if (error && error.name === 'AbortError') {
+        flushAssistantStreamBuffers(assistantEntry);
         setStatus(text('webui.chat.statusStopped', 'Stopped'));
       } else {
         messages.push({

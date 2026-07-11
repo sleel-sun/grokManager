@@ -499,7 +499,7 @@
 
 <script src="/static/js/i18n.js?v={{APP_VERSION}}"></script>
 <script src="/static/js/auth.js?v={{APP_VERSION}}"></script>
-<script src="/static/js/admin-header.js?v={{APP_VERSION}}"></script>
+<script src="/static/js/admin-header.js?v={{APP_VERSION}}-usersnav1"></script>
 <script src="/static/js/toast.js?v={{APP_VERSION}}"></script>
 <script src="/static/js/footer.js?v={{APP_VERSION}}"></script>
 <script>
@@ -520,7 +520,7 @@ const SCHEMA_DEF = [
           { key: 'api_key', label: 'API 调用密钥', labelKey: 'config.schema.fields.apiKey.label', type: 'text', desc: 'OpenAI 兼容 API 的鉴权密钥。多个值请使用英文逗号分隔；留空则禁用鉴权。', descKey: 'config.schema.fields.apiKey.desc', rand: true },
           { key: 'webui_enabled', label: '启用 WebUI', labelKey: 'config.schema.fields.webuiEnabled.label', type: 'bool', desc: '开放 WebUI 功能入口。关闭后相关路由将返回 404。', descKey: 'config.schema.fields.webuiEnabled.desc' },
           { key: 'webui_key', label: 'WebUI 访问密码', labelKey: 'config.schema.fields.webuiKey.label', type: 'password', desc: 'WebUI 的访问鉴权密码。配置后访问时必须提供。', descKey: 'config.schema.fields.webuiKey.desc', rand: true, showIf: 'app.webui_enabled' },
-          { key: 'webui_users', label: 'WebUI 用户', labelKey: 'config.schema.fields.webuiUsers.label', type: 'webui_users', desc: '配置后 WebUI 使用用户名 + 独立 key 登录，并按用户隔离浏览器端会话、搜索设置与 MCP 配置；可为每个用户独立控制 NSFW、GPT 图片模型访问与最高图片清晰度。留空时继续使用上面的单密码模式。', descKey: 'config.schema.fields.webuiUsers.desc', showIf: 'app.webui_enabled' },
+          { key: 'webui_multi_user_enabled', label: '启用多用户管理', labelKey: 'config.schema.fields.webuiMultiUser.label', type: 'bool', desc: '开启后显示用户管理页签，并启用 WebUI 用户名 + 独立 Key 登录；关闭时使用上面的单密码/匿名模式。', descKey: 'config.schema.fields.webuiMultiUser.desc', showIf: 'app.webui_enabled' },
         ]
       },
       {
@@ -1152,6 +1152,11 @@ function _normalizeGptQuality(value) {
   return '1k';
 }
 
+function _normalizeDailyQuota(value) {
+  const parsed = parseInt(value, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
+}
+
 function _allGptImageModels() {
   return GPT_IMAGE_MODEL_OPTIONS.map((item) => item.value);
 }
@@ -1197,6 +1202,18 @@ function _normalizeWebuiUserEntry(entry) {
       entry.max_gpt_image_quality,
     ]),
   );
+  const grokDailyQuota = _normalizeDailyQuota(_firstDefined([
+    entry.grok_daily_quota,
+    entry.grokDailyQuota,
+    entry.grok_quota,
+    entry.grokQuota,
+  ]));
+  const gptDailyQuota = _normalizeDailyQuota(_firstDefined([
+    entry.gpt_daily_quota,
+    entry.gptDailyQuota,
+    entry.gpt_quota,
+    entry.gptQuota,
+  ]));
   return {
     username,
     key,
@@ -1206,6 +1223,8 @@ function _normalizeWebuiUserEntry(entry) {
     gpt_enabled: gptEnabled,
     gpt_models: gptModels,
     gpt_image_quality: gptQuality,
+    grok_daily_quota: grokDailyQuota,
+    gpt_daily_quota: gptDailyQuota,
   };
 }
 
@@ -1231,6 +1250,8 @@ function _normalizeWebuiUsers(value) {
           gpt_enabled: false,
           gpt_models: [],
           gpt_image_quality: '1k',
+          grok_daily_quota: 0,
+          gpt_daily_quota: 0,
         };
       }).filter(Boolean);
     }
@@ -1356,6 +1377,8 @@ function renderWebuiUsersInput(value, onChange) {
         gpt_enabled: false,
         gpt_models: [],
         gpt_image_quality: '1k',
+        grok_daily_quota: 0,
+        gpt_daily_quota: 0,
       }]);
       onChange(_normalizeWebuiUsers(users));
       renderList();
@@ -1452,6 +1475,26 @@ function renderWebuiUsersInput(value, onChange) {
       });
       gptQuality.addEventListener('change', () => updateUser(index, { gpt_image_quality: gptQuality.value }));
 
+      const grokQuota = _el('input', {
+        class: 'cfg-text',
+        type: 'number',
+        min: '0',
+        step: '1',
+        value: String(user.grok_daily_quota || 0),
+        placeholder: tr('config.webuiUsers.grokQuota', null, 'Grok 日额度'),
+      });
+      grokQuota.addEventListener('input', () => updateUser(index, { grok_daily_quota: _normalizeDailyQuota(grokQuota.value) }));
+
+      const gptQuota = _el('input', {
+        class: 'cfg-text',
+        type: 'number',
+        min: '0',
+        step: '1',
+        value: String(user.gpt_daily_quota || 0),
+        placeholder: tr('config.webuiUsers.gptQuota', null, 'GPT 日额度'),
+      });
+      gptQuota.addEventListener('input', () => updateUser(index, { gpt_daily_quota: _normalizeDailyQuota(gptQuota.value) }));
+
       const removeBtn = _el('button', {
         class: 'cfg-webui-user-btn cfg-webui-user-remove',
         type: 'button',
@@ -1475,6 +1518,8 @@ function renderWebuiUsersInput(value, onChange) {
         allowNsfwLabel,
         allowGptLabel,
         gptQuality,
+        grokQuota,
+        gptQuota,
         removeBtn,
       ));
     });
@@ -1793,6 +1838,10 @@ async function load() {
 async function doSave() {
   if (!Object.keys(_dirty).length) return;
   const restartCount = _dirtyRestartCount();
+  const webuiNavChanged = (
+    Object.prototype.hasOwnProperty.call(_dirty, 'app.webui_enabled')
+    || Object.prototype.hasOwnProperty.call(_dirty, 'app.webui_multi_user_enabled')
+  );
 
   // Build a properly nested patch from full dotted paths.
   // "proxy.egress.mode" → {proxy:{egress:{mode:v}}}
@@ -1805,6 +1854,12 @@ async function doSave() {
     // Merge into local _cfg so re-render shows correct values.
     Object.entries(_dirty).forEach(([fp, v]) => _setByPath(_cfg, fp, v));
     _dirty = {};
+    if (webuiNavChanged && typeof window.syncAdminHeaderUsersNav === 'function') {
+      window.syncAdminHeaderUsersNav(
+        Boolean(_getByPath(_cfg, 'app.webui_enabled'))
+        && Boolean(_getByPath(_cfg, 'app.webui_multi_user_enabled')),
+      );
+    }
     // Re-render to clear modified state
     renderAll();
     _refreshDirtyState({ autoNormalizeSelects: false });

@@ -179,7 +179,7 @@ def split_console_server_tools(
     """
     if not tools:
         return None, []
-    if spec is None or not spec.uses_console_responses():
+    if spec is None or not spec.uses_responses_protocol():
         return tools, []
 
     console_tools: list[dict[str, Any]] = []
@@ -518,10 +518,6 @@ class ConsoleResponsesStreamAdapter:
             item = obj.get("item") or obj.get("output_item")
             if isinstance(item, dict) and item.get("type") == "function_call":
                 self._upsert_function_call(item, obj, completed=event_type.endswith("done"))
-                if event_type.endswith("done"):
-                    calls = self._current_function_calls()
-                    if calls:
-                        events.append(FrameEvent("tool_calls", tool_calls=calls))
                 return events
             self._append_response_images(events, item)
             if events:

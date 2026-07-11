@@ -27,6 +27,7 @@ class ClearanceMode(StrEnum):
     NONE         = "none"         # no CF clearance required
     MANUAL       = "manual"       # operator-supplied cf_cookies
     FLARESOLVERR = "flaresolverr" # maintained by FlareSolverr
+    CAMOUFOX     = "camoufox"     # maintained by Camoufox sidecar
 
     @classmethod
     def parse(cls, value: str | Self) -> Self:

@@ -21,6 +21,7 @@
   "header": {
     "account": "账户管理",
     "maintainer": "账号注册",
+    "users": "用户管理",
     "config": "配置管理",
     "cache": "缓存管理",
     "languageLabel": "语言",
@@ -37,6 +38,88 @@
     "versionNotesEmpty": "暂无更新说明。",
     "versionOpenRelease": "发布详情",
     "versionClose": "关闭"
+  },
+  "users": {
+    "pageTitle": "grokManager - WebUI 用户管理",
+    "pageHeading": "WebUI 用户管理",
+    "pageSubtitle": "独立管理 WebUI 登录用户、访问 Key、API 调用密钥、权限与图像能力。保存后新会话与兼容 API 调用立即按最新用户配置鉴权。",
+    "apiKeyPlaceholder": "留空则禁用 API 调用",
+    "reload": "刷新",
+    "export": "导出 JSON",
+    "import": "导入",
+    "save": "保存更改",
+    "loading": "正在加载用户配置...",
+    "loadFailed": "加载失败",
+    "saveDone": "更改已保存",
+    "saveFailed": "保存失败",
+    "add": "添加用户",
+    "empty": "尚未配置 WebUI 用户。添加用户后 WebUI 将使用用户名 + Key 登录。",
+    "search": "搜索用户名 / 显示名",
+    "enabledShort": "启用",
+    "allowedShort": "允许",
+    "copyKey": "复制 Key",
+    "copyDone": "已复制",
+    "copyFailed": "复制失败",
+    "regenerateKey": "重置 Key",
+    "regenerateApiKey": "随机生成 API 调用密钥",
+    "delete": "删除",
+    "unlimited": "不限",
+    "remaining": "剩余",
+    "deleteConfirm": "确认删除所选 WebUI 用户？",
+    "enableSelected": "启用所选",
+    "disableSelected": "禁用所选",
+    "deleteSelected": "删除所选",
+    "importHelp": "支持 JSON 数组、对象映射或每行 username=key。导入会追加并跳过重复用户名。",
+    "importAppend": "追加导入",
+    "importReplace": "替换为导入内容",
+    "importEmpty": "未找到有效用户",
+    "importDone": "导入完成",
+    "importFailed": "导入失败",
+    "mode": {
+      "current": "当前模式",
+      "enabled": "WebUI 已启用",
+      "disabled": "WebUI 已关闭",
+      "multiUser": "多用户模式",
+      "singleKey": "单密码模式",
+      "anonymous": "匿名模式"
+    },
+    "stats": {
+      "total": "用户总数",
+      "enabled": "启用",
+      "disabled": "禁用",
+      "nsfw": "允许 NSFW",
+      "gpt": "GPT 图片",
+      "grokUsage": "Grok 已用",
+      "gptUsage": "GPT 已用"
+    },
+    "filters": {
+      "all": "全部状态",
+      "enabled": "仅启用",
+      "disabled": "仅禁用",
+      "gpt": "GPT 图片",
+      "nsfwBlocked": "禁用 NSFW"
+    },
+    "columns": {
+      "username": "用户名",
+      "key": "访问 Key",
+      "apiKey": "API 调用密钥",
+      "displayName": "显示名",
+      "enabled": "启用",
+      "nsfw": "NSFW",
+      "gpt": "GPT 图片",
+      "quality": "最高质量",
+      "grokQuota": "Grok 日额度",
+      "gptQuota": "GPT 日额度",
+      "usage": "今日用量",
+      "actions": "操作"
+    },
+    "validation": {
+      "username": "用户名不能为空",
+      "key": "访问 Key 不能为空",
+      "usernameFormat": "用户名不能包含空格、/、: 或 =，长度不能超过 64",
+      "duplicate": "用户名重复：{name}",
+      "duplicateApiKey": "API 调用密钥重复"
+    }
   },
   "webui": {
     "header": {
@@ -461,6 +544,8 @@
       "enabled": "启用",
       "allowNsfw": "允许 NSFW",
       "allowGpt": "GPT",
+      "grokQuota": "Grok 日额度",
+      "gptQuota": "GPT 日额度",
       "remove": "删除"
     },
     "loadFailed": "配置加载失败：{message}",
@@ -545,6 +630,10 @@
         "webuiKey": {
           "label": "WebUI 访问密码",
           "desc": "WebUI 的访问鉴权密码。配置后访问时必须提供。"
+        },
+        "webuiMultiUser": {
+          "label": "启用多用户管理",
+          "desc": "开启后显示用户管理页签，并启用 WebUI 用户名 + 独立 Key 登录；关闭时使用上面的单密码/匿名模式。"
         },
         "webuiUsers": {
           "label": "WebUI 用户",
@@ -827,6 +916,13 @@
     "actionView": "查看",
     "actionDelete": "删除",
     "actionClear": "清理",
+    "copyImageUrl": "复制图片外链",
+    "copyImageMarkdown": "复制 Markdown",
+    "copyImageMarkdownList": "复制本页图片 Markdown",
+    "copySelectedImageMarkdown": "复制选中图片 Markdown",
+    "copyUrlDone": "外链已复制",
+    "copyMarkdownDone": "Markdown 已复制",
+    "copyFailed": "复制失败",
     "loadFailed": "加载失败：{message}",
     "clearLocalConfirm": "确定要清空所有本地{type}缓存吗？",
     "clearLocalDone": "已清除 {count} 个{type}文件",

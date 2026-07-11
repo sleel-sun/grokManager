@@ -1313,13 +1313,14 @@
             <th>Access Token</th>
             <th>账号</th>
             <th>计划</th>
+            <th>生图额度</th>
             <th>状态</th>
             <th>更新时间</th>
             <th data-i18n="account.colActions">操作</th>
           </tr>
         </thead>
         <tbody id="gpt-account-tbody">
-          <tr><td colspan="7" class="gpt-image-empty">尚未导入 GPTChat 账号。</td></tr>
+          <tr><td colspan="8" class="gpt-image-empty">尚未导入 GPTChat 账号。</td></tr>
         </tbody>
       </table>
     </div>
@@ -1809,7 +1810,7 @@
 
 <script src="/static/js/i18n.js?v={{APP_VERSION}}"></script>
 <script src="/static/js/auth.js?v={{APP_VERSION}}"></script>
-<script src="/static/js/admin-header.js?v={{APP_VERSION}}"></script>
+<script src="/static/js/admin-header.js?v={{APP_VERSION}}-usersnav1"></script>
 <script src="/static/js/toast.js?v={{APP_VERSION}}"></script>
 <script src="/static/js/footer.js?v={{APP_VERSION}}"></script>
 <script>
@@ -1997,13 +1998,13 @@ function renderGptAccounts() {
   const tbody = document.getElementById('gpt-account-tbody');
   if (!tbody) return;
   if (gptAccountLoadError) {
-    tbody.innerHTML = `<tr><td colspan="7" class="gpt-image-empty">GPTChat 账号加载失败: ${xh(gptAccountLoadError.message || gptAccountLoadError)}</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="8" class="gpt-image-empty">GPTChat 账号加载失败: ${xh(gptAccountLoadError.message || gptAccountLoadError)}</td></tr>`;
     renderGptAccountPagination(0, 1);
     updateGptAccountBatchControls(view, []);
     return;
   }
   if (!gptAccounts.length) {
-    tbody.innerHTML = '<tr><td colspan="7" class="gpt-image-empty">尚未导入 GPTChat 账号。</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="8" class="gpt-image-empty">尚未导入 GPTChat 账号。</td></tr>';
     renderGptAccountPagination(0, 1);
     updateGptAccountBatchControls(view, []);
     return;
@@ -2014,7 +2015,7 @@ function renderGptAccounts() {
   const slice = view.filteredItems.slice((gptAccountPage - 1) * gptAccountPageSize, gptAccountPage * gptAccountPageSize);
   tbody.innerHTML = slice.length
     ? slice.map(gptAccountRowHtml).join('')
-    : '<tr><td colspan="7" class="gpt-image-empty">没有符合筛选条件的 GPTChat 账号。</td></tr>';
+    : '<tr><td colspan="8" class="gpt-image-empty">没有符合筛选条件的 GPTChat 账号。</td></tr>';
   renderGptAccountPagination(total, pages);
   updateGptAccountBatchControls(view, slice);
 }
@@ -2105,6 +2106,7 @@ function gptAccountSearchText(account) {
     account.source_type,
     account.access_token_masked,
     gptAccountSourceLabel(account),
+    gptImageQuotaText(account),
   ].filter(v => v != null && v !== '').join(' ').toLowerCase();
 }
 
@@ -2352,6 +2354,24 @@ function resetGptAccountFilters() {
   renderGptAccounts();
 }
 
+function gptAccountImageQuotaCellHtml(account) {
+  const quotaText = gptImageQuotaText(account);
+  const quotaNumber = Number(account && account.image_quota);
+  const quotaClass = account && account.image_quota_unknown === true
+    ? 'badge-disabled'
+    : (Number.isFinite(quotaNumber) && quotaNumber > 0 ? 'badge-active' : 'badge-cooling');
+  const restoreAt = account && account.image_restore_at ? fmtFullDate(account.image_restore_at) : '';
+  const refreshAt = account && account.last_remote_refresh_at ? fmtDate(account.last_remote_refresh_at) : '';
+  const meta = restoreAt && restoreAt !== '—'
+    ? `恢复 ${restoreAt}`
+    : (refreshAt && refreshAt !== '—' ? `刷新 ${refreshAt}` : '');
+  const title = meta ? `生图剩余额度：${quotaText}，${meta}` : `生图剩余额度：${quotaText}`;
+  return `<div class="gpt-image-account-main">
+    <span class="badge ${quotaClass}" title="${xe(title)}">${xh(quotaText)}</span>
+    ${meta ? `<span class="gpt-image-account-meta" title="${xe(meta)}">${xh(meta)}</span>` : ''}
+  </div>`;
+}
+
 function gptAccountRowHtml(account) {
   const id = String(account.id || '');
   const token = account.access_token_masked || (account.has_access_token ? '已保存' : '未登录');
@@ -2376,6 +2396,7 @@ function gptAccountRowHtml(account) {
       </div>
     </td>
     <td><span class="badge badge-basic">${xh(plan)}</span></td>
+    <td>${gptAccountImageQuotaCellHtml(account)}</td>
     <td><span class="badge ${statusClass}" title="${xe(status)}">${xh(statusLabel)}</span>${statusDetail}</td>
     <td style="color:#9a9a9a">${xh(fmtDate(account.updated_at))}</td>
     <td>

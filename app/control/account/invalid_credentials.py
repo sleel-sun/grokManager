@@ -16,7 +16,10 @@ if TYPE_CHECKING:
 _CLOUDFLARE_CHALLENGE_MARKERS = (
     "just a moment",
     "cf-challenge",
+    "cf-mitigated",
     "cloudflare",
+    "request was blocked",
+    "you have been blocked",
 )
 
 

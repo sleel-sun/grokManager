@@ -85,16 +85,62 @@ def test_maintainer_page_uses_absolute_admin_api_prefix() -> None:
     assert "verifyKey(MAINTAINER_ADMIN_API + '/verify'" in html
 
 
-def test_config_webui_users_editor_uses_full_width_wrapping_layout() -> None:
-    """WebUI user options need enough horizontal and vertical room to render."""
+def test_config_uses_multi_user_toggle_instead_of_inline_user_editor() -> None:
+    """Config should expose only the WebUI password and multi-user toggle."""
     html = (STATIC_ADMIN_DIR / "config.html").read_text(encoding="utf-8")
 
-    assert ".cfg-row.is-wide" in html
-    assert "field.type === 'webui_users' ? ' is-wide' : ''" in html
-    assert ".cfg-webui-user-row {\n      display:flex;" in html
-    assert "flex-wrap:wrap;" in html
-    assert "cfg-webui-user-gpt" in html
-    assert "config.webuiUsers.allowGpt" in html
-    assert "gpt_enabled: false" in html
+    assert "key: 'webui_key'" in html
+    assert "key: 'webui_multi_user_enabled'" in html
+    assert "config.schema.fields.webuiMultiUser.label" in html
+    assert "key: 'webui_users'" not in html
     assert "multiple: 'multiple'" not in html
     assert "selectedOptions" not in html
+
+
+def test_webui_user_management_page_is_registered() -> None:
+    """The dedicated WebUI user manager should have its own page and API."""
+    router_py = (STATIC_ADMIN_DIR.parent.parent / "products" / "web" / "router.py").read_text(encoding="utf-8")
+    admin_init = (
+        STATIC_ADMIN_DIR.parent.parent / "products" / "web" / "admin" / "__init__.py"
+    ).read_text(encoding="utf-8")
+    header = (STATIC_ADMIN_DIR / "header.html").read_text(encoding="utf-8")
+    html = (STATIC_ADMIN_DIR / "users.html").read_text(encoding="utf-8")
+    js = (STATIC_ADMIN_DIR.parent / "js" / "admin-users.js").read_text(encoding="utf-8")
+
+    assert '@router.get("/admin/users", include_in_schema=False)' in router_py
+    assert 'return _serve_html("admin/users.html")' in router_py
+    assert "from .users import router as _users_router" in admin_init
+    assert "router.include_router(_users_router)" in admin_init
+    assert 'href="/admin/users"' in header
+    assert 'href="/admin/users"' in header.split('href="/admin/config"')[0]
+    assert 'data-i18n="header.users"' in header
+    assert "setUsersNavVisible(await loadMultiUserEnabled())" in js
+    assert 'id="usersBody"' in html
+    assert 'id="importPanel"' in html
+    assert "/static/js/admin-users.js?v={{APP_VERSION}}-v2" in html
+    assert "const API = '/admin/api/webui/users';" in js
+    assert "function saveUsers()" in js
+    assert "function parseImportText(text)" in js
+    assert "regen-api-key" in js
+    assert "regenerateApiKey" in js
+    assert 'data-i18n="users.columns.grokQuota"' in html
+    assert 'data-i18n="users.columns.gptQuota"' in html
+    assert "grok_daily_quota" in js
+    assert "gpt_daily_quota" in js
+
+
+def test_cache_page_local_images_expose_image_host_links() -> None:
+    """Local image cache rows should expose copyable image-host URLs."""
+    html = (STATIC_ADMIN_DIR / "cache.html").read_text(encoding="utf-8")
+    cache_py = (
+        STATIC_ADMIN_DIR.parent.parent / "products" / "web" / "admin" / "cache.py"
+    ).read_text(encoding="utf-8")
+
+    assert 'id="btn-imagehost-copy"' in html
+    assert "function publicFileUrl(name)" in html
+    assert "function copyImageHostUrl(name)" in html
+    assert "function copyImageHostMarkdown(name)" in html
+    assert "function copyImageHostList()" in html
+    assert "cache.copyImageUrl" in html
+    assert "public_base_url" in cache_py
+    assert 'get_str("app.app_url"' in cache_py

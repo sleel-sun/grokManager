@@ -53,6 +53,8 @@ def test_webui_users_require_username_password_and_return_stable_user(monkeypatc
         "allow_nsfw": True,
         "gpt_models": [],
         "gpt_image_quality": "1k",
+        "grok_daily_quota": 0,
+        "gpt_daily_quota": 0,
         "legacy": False,
         "anonymous": False,
         "storage_scope": auth_middleware._webui_user_id("alice"),
@@ -92,6 +94,23 @@ def test_webui_users_accept_json_and_line_config_for_basic_auth(monkeypatch: pyt
         },
     )
     assert auth_middleware.authenticate_webui_authorization(_basic("dave", "dave-secret")).username == "dave"
+
+
+def test_webui_multi_user_switch_can_disable_configured_users(monkeypatch: pytest.MonkeyPatch) -> None:
+    _configure_auth(
+        monkeypatch,
+        {
+            "app.webui_enabled": True,
+            "app.webui_multi_user_enabled": False,
+            "app.webui_key": "legacy-secret",
+            "app.webui_users": [{"username": "alice", "password": "alice-secret"}],
+        },
+    )
+
+    assert auth_middleware.authenticate_webui_authorization(_basic("alice", "alice-secret")) is None
+    legacy = auth_middleware.authenticate_webui_authorization("Bearer legacy-secret")
+    assert legacy is not None
+    assert legacy.legacy is True
 
 
 def test_webui_users_accept_independent_key_and_nsfw_permission(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -153,6 +172,86 @@ def test_webui_users_accept_gpt_image_permissions(monkeypatch: pytest.MonkeyPatc
     assert bob is not None
     assert bob.gpt_models == ()
     assert bob.gpt_image_quality == "2k"
+
+
+def test_webui_users_accept_daily_quota_limits(monkeypatch: pytest.MonkeyPatch) -> None:
+    _configure_auth(
+        monkeypatch,
+        {
+            "app.webui_enabled": True,
+            "app.webui_users": [
+                {
+                    "username": "alice",
+                    "key": "alice-key",
+                    "grok_daily_quota": 100,
+                    "gptDailyQuota": 20,
+                },
+            ],
+        },
+    )
+
+    alice = auth_middleware.authenticate_webui_authorization(_basic("alice", "alice-key"))
+
+    assert alice is not None
+    assert alice.grok_daily_quota == 100
+    assert alice.gpt_daily_quota == 20
+    assert alice.public_dict()["grok_daily_quota"] == 100
+    assert alice.public_dict()["gpt_daily_quota"] == 20
+
+
+def test_webui_users_accept_independent_api_keys_for_v1_auth(monkeypatch: pytest.MonkeyPatch) -> None:
+    _configure_auth(
+        monkeypatch,
+        {
+            "app.api_key": "global-api-key",
+            "app.webui_enabled": True,
+            "app.webui_users": [
+                {"username": "alice", "key": "alice-login", "api_key": "alice-api-key"},
+                {"username": "bob", "key": "bob-login", "apiKey": "bob-api-key"},
+                {"username": "carol", "key": "carol-login"},
+            ],
+        },
+    )
+
+    alice = auth_middleware.authenticate_api_key_token("alice-api-key")
+    assert alice is not None
+    assert alice.username == "alice"
+
+    global_user = asyncio.run(auth_middleware.verify_api_key(authorization="Bearer global-api-key"))
+    assert global_user is None
+
+    bob = asyncio.run(auth_middleware.verify_api_key(authorization="Bearer bob-api-key"))
+    assert bob is not None
+    assert bob.username == "bob"
+
+    with pytest.raises(HTTPException) as excinfo:
+        asyncio.run(auth_middleware.verify_api_key(authorization="Bearer alice-login"))
+    assert excinfo.value.status_code == 403
+
+    with pytest.raises(HTTPException) as excinfo:
+        asyncio.run(auth_middleware.verify_api_key(authorization="Bearer carol-login"))
+    assert excinfo.value.status_code == 403
+
+
+def test_webui_user_api_keys_require_auth_even_without_global_api_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    _configure_auth(
+        monkeypatch,
+        {
+            "app.api_key": "",
+            "app.webui_enabled": True,
+            "app.webui_users": [
+                {"username": "alice", "key": "alice-login", "api_key": "alice-api-key"},
+            ],
+        },
+    )
+
+    with pytest.raises(HTTPException) as excinfo:
+        asyncio.run(auth_middleware.verify_api_key(authorization=None))
+    assert excinfo.value.status_code == 401
+
+    user = asyncio.run(auth_middleware.verify_api_key(x_api_key="alice-api-key"))
+    assert user is not None
+    assert user.username == "alice"
 
 
 def test_webui_legacy_single_key_and_anonymous_modes_stay_compatible(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -394,7 +493,7 @@ def test_webui_pages_use_same_auth_cache_buster() -> None:
         assert expected in html, f"{name} must not load a stale auth.js cache key"
 
     chat_html = (root / "app" / "statics" / "webui" / "chat.html").read_text(encoding="utf-8")
-    assert "/static/js/webui/chat.js?v={{APP_VERSION}}-imageref1" in chat_html
+    assert "/static/js/webui/chat.js?v={{APP_VERSION}}-streambatch1" in chat_html
     masonry_html = (root / "app" / "statics" / "webui" / "masonry.html").read_text(encoding="utf-8")
     assert "/static/js/webui/masonry.js?v={{APP_VERSION}}-usernsfw1" in masonry_html
 
@@ -404,8 +503,5 @@ def test_webui_multi_user_i18n_keys_exist_for_all_locales() -> None:
     for path in sorted((root / "app" / "statics" / "i18n").glob("*.json")):
         data = json.loads(path.read_text(encoding="utf-8"))
         assert data["login"]["webuiUsernamePlaceholder"]
-        assert data["config"]["schema"]["fields"]["webuiUsers"]["label"]
-        assert data["config"]["schema"]["fields"]["webuiUsers"]["desc"]
-        users = data["config"]["webuiUsers"]
-        for key in ("add", "empty", "username", "password", "key", "displayName", "enabled", "allowNsfw", "allowGpt", "remove"):
-            assert users[key], f"{path.name} missing config.webuiUsers.{key}"
+        assert data["config"]["schema"]["fields"]["webuiMultiUser"]["label"]
+        assert data["config"]["schema"]["fields"]["webuiMultiUser"]["desc"]

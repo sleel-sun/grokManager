@@ -21,6 +21,7 @@
   "header": {
     "account": "Account Management",
     "maintainer": "Account Maintainer",
+    "users": "User Management",
     "config": "Configuration Management",
     "cache": "Cache Management",
     "languageLabel": "Language",
@@ -37,6 +38,88 @@
     "versionNotesEmpty": "No release notes available.",
     "versionOpenRelease": "Open Release",
     "versionClose": "Close"
+  },
+  "users": {
+    "pageTitle": "grokManager - WebUI User Management",
+    "pageHeading": "WebUI User Management",
+    "pageSubtitle": "Manage WebUI login users, access keys, API call keys, permissions, and image capabilities independently. New sessions and compatible API calls use the latest saved user configuration immediately.",
+    "apiKeyPlaceholder": "Leave empty to disable API calls",
+    "reload": "Reload",
+    "export": "Export JSON",
+    "import": "Import",
+    "save": "Save Changes",
+    "loading": "Loading user configuration...",
+    "loadFailed": "Load failed",
+    "saveDone": "Changes saved",
+    "saveFailed": "Save failed",
+    "add": "Add user",
+    "empty": "No WebUI users are configured. After adding users, WebUI login uses username + key.",
+    "search": "Search username / display name",
+    "enabledShort": "Enabled",
+    "allowedShort": "Allowed",
+    "copyKey": "Copy key",
+    "copyDone": "Copied",
+    "copyFailed": "Copy failed",
+    "regenerateKey": "Regenerate key",
+    "regenerateApiKey": "Generate API call key",
+    "delete": "Delete",
+    "unlimited": "Unlimited",
+    "remaining": "remaining",
+    "deleteConfirm": "Delete selected WebUI users?",
+    "enableSelected": "Enable selected",
+    "disableSelected": "Disable selected",
+    "deleteSelected": "Delete selected",
+    "importHelp": "Supports JSON arrays, object maps, or one username=key per line. Append import skips duplicate usernames.",
+    "importAppend": "Append import",
+    "importReplace": "Replace with import",
+    "importEmpty": "No valid users found",
+    "importDone": "Import complete",
+    "importFailed": "Import failed",
+    "mode": {
+      "current": "Current mode",
+      "enabled": "WebUI enabled",
+      "disabled": "WebUI disabled",
+      "multiUser": "Multi-user mode",
+      "singleKey": "Single-password mode",
+      "anonymous": "Anonymous mode"
+    },
+    "stats": {
+      "total": "Total users",
+      "enabled": "Enabled",
+      "disabled": "Disabled",
+      "nsfw": "NSFW allowed",
+      "gpt": "GPT images",
+      "grokUsage": "Grok used",
+      "gptUsage": "GPT used"
+    },
+    "filters": {
+      "all": "All statuses",
+      "enabled": "Enabled only",
+      "disabled": "Disabled only",
+      "gpt": "GPT images",
+      "nsfwBlocked": "NSFW disabled"
+    },
+    "columns": {
+      "username": "Username",
+      "key": "Access key",
+      "apiKey": "API call key",
+      "displayName": "Display name",
+      "enabled": "Enabled",
+      "nsfw": "NSFW",
+      "gpt": "GPT images",
+      "quality": "Max quality",
+      "grokQuota": "Grok daily quota",
+      "gptQuota": "GPT daily quota",
+      "usage": "Today's usage",
+      "actions": "Actions"
+    },
+    "validation": {
+      "username": "Username is required",
+      "key": "Access key is required",
+      "usernameFormat": "Username cannot contain whitespace, /, :, or = and must be at most 64 characters",
+      "duplicate": "Duplicate username: {name}",
+      "duplicateApiKey": "Duplicate API key"
+    }
   },
   "webui": {
     "header": {
@@ -461,6 +544,8 @@
       "enabled": "Enabled",
       "allowNsfw": "Allow NSFW",
       "allowGpt": "GPT",
+      "grokQuota": "Grok daily quota",
+      "gptQuota": "GPT daily quota",
       "remove": "Remove"
     },
     "loadFailed": "Failed to load configuration: {message}",
@@ -545,6 +630,10 @@
         "webuiKey": {
           "label": "WebUI Access Password",
           "desc": "Authentication password required to access the WebUI when enabled."
+        },
+        "webuiMultiUser": {
+          "label": "Enable Multi-User Management",
+          "desc": "When enabled, the User Management tab is shown and WebUI uses username + independent key login. When disabled, WebUI uses the single-password or anonymous mode above."
         },
         "webuiUsers": {
           "label": "WebUI Users",
@@ -827,6 +916,13 @@
     "actionView": "View",
     "actionDelete": "Delete",
     "actionClear": "Clear",
+    "copyImageUrl": "Copy image URL",
+    "copyImageMarkdown": "Copy Markdown",
+    "copyImageMarkdownList": "Copy page image Markdown",
+    "copySelectedImageMarkdown": "Copy selected image Markdown",
+    "copyUrlDone": "URL copied",
+    "copyMarkdownDone": "Markdown copied",
+    "copyFailed": "Copy failed",
     "loadFailed": "Load failed: {message}",
     "clearLocalConfirm": "Clear all local {type} cache files?",
     "clearLocalDone": "Removed {count} {type} file(s)",

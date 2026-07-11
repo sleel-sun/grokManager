@@ -219,6 +219,7 @@ def test_account_page_exposes_ordinary_gpt_management_panel() -> None:
     assert 'id="gpt-overview-total"' in html
     assert 'id="gpt-overview-available"' in html
     assert 'id="gpt-overview-quota"' in html
+    assert "<th>生图额度</th>" in html
     assert 'id="gpt-overview-pending"' in html
     assert 'id="gpt-overview-invalid"' in html
     assert 'id="gpt-overview-token"' in html
@@ -247,6 +248,7 @@ def test_account_page_exposes_ordinary_gpt_management_panel() -> None:
     assert "function renderGptAccountPagination(" in html
     assert "getGptAccountView().filteredItems.length" in html
     assert "formatGptAccountTotalQuota(" in html
+    assert "function gptAccountImageQuotaCellHtml(" in html
     assert "function renderGptAccountOverview()" in html
     assert "function gptAccountOverviewStats()" in html
     assert 'id="modal-gpt-account-detail"' in html

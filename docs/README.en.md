@@ -353,6 +353,10 @@ Runtime config can also be overridden with `GROK_`-prefixed environment variable
 | `grok-4.20-auto` | `auto` | `super`, prefers heavy then falls back to super |
 | `grok-4.20-expert` | `expert` | `super`, prefers heavy then falls back to super |
 | `grok-4.20-heavy` | `heavy` | `heavy` |
+| `grok-4.5` | `build` | Isolated Grok Build CLI OAuth upstream |
+| `grok-4.3-build` | `build` | Build OAuth pool for OpenClaw/Codex agent workloads |
+| `grok-composer-2.5-fast` | `build` | Grok Build CLI OAuth; requires Composer entitlement and credits |
+| `grok-4.3` | `console` | `basic` (routes through xAI Console Responses at `https://console.x.ai`) |
 | `grok-4.3-beta` | `grok-420-computer-use-sa` | `super` |
 
 #### Console Free-Account Models
@@ -374,6 +378,21 @@ These models route through xAI Console Responses with `basic` pool accounts. Pub
 | `grok-4.20-multi-agent-high` | `grok-4.20-multi-agent` | fixed `high` | Free account, multi-agent, 16 agents |
 | `grok-4.20-multi-agent-xhigh` | `grok-4.20-multi-agent` | fixed `xhigh` | Free account, multi-agent, 16 agents |
 | `grok-build-console` | `grok-build-0.1` | default | Free account, Grok Build 0.1 |
+
+#### Grok 4.5 Build OAuth
+
+The `grok-4.5`, `grok-4.5-low`, `grok-4.5-medium`, and `grok-4.5-high`
+models use the isolated Grok Build CLI upstream instead of the normal Grok
+SSO/Console account pool.
+
+Place the Grok CLI `~/.grok/auth.json` file at `data/grok_auth.json` and restart
+the service. The file is mounted at `/app/data`; expired access tokens are
+automatically refreshed and atomically written back.
+
+```bash
+install -m 600 ~/.grok/auth.json data/grok_auth.json
+docker compose up -d --build grokmanager
+```
 
 ### Image
 

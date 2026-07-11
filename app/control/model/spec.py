@@ -78,6 +78,14 @@ class ModelSpec:
         """Return whether this model should call console.x.ai Responses."""
         return self.upstream_profile == "console_responses"
 
+    def uses_grok_build_responses(self) -> bool:
+        """Return whether this model should call the Grok Build CLI upstream."""
+        return self.upstream_profile == "grok_build_responses"
+
+    def uses_responses_protocol(self) -> bool:
+        """Return whether this model uses a Responses-compatible upstream."""
+        return self.uses_console_responses() or self.uses_grok_build_responses()
+
     def console_reasoning_effort(self, requested: str | None = None) -> str | None:
         """Resolve the Console Responses reasoning effort for this model."""
         if self.console_fixed_effort:

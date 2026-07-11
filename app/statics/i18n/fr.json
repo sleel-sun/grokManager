@@ -413,6 +413,7 @@
         "apiKey": { "label": "Clé d’accès API" },
         "webuiEnabled": { "label": "Activer WebUI" },
         "webuiKey": { "label": "Mot de passe d’accès WebUI" },
+        "webuiMultiUser": { "label": "Enable Multi-User Management", "desc": "Show the User Management tab and use username + independent key login." },
         "webuiUsers": { "label": "Utilisateurs WebUI", "desc": "Lorsque cette option est configurée, WebUI utilise nom d’utilisateur + cle independante et isole par utilisateur les conversations du navigateur, les paramètres de recherche et la configuration MCP. Chaque utilisateur peut autoriser la generation NSFW séparément. Laissez vide pour conserver le mode mot de passe unique." },
         "temporary": { "label": "Sessions temporaires" },
         "memory": { "label": "Mémoire conversationnelle" },

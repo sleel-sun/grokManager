@@ -10,7 +10,7 @@ window.renderAdminHeader = async function renderAdminHeader() {
       return 'v1';
     }
   })();
-  const HEADER_HTML_CACHE_KEY = `grokmanager.admin_header_html.${scriptVersion}`;
+  const HEADER_HTML_CACHE_KEY = `grokmanager.admin_header_html.${scriptVersion}.usersnav1`;
   const META_VERSION_CACHE_KEY = `grokmanager.meta_version.${scriptVersion}`;
   let appVersion = '';
   let updateInfo = null;
@@ -54,7 +54,9 @@ window.renderAdminHeader = async function renderAdminHeader() {
     };
 
     const sync = () => {
-      const current = window.I18n?.getLang?.() || localStorage.getItem('grok2api_lang') || 'zh';
+      const current = (
+        window.I18n && typeof I18n.getLang === 'function' ? I18n.getLang() : ''
+      ) || localStorage.getItem('grok2api_lang') || 'zh';
       code.textContent = languageCodes[current] || current.toUpperCase();
       options.forEach((option) => {
         option.classList.toggle('active', option.dataset.lang === current);
@@ -73,7 +75,7 @@ window.renderAdminHeader = async function renderAdminHeader() {
         const lang = option.dataset.lang;
         if (!lang) return;
         close();
-        if (window.I18n?.setLang) {
+        if (window.I18n && typeof I18n.setLang === 'function') {
           I18n.setLang(lang);
         } else {
           localStorage.setItem('grok2api_lang', lang);
@@ -95,7 +97,7 @@ window.renderAdminHeader = async function renderAdminHeader() {
   };
 
   const applyHeaderI18n = () => {
-    if (window.I18n?.apply) I18n.apply(mount);
+    if (window.I18n && typeof I18n.apply === 'function') I18n.apply(mount);
     const trigger = mount.querySelector('#hd-lang-trigger');
     if (trigger) {
       const label = window.t ? t('header.languageLabel') : 'Language';
@@ -111,8 +113,10 @@ window.renderAdminHeader = async function renderAdminHeader() {
   };
 
   const removeRepositoryMeta = () => {
-    mount.querySelector('#hd-user')?.remove();
-    mount.querySelector('#hd-version')?.remove();
+    const userMeta = mount.querySelector('#hd-user');
+    const versionMeta = mount.querySelector('#hd-version');
+    if (userMeta) userMeta.remove();
+    if (versionMeta) versionMeta.remove();
 
     const brandLink = mount.querySelector('.admin-brand-link');
     if (!brandLink) return;
@@ -139,6 +143,33 @@ window.renderAdminHeader = async function renderAdminHeader() {
     if (typeof window.t !== 'function') return fallback;
     const value = t(key, params);
     return value === key ? fallback : value;
+  };
+
+  const setUsersNavVisible = (visible) => {
+    const link = mount.querySelector('[data-nav="/admin/users"]');
+    if (!link) return;
+    link.hidden = !visible;
+    link.style.display = visible ? '' : 'none';
+  };
+
+  window.syncAdminHeaderUsersNav = setUsersNavVisible;
+
+  const loadMultiUserEnabled = async () => {
+    try {
+      if (typeof adminKey === 'undefined' || typeof adminKey.get !== 'function') return false;
+      const key = await adminKey.get();
+      if (!key) return false;
+      const res = await fetch('/admin/api/config', {
+        headers: { Authorization: `Bearer ${key}` },
+        cache: 'no-store',
+      });
+      if (!res.ok) return false;
+      const data = await res.json();
+      const app = data && data.app && typeof data.app === 'object' ? data.app : {};
+      return Boolean(app.webui_enabled) && Boolean(app.webui_multi_user_enabled);
+    } catch {
+      return false;
+    }
   };
 
   const formatDateTime = (value) => {
@@ -396,7 +427,8 @@ window.renderAdminHeader = async function renderAdminHeader() {
       if (event.target === overlay) close();
     });
 
-    overlay.querySelector('#admin-version-modal-close')?.addEventListener('click', close);
+    const closeButton = overlay.querySelector('#admin-version-modal-close');
+    if (closeButton) closeButton.addEventListener('click', close);
     document.addEventListener('keydown', (event) => {
       if (event.key === 'Escape' && overlay.classList.contains('open')) close();
     });
@@ -418,10 +450,10 @@ window.renderAdminHeader = async function renderAdminHeader() {
     const link = overlay.querySelector('#admin-version-modal-link');
     const refresh = overlay.querySelector('#admin-version-modal-refresh');
     const close = overlay.querySelector('#admin-version-modal-close');
-    const latestVersion = String(updateInfo?.latest_version || appVersion || '').trim();
-    const currentVersion = String(appVersion || updateInfo?.current_version || '').trim();
-    const releaseUrl = String(updateInfo?.release_url || '').trim();
-    const releaseNotes = String(updateInfo?.release_notes || '').trim();
+    const latestVersion = String((updateInfo && updateInfo.latest_version) || appVersion || '').trim();
+    const currentVersion = String(appVersion || (updateInfo && updateInfo.current_version) || '').trim();
+    const releaseUrl = String((updateInfo && updateInfo.release_url) || '').trim();
+    const releaseNotes = String((updateInfo && updateInfo.release_notes) || '').trim();
 
     if (title) title.textContent = text('header.versionDialogTitle', 'Version');
     if (currentLabel) currentLabel.textContent = `${text('header.versionCurrent', 'Current')}:`;
@@ -429,7 +461,7 @@ window.renderAdminHeader = async function renderAdminHeader() {
     if (latestLabel) latestLabel.textContent = `${text('header.versionLatest', 'Latest')}:`;
     if (latestValue) latestValue.textContent = latestVersion ? `v${latestVersion}` : '-';
     if (publishedLabel) publishedLabel.textContent = `${text('header.versionPublishedAt', 'Published')}:`;
-    if (publishedValue) publishedValue.textContent = formatDateTime(updateInfo?.published_at);
+    if (publishedValue) publishedValue.textContent = formatDateTime(updateInfo && updateInfo.published_at);
 
     if (badge) {
       badge.hidden = true;
@@ -514,7 +546,8 @@ window.renderAdminHeader = async function renderAdminHeader() {
   };
 
   const applyVersion = () => {
-    mount.querySelector('#hd-version')?.remove();
+    const version = mount.querySelector('#hd-version');
+    if (version) version.remove();
   };
 
   try {
@@ -540,6 +573,7 @@ window.renderAdminHeader = async function renderAdminHeader() {
           </div>
           <nav class="admin-nav">
             <a href="/admin/account" class="admin-nav-link" data-nav="/admin/account" data-i18n="header.account">账户管理</a>
+            <a href="/admin/users" class="admin-nav-link" data-nav="/admin/users" data-i18n="header.users">用户管理</a>
             <a href="/admin/config" class="admin-nav-link" data-nav="/admin/config" data-i18n="header.config">配置管理</a>
             <a href="/admin/cache" class="admin-nav-link" data-nav="/admin/cache" data-i18n="header.cache">缓存管理</a>
           </nav>
@@ -591,6 +625,7 @@ window.renderAdminHeader = async function renderAdminHeader() {
   }
 
   removeRepositoryMeta();
+  setUsersNavVisible(await loadMultiUserEnabled());
 
   const active = mount.dataset.active || location.pathname;
   mount.querySelectorAll('[data-nav]').forEach((link) => {
@@ -599,5 +634,5 @@ window.renderAdminHeader = async function renderAdminHeader() {
 
   const syncLanguageMenu = initLanguageMenu();
   applyHeaderI18n();
-  syncLanguageMenu?.();
+  if (typeof syncLanguageMenu === 'function') syncLanguageMenu();
 };

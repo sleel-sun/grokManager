@@ -1,0 +1,12 @@
+FROM python:3.12-slim-bookworm
+
+ENV PYTHONUNBUFFERED=1
+WORKDIR /app
+
+RUN pip install --no-cache-dir "camoufox==0.5.2" "aiohttp>=3.10" \
+    && python -m camoufox fetch
+
+COPY deploy/camoufox_service.py /app/camoufox_service.py
+
+EXPOSE 8193
+CMD ["python", "/app/camoufox_service.py"]

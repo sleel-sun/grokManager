@@ -28,6 +28,7 @@ from app.products.openai.router import (
     _validate_image_edit_n,
     _validate_image_n,
 )
+from .quota import consume_user_quota, quota_status_for_user
 
 router = APIRouter(prefix="/webui/api", tags=["WebUI - Images"])
 
@@ -418,6 +419,7 @@ async def list_webui_image_models(user: WebUIUser = Depends(verify_webui_key)):
                 "gpt_models": sorted(_allowed_gpt_models(user)),
                 "quality": _quality_payload(user),
                 "history_limit": _HISTORY_LIMIT,
+                "quota": quota_status_for_user(user),
             },
         }
     )
@@ -432,6 +434,7 @@ async def _run_webui_image_generation(
         raise ValidationError(f"Model {req.model!r} is not an image model", param="model")
     _ensure_gpt_model_access(req.model, user)
     _validate_image_n(req.model, req.n or 1, param="n")
+    consume_user_quota(user, "gpt", amount=req.n or 1)
     quality = _quality_for_user(getattr(req, "quality", None), user)
     prompt = _quality_prompt(req.prompt, quality) if req.model in _GPT_WORKSPACE_MODELS else req.prompt
 
@@ -567,6 +570,7 @@ async def webui_image_edits(
         raise ValidationError(f"Model {model!r} is not an image-edit model", param="model")
     _ensure_gpt_model_access(model, user)
     _validate_image_edit_n(n, param="n")
+    consume_user_quota(user, "gpt", amount=n)
     quality_value = _quality_for_user(quality, user)
     edit_size = _IMAGE_EDIT_SIZE
 

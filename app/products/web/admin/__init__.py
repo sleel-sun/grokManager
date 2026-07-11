@@ -169,6 +169,7 @@ from .gpt_accounts import router as _gpt_accounts_router  # noqa: E402
 from .gpt_image_accounts import router as _gpt_image_accounts_router  # noqa: E402
 from .maintainer import router as _maintainer_router  # noqa: E402
 from .model_permissions import router as _model_permissions_router  # noqa: E402
+from .users import router as _users_router  # noqa: E402
 
 router.include_router(_tokens_router)
 router.include_router(_batch_router)
@@ -178,6 +179,7 @@ router.include_router(_gpt_accounts_router)
 router.include_router(_gpt_image_accounts_router)
 router.include_router(_maintainer_router)
 router.include_router(_model_permissions_router)
+router.include_router(_users_router)
 
 
 # ---------------------------------------------------------------------------

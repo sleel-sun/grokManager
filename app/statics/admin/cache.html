@@ -373,6 +373,9 @@
         <button class="toolbar-icon-btn toolbar-icon-btn-danger" onclick="deleteSelectedLocal()" id="btn-local-delete-selected" style="display:none">
           <svg viewBox="0 0 24 24" stroke-width="1.8"><path d="M5 7h14"/><path d="M9 7V4h6v3"/><path d="M8 10v7"/><path d="M12 10v7"/><path d="M16 10v7"/><path d="M7 7l1 13h8l1-13"/></svg>
         </button>
+        <button class="toolbar-icon-btn" onclick="copyImageHostList()" id="btn-imagehost-copy" style="display:none">
+          <svg viewBox="0 0 24 24" stroke-width="1.8"><path d="M10 13a5 5 0 0 0 7.1 0l2.1-2.1a5 5 0 0 0-7.1-7.1L11 4.9"/><path d="M14 11a5 5 0 0 0-7.1 0l-2.1 2.1a5 5 0 0 0 7.1 7.1L13 19.1"/></svg>
+        </button>
         <select class="input toolbar-page-size" id="page-size-sel" onchange="changePageSize(this.value)">
           <option value="50">50 / 页</option>
           <option value="100">100 / 页</option>
@@ -392,7 +395,7 @@
             <th data-i18n="cache.colFileName">文件名</th>
             <th style="width:100px" data-i18n="cache.colSize">大小</th>
             <th style="width:160px" data-i18n="cache.colModified">修改时间</th>
-            <th style="width:56px" data-i18n="cache.colActions">操作</th>
+            <th style="width:124px" data-i18n="cache.colActions">操作</th>
           </tr>
         </thead>
         <tbody id="cache-tbody"></tbody>
@@ -443,7 +446,7 @@
 
 <script src="/static/js/i18n.js?v={{APP_VERSION}}"></script>
 <script src="/static/js/auth.js?v={{APP_VERSION}}"></script>
-<script src="/static/js/admin-header.js?v={{APP_VERSION}}"></script>
+<script src="/static/js/admin-header.js?v={{APP_VERSION}}-usersnav1"></script>
 <script src="/static/js/toast.js?v={{APP_VERSION}}"></script>
 <script src="/static/js/footer.js?v={{APP_VERSION}}"></script>
 <script>
@@ -469,6 +472,7 @@ let _assetLoaded = false;
 let _localViewVersion = 0;
 let _localViewCacheVersion = -1;
 let _localViewCache = null;
+let _publicBaseUrl = '';
 let _assetViewVersion = 0;
 let _assetViewCacheVersion = -1;
 let _assetViewCache = null;
@@ -541,18 +545,24 @@ function getLocalView() {
   if (_localViewCache && _localViewCacheVersion === _localViewVersion) return _localViewCache;
 
   const selectedNames = [];
+  const imageNames = [];
   for (const item of _localItems) {
     if (_localSel.has(item.name)) selectedNames.push(item.name);
+    if (_type === 'image') imageNames.push(item.name);
   }
   const selectedCount = selectedNames.length;
+  const selectedImageNames = _type === 'image' ? selectedNames : [];
 
   _localViewCacheVersion = _localViewVersion;
   _localViewCache = {
     items: _localItems,
     selectedNames,
+    imageNames,
+    selectedImageNames,
     totalItems: _localItems.length,
     selectedCount,
     hasSelection: selectedCount > 0,
+    hasImages: imageNames.length > 0,
     allSelected: _localItems.length > 0 && selectedCount === _localItems.length,
     someSelected: selectedCount > 0 && selectedCount < _localItems.length,
   };
@@ -626,6 +636,7 @@ function applyToolbarI18n() {
   const tips = [
     ['btn-clear', 'cache.clearCurrent', '清空当前缓存'],
     ['btn-local-delete-selected', 'cache.deleteSelected', '删除选中'],
+    ['btn-imagehost-copy', 'cache.copyImageMarkdownList', '复制本页图片 Markdown'],
     ['btn-load-assets', 'cache.loadAssets', '加载资产列表'],
     ['btn-clear-all-assets', 'cache.clearAll', '清理全部'],
     ['btn-clear-selected-assets', 'cache.clearSelected', '清理选中'],
@@ -688,6 +699,7 @@ async function _api(method, path, body) {
 async function loadStats() {
   try {
     const d = await _api('GET', '/cache');
+    _publicBaseUrl = String(d.public_base_url || '').trim();
     const img = d.local_image || {};
     const vid = d.local_video || {};
     document.getElementById('s-img-count').textContent = img.count == null ? 0 : img.count;
@@ -742,7 +754,7 @@ function _renderTable(view = getLocalView()) {
       </td>
       <td>${_fmtBytes(f.size_bytes)}</td>
       <td>${_fmtTime(f.modified_at)}</td>
-      <td><div class="row-actions"><button class="row-action" onclick="viewFile('${_esc(f.name)}')" title="${_esc(tr('cache.actionView', null, '查看'))}" aria-label="${_esc(tr('cache.actionView', null, '查看'))}"><svg viewBox="0 0 24 24" stroke-width="1.8"><path d="M2 12s3.5-6 10-6 10 6 10 6-3.5 6-10 6-10-6-10-6Z"/><circle cx="12" cy="12" r="3"/></svg></button><button class="row-action row-action-danger" onclick="deleteFile('${_esc(f.name)}')" title="${_esc(tr('cache.actionDelete', null, '删除'))}" aria-label="${_esc(tr('cache.actionDelete', null, '删除'))}"><svg viewBox="0 0 24 24" stroke-width="1.8"><path d="M5 7h14"/><path d="M9 7V4h6v3"/><path d="M8 10v7"/><path d="M12 10v7"/><path d="M16 10v7"/><path d="M7 7l1 13h8l1-13"/></svg></button></div></td>
+      <td><div class="row-actions"><button class="row-action" onclick="viewFile('${_esc(f.name)}')" title="${_esc(tr('cache.actionView', null, '查看'))}" aria-label="${_esc(tr('cache.actionView', null, '查看'))}"><svg viewBox="0 0 24 24" stroke-width="1.8"><path d="M2 12s3.5-6 10-6 10 6 10 6-3.5 6-10 6-10-6-10-6Z"/><circle cx="12" cy="12" r="3"/></svg></button>${_type === 'image' ? `<button class="row-action" onclick="copyImageHostUrl('${_esc(f.name)}')" title="${_esc(tr('cache.copyImageUrl', null, '复制图片外链'))}" aria-label="${_esc(tr('cache.copyImageUrl', null, '复制图片外链'))}"><svg viewBox="0 0 24 24" stroke-width="1.8"><path d="M10 13a5 5 0 0 0 7.1 0l2.1-2.1a5 5 0 0 0-7.1-7.1L11 4.9"/><path d="M14 11a5 5 0 0 0-7.1 0l-2.1 2.1a5 5 0 0 0 7.1 7.1L13 19.1"/></svg></button><button class="row-action" onclick="copyImageHostMarkdown('${_esc(f.name)}')" title="${_esc(tr('cache.copyImageMarkdown', null, '复制 Markdown'))}" aria-label="${_esc(tr('cache.copyImageMarkdown', null, '复制 Markdown'))}"><svg viewBox="0 0 24 24" stroke-width="1.8"><path d="M4 19V5h4l4 9 4-9h4v14"/><path d="M4 19h4"/><path d="M16 19h4"/></svg></button>` : ''}<button class="row-action row-action-danger" onclick="deleteFile('${_esc(f.name)}')" title="${_esc(tr('cache.actionDelete', null, '删除'))}" aria-label="${_esc(tr('cache.actionDelete', null, '删除'))}"><svg viewBox="0 0 24 24" stroke-width="1.8"><path d="M5 7h14"/><path d="M9 7V4h6v3"/><path d="M8 10v7"/><path d="M12 10v7"/><path d="M16 10v7"/><path d="M7 7l1 13h8l1-13"/></svg></button></div></td>
     </tr>`).join('');
   syncLocalSelectAll(view);
 }
@@ -838,6 +850,52 @@ function localFileUrl(name) {
   return _type === 'video'
     ? `/v1/files/video?id=${encodeURIComponent(id)}`
     : `/v1/files/image?id=${encodeURIComponent(id)}`;
+}
+
+function publicFileUrl(name) {
+  const path = localFileUrl(name);
+  if (!path) return '';
+  const fallbackBase = window.location.origin || '';
+  const base = (_publicBaseUrl || fallbackBase).replace(/\/+$/, '');
+  try {
+    return new URL(path, `${base || fallbackBase}/`).href;
+  } catch {
+    return path;
+  }
+}
+
+function imageMarkdown(name) {
+  const url = publicFileUrl(name);
+  return url ? `![${name}](${url})` : '';
+}
+
+async function copyText(value, successKey, successFallback) {
+  const text = String(value || '');
+  if (!text) {
+    showToast(tr('cache.viewUnavailable', null, '当前文件暂不支持查看'), 'error');
+    return;
+  }
+  try {
+    await navigator.clipboard.writeText(text);
+    showToast(tr(successKey, null, successFallback), 'success');
+  } catch {
+    showToast(tr('cache.copyFailed', null, '复制失败'), 'error');
+  }
+}
+
+async function copyImageHostUrl(name) {
+  await copyText(publicFileUrl(name), 'cache.copyUrlDone', '外链已复制');
+}
+
+async function copyImageHostMarkdown(name) {
+  await copyText(imageMarkdown(name), 'cache.copyMarkdownDone', 'Markdown 已复制');
+}
+
+async function copyImageHostList() {
+  const view = getLocalView();
+  const names = view.selectedImageNames.length ? view.selectedImageNames : view.imageNames;
+  const markdown = names.map((name) => imageMarkdown(name)).filter(Boolean).join('\n');
+  await copyText(markdown, 'cache.copyMarkdownDone', 'Markdown 已复制');
 }
 
 async function loadAssets() {
@@ -1039,8 +1097,18 @@ function updateLocalBatchButtons(view = getLocalView()) {
   const show = view.hasSelection;
   const btnDelete = document.getElementById('btn-local-delete-selected');
   const btnClear = document.getElementById('btn-clear');
+  const btnImageHost = document.getElementById('btn-imagehost-copy');
   if (btnDelete) btnDelete.style.display = show ? '' : 'none';
   if (btnClear) btnClear.style.display = show ? 'none' : '';
+  if (btnImageHost) {
+    btnImageHost.style.display = _type === 'image' && view.hasImages ? '' : 'none';
+    const key = view.selectedImageNames.length ? 'cache.copySelectedImageMarkdown' : 'cache.copyImageMarkdownList';
+    const fallback = view.selectedImageNames.length ? '复制选中图片 Markdown' : '复制本页图片 Markdown';
+    const label = tr(key, null, fallback);
+    btnImageHost.setAttribute('data-tip', label);
+    btnImageHost.setAttribute('aria-label', label);
+    btnImageHost.setAttribute('title', label);
+  }
 }
 
 async function deleteSelectedLocal() {

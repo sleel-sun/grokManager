@@ -20,6 +20,7 @@ from app.products.openai.router import (
 )
 from app.products.openai.schemas import ChatCompletionRequest
 from .mcp import should_handle_mcp, webui_chat_completions_with_mcp
+from .quota import consume_user_quota
 
 router = APIRouter(prefix="/webui/api", tags=["WebUI - Chat"])
 _WEBUI_CHAT_REQUEST_OVERRIDES = {"temporary": True, "disableMemory": True}
@@ -79,6 +80,7 @@ async def _webui_chat_text_completions(req: ChatCompletionRequest):
         emit_think=emit_think,
         tools=req.tools,
         tool_choice=req.tool_choice,
+        tool_scope=req.tool_scope,
         temperature=req.temperature or 0.8,
         top_p=req.top_p or 0.95,
         request_overrides=request_overrides,
@@ -107,10 +109,13 @@ async def webui_chat_completions(
             code="model_not_allowed",
         )
     if should_handle_mcp(req):
+        consume_user_quota(user, "grok", amount=1)
         return await webui_chat_completions_with_mcp(req, user=user)
     spec = model_registry.get(req.model)
     if spec and spec.enabled and spec.is_chat():
+        consume_user_quota(user, "grok", amount=1)
         return await _webui_chat_text_completions(req)
+    consume_user_quota(user, "grok", amount=1)
     return await chat_completions_endpoint(req)
 
 

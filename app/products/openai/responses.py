@@ -5,6 +5,7 @@ Streaming emits standard Responses API SSE events.
 """
 
 import asyncio
+import re
 from typing import Any, AsyncGenerator
 
 from app.platform.logging.logger import logger
@@ -50,6 +51,64 @@ from app.dataplane.reverse.protocol.tool_prompt import (
 )
 from app.dataplane.reverse.protocol.tool_parser import parse_tool_calls
 from ._tool_sieve import ToolSieve
+
+
+async def _guard_response_stream(
+    source: AsyncGenerator[str, None],
+    *,
+    response_id: str,
+    model: str,
+) -> AsyncGenerator[str, None]:
+    """Ensure a Responses stream always emits a terminal protocol event."""
+    terminal_emitted = False
+    scan_tail = ""
+
+    def failed_event(message: str, code: str = "server_error") -> str:
+        response = make_resp_object(response_id, model, "failed", [])
+        response["error"] = {"code": code, "message": message}
+        return format_sse("response.failed", {
+            "type": "response.failed",
+            "response": response,
+        })
+
+    try:
+        async for chunk in source:
+            scan_text = scan_tail + chunk
+            if (
+                any(
+                    marker in scan_text
+                    for marker in (
+                        "event: response.completed",
+                        "event: response.failed",
+                        "event: response.incomplete",
+                    )
+                )
+                or re.search(
+                    r'"type"\s*:\s*"response\.(?:completed|failed|incomplete)"',
+                    scan_text,
+                )
+            ):
+                terminal_emitted = True
+            scan_tail = scan_text[-512:]
+            yield chunk
+    except Exception as exc:
+        if terminal_emitted:
+            logger.warning(
+                "responses stream raised after terminal event: model={} error={}",
+                model,
+                exc,
+            )
+            return
+        logger.exception("responses stream terminated unexpectedly: model={}", model)
+        code = "upstream_error" if isinstance(exc, UpstreamError) else "server_error"
+        yield failed_event(str(exc) or exc.__class__.__name__, code)
+        yield "data: [DONE]\n\n"
+        return
+
+    if not terminal_emitted:
+        logger.error("responses stream ended without terminal event: model={}", model)
+        yield failed_event("Stream ended before a terminal response event was emitted.")
+        yield "data: [DONE]\n\n"
 
 
 # ---------------------------------------------------------------------------
@@ -266,7 +325,7 @@ async def create(
     )
     native_tool_names = (
         client_function_tool_names(tools)
-        if not client_tools_only and spec.uses_console_responses()
+        if not client_tools_only and spec.uses_responses_protocol()
         else set()
     )
     if local_tools:
@@ -695,7 +754,11 @@ async def create(
                 excluded.append(token)
 
     if stream:
-        return _run_stream()
+        return _guard_response_stream(
+            _run_stream(),
+            response_id=response_id,
+            model=model,
+        )
 
     # -------------------------------------------------------------------------
     # Non-streaming

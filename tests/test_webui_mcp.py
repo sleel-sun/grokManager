@@ -259,6 +259,8 @@ def test_mcp_agent_stream_executes_tool_and_returns_final_answer(
     assert combined.rstrip().endswith("data: [DONE]")
     assert len(model_calls) == 2
     assert model_calls[0]["tools"][0]["function"]["name"] == "mcp__fake_server__echo"
+    assert model_calls[0]["tool_scope"] == "client_only"
+    assert model_calls[1]["tool_scope"] == "client_only"
     assert model_calls[1]["messages"][-1]["role"] == "tool"
     assert model_calls[1]["messages"][-1]["content"] == "echo:hello"
 

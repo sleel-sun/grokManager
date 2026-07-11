@@ -5,6 +5,7 @@ import base64
 import binascii
 import hashlib
 import re
+import time
 from typing import Any, AsyncGenerator
 
 import orjson
@@ -49,6 +50,8 @@ from app.dataplane.reverse.protocol.xai_usage import is_invalid_credentials_erro
 from app.dataplane.reverse.planner import build_plan
 from app.dataplane.reverse.runtime.endpoint_table import CHAT, CONSOLE_RESPONSES
 from app.dataplane.reverse.transport.asset_upload import upload_from_input
+from app.dataplane.reverse.transport._proxy_feedback import upstream_feedback
+from app.control.proxy.models import ProxyFeedback, ProxyFeedbackKind
 from app.dataplane.reverse.protocol.tool_prompt import (
     build_tool_system_prompt,
     extract_tool_names,
@@ -70,6 +73,85 @@ from ._tool_sieve import ToolSieve
 from app.products._account_selection import reserve_account, selection_max_retries
 
 _FileInput = str | dict[str, str]
+_STREAM_DELTA_MIN_CHARS = 48
+_STREAM_DELTA_MAX_DELAY_S = 0.09
+_STREAM_DELTA_BOUNDARY_RE = re.compile(r"[\n。！？.!?；;：:]$")
+
+
+class _OpenAIStreamChunkCoalescer:
+    """Coalesce tiny upstream text deltas before emitting OpenAI SSE chunks."""
+
+    def __init__(
+        self,
+        response_id: str,
+        model: str,
+        *,
+        min_chars: int = _STREAM_DELTA_MIN_CHARS,
+        max_delay_s: float = _STREAM_DELTA_MAX_DELAY_S,
+    ) -> None:
+        self.response_id = response_id
+        self.model = model
+        self.min_chars = max(1, min_chars)
+        self.max_delay_s = max(0.0, max_delay_s)
+        self._text_parts: list[str] = []
+        self._thinking_parts: list[str] = []
+        self._text_started_at = 0.0
+        self._thinking_started_at = 0.0
+
+    def add_text(self, content: str) -> list[str]:
+        if not content:
+            return []
+        chunks = self.flush_thinking()
+        if not self._text_parts:
+            self._text_started_at = time.monotonic()
+        self._text_parts.append(content)
+        if self._should_flush(self._text_parts, self._text_started_at):
+            chunks.extend(self.flush_text())
+        return chunks
+
+    def add_thinking(self, content: str) -> list[str]:
+        if not content:
+            return []
+        chunks = self.flush_text()
+        if not self._thinking_parts:
+            self._thinking_started_at = time.monotonic()
+        self._thinking_parts.append(content)
+        if self._should_flush(self._thinking_parts, self._thinking_started_at):
+            chunks.extend(self.flush_thinking())
+        return chunks
+
+    def flush_text(self) -> list[str]:
+        if not self._text_parts:
+            return []
+        content = "".join(self._text_parts)
+        self._text_parts.clear()
+        self._text_started_at = 0.0
+        chunk = make_stream_chunk(self.response_id, self.model, content)
+        return [f"data: {orjson.dumps(chunk).decode()}\n\n"]
+
+    def flush_thinking(self) -> list[str]:
+        if not self._thinking_parts:
+            return []
+        content = "".join(self._thinking_parts)
+        self._thinking_parts.clear()
+        self._thinking_started_at = 0.0
+        chunk = make_thinking_chunk(self.response_id, self.model, content)
+        return [f"data: {orjson.dumps(chunk).decode()}\n\n"]
+
+    def flush_all(self) -> list[str]:
+        return [*self.flush_thinking(), *self.flush_text()]
+
+    def _should_flush(self, parts: list[str], started_at: float) -> bool:
+        content = "".join(parts)
+        if len(content) >= self.min_chars:
+            return True
+        if _STREAM_DELTA_BOUNDARY_RE.search(content):
+            return True
+        return bool(
+            started_at
+            and self.max_delay_s
+            and time.monotonic() - started_at >= self.max_delay_s
+        )
 
 
 def _to_chat_annotations(anns: list[dict]) -> list[dict]:
@@ -759,8 +841,41 @@ async def _stream_chat(
     client_tools_only: bool = False,
 ) -> AsyncGenerator[str, None]:
     """Yield raw SSE lines from the selected upstream chat endpoint."""
+    if spec and spec.uses_grok_build_responses():
+        if files:
+            raise UpstreamError(
+                "Grok Build chat compatibility does not support file uploads",
+                status=400,
+            )
+        from app.dataplane.reverse.protocol.grok_build import post_responses
+
+        build_payload = build_console_responses_payload(
+            model=spec.upstream_model_name(),
+            message=message,
+            stream=True,
+            public_model=spec.model_name,
+            spec=spec,
+            request_overrides=request_overrides,
+            messages=messages,
+        )
+        result = await post_responses(
+            build_payload,
+            model=spec.upstream_model_name(),
+            stream=True,
+        )
+        if isinstance(result, dict):
+            raise UpstreamError("Grok Build returned JSON for a streaming request", status=502)
+        pending = ""
+        async for chunk in result:
+            pending += chunk
+            while "\n" in pending:
+                line, pending = pending.split("\n", 1)
+                yield line.rstrip("\r")
+        if pending:
+            yield pending.rstrip("\r")
+        return
+
     proxy = await get_proxy_runtime()
-    lease = await proxy.acquire()
     use_console_transport = _uses_console_responses_transport(spec, files)
     plan = (
         build_plan(spec, request_overrides or {})
@@ -818,6 +933,7 @@ async def _stream_chat(
         transport_context = "Chat transport failed"
         stream_context = "Chat stream read failed"
 
+    lease = await proxy.acquire(clearance_origin=origin)
     payload_bytes = orjson.dumps(payload)
 
     headers = build_http_headers(
@@ -848,6 +964,16 @@ async def _stream_chat(
                 body = response.content.decode("utf-8", "replace")[:400]
             except Exception:
                 body = ""
+            await proxy.feedback(
+                lease,
+                upstream_feedback(
+                    UpstreamError(
+                        f"Upstream returned {response.status_code}",
+                        status=response.status_code,
+                        body=body,
+                    )
+                ),
+            )
             _raise_chat_status_error(
                 spec=spec,
                 status_code=response.status_code,
@@ -857,6 +983,10 @@ async def _stream_chat(
         try:
             async for line in response.aiter_lines():
                 yield line
+            await proxy.feedback(
+                lease,
+                ProxyFeedback(kind=ProxyFeedbackKind.SUCCESS, status_code=200),
+            )
         except Exception as exc:
             raise _transport_upstream_error(
                 exc, context=stream_context
@@ -869,7 +999,7 @@ def _new_stream_adapter(
     function_tool_names: set[str] | list[str] | tuple[str, ...] | None = None,
 ) -> StreamAdapter | ConsoleResponsesStreamAdapter:
     """Return a stream adapter matching the selected upstream protocol."""
-    if _uses_console_responses_transport(spec, files):
+    if _uses_console_responses_transport(spec, files) or spec.uses_grok_build_responses():
         return ConsoleResponsesStreamAdapter(function_tool_names=function_tool_names)
     return StreamAdapter()
 
@@ -935,7 +1065,7 @@ async def completions(
     )
     native_tool_names = (
         client_function_tool_names(tools)
-        if not client_tools_only and _uses_console_responses_transport(spec, files)
+        if not client_tools_only and spec.uses_responses_protocol() and not files
         else set()
     )
     if local_tools:
@@ -968,6 +1098,7 @@ async def completions(
                 adapter = _new_stream_adapter(spec, files, native_tool_names)
                 collected_annotations: list[dict] = []
                 native_text_buffer: list[str] = []
+                chunk_coalescer = _OpenAIStreamChunkCoalescer(response_id, model)
 
                 try:
                     try:
@@ -1002,11 +1133,11 @@ async def completions(
                                     if tool_names:
                                         safe_text, parsed_calls = sieve.feed(ev.content)
                                         if safe_text:
-                                            chunk = make_stream_chunk(
-                                                response_id, model, safe_text
-                                            )
-                                            yield f"data: {orjson.dumps(chunk).decode()}\n\n"
+                                            for chunk in chunk_coalescer.add_text(safe_text):
+                                                yield chunk
                                         if parsed_calls is not None:
+                                            for chunk in chunk_coalescer.flush_all():
+                                                yield chunk
                                             for i, tc in enumerate(parsed_calls):
                                                 chunk = make_tool_call_chunk(
                                                     response_id,
@@ -1035,18 +1166,16 @@ async def completions(
                                             ended = True
                                             break  # stop processing remaining events in this batch
                                     else:
-                                        chunk = make_stream_chunk(
-                                            response_id, model, ev.content
-                                        )
-                                        yield f"data: {orjson.dumps(chunk).decode()}\n\n"
+                                        for chunk in chunk_coalescer.add_text(ev.content):
+                                            yield chunk
                                 elif ev.kind == "thinking" and emit_think:
-                                    chunk = make_thinking_chunk(
-                                        response_id, model, ev.content
-                                    )
-                                    yield f"data: {orjson.dumps(chunk).decode()}\n\n"
+                                    for chunk in chunk_coalescer.add_thinking(ev.content):
+                                        yield chunk
                                 elif ev.kind == "annotation" and ev.annotation_data:
                                     collected_annotations.append(ev.annotation_data)
                                 elif ev.kind == "tool_calls" and ev.tool_calls:
+                                    for chunk in chunk_coalescer.flush_all():
+                                        yield chunk
                                     for i, tc in enumerate(ev.tool_calls):
                                         chunk = make_tool_call_chunk(
                                             response_id,
@@ -1084,6 +1213,8 @@ async def completions(
                             # Stream ended — flush sieve for any buffered XML
                             flushed_calls = sieve.flush()
                             if flushed_calls:
+                                for chunk in chunk_coalescer.flush_all():
+                                    yield chunk
                                 for i, tc in enumerate(flushed_calls):
                                     chunk = make_tool_call_chunk(
                                         response_id,
@@ -1113,6 +1244,8 @@ async def completions(
                                 )
 
                         if not tool_calls_emitted:
+                            for chunk in chunk_coalescer.flush_all():
+                                yield chunk
                             if native_text_buffer:
                                 chunk = make_stream_chunk(
                                     response_id, model, "".join(native_text_buffer)

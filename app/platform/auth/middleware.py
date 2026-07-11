@@ -27,6 +27,8 @@ class WebUIUser:
     allow_nsfw: bool = True
     gpt_models: tuple[str, ...] = ()
     gpt_image_quality: str = "1k"
+    grok_daily_quota: int = 0
+    gpt_daily_quota: int = 0
     legacy: bool = False
     anonymous: bool = False
 
@@ -38,6 +40,8 @@ class WebUIUser:
             "allow_nsfw": webui_user_allows_nsfw(self),
             "gpt_models": list(self.gpt_models),
             "gpt_image_quality": self.gpt_image_quality,
+            "grok_daily_quota": self.grok_daily_quota,
+            "gpt_daily_quota": self.gpt_daily_quota,
             "legacy": self.legacy,
             "anonymous": self.anonymous,
             "storage_scope": self.id,
@@ -48,6 +52,7 @@ class WebUIUser:
 class _WebUIUserCredential:
     user: WebUIUser
     password: str
+    api_key: str = ""
 
 
 # ---------------------------------------------------------------------------
@@ -123,10 +128,20 @@ def _iter_webui_user_entries(raw: object) -> list[object]:
     return []
 
 
+def _webui_multi_user_enabled(raw_users: object | None = None) -> bool:
+    raw_flag = get_config("app.webui_multi_user_enabled", None)
+    if raw_flag is None:
+        return bool(_iter_webui_user_entries(_raw_webui_users() if raw_users is None else raw_users))
+    return _bool_config_value(raw_flag, False)
+
+
 def _webui_user_credentials() -> list[_WebUIUserCredential]:
     credentials: list[_WebUIUserCredential] = []
+    raw_users = _raw_webui_users()
+    if not _webui_multi_user_enabled(raw_users):
+        return credentials
     seen: set[str] = set()
-    for entry in _iter_webui_user_entries(_raw_webui_users()):
+    for entry in _iter_webui_user_entries(raw_users):
         if isinstance(entry, str):
             parsed = _parse_webui_user_lines(entry)
             if not parsed:
@@ -149,6 +164,15 @@ def _webui_user_credentials() -> list[_WebUIUserCredential]:
             entry.get("password")
             or entry.get("key")
             or entry.get("token")
+            or ""
+        ).strip()
+        api_key = str(
+            entry.get("api_key")
+            or entry.get("apiKey")
+            or entry.get("openai_api_key")
+            or entry.get("openaiApiKey")
+            or entry.get("api_call_key")
+            or entry.get("apiCallKey")
             or ""
         ).strip()
         if not username or not password or username in seen:
@@ -188,6 +212,20 @@ def _webui_user_credentials() -> list[_WebUIUserCredential]:
             ),
             "1k",
         )
+        grok_daily_quota = _quota_config_value(
+            entry.get(
+                "grok_daily_quota",
+                entry.get("grokDailyQuota", entry.get("grok_quota", entry.get("grokQuota"))),
+            ),
+            0,
+        )
+        gpt_daily_quota = _quota_config_value(
+            entry.get(
+                "gpt_daily_quota",
+                entry.get("gptDailyQuota", entry.get("gpt_quota", entry.get("gptQuota"))),
+            ),
+            0,
+        )
         credentials.append(
             _WebUIUserCredential(
                 user=WebUIUser(
@@ -197,8 +235,11 @@ def _webui_user_credentials() -> list[_WebUIUserCredential]:
                     allow_nsfw=allow_nsfw,
                     gpt_models=gpt_models,
                     gpt_image_quality=gpt_image_quality,
+                    grok_daily_quota=grok_daily_quota,
+                    gpt_daily_quota=gpt_daily_quota,
                 ),
                 password=password,
+                api_key=api_key,
             )
         )
     return credentials
@@ -296,6 +337,15 @@ def _gpt_quality_config_value(value: object, default: str = "1k") -> str:
         "pro": "4k",
     }
     return aliases.get(text, default)
+
+
+def _quota_config_value(value: object, default: int = 0) -> int:
+    if value is None:
+        return default
+    try:
+        return max(0, int(value))
+    except (TypeError, ValueError):
+        return default
 
 
 def _extract_basic(authorization: str | None) -> tuple[str, str] | None:
@@ -560,6 +610,17 @@ def authenticate_webui_token(token: str | None) -> WebUIUser | None:
     return authenticate_webui_credentials(bearer_token=parsed)
 
 
+def authenticate_api_key_token(token: str | None) -> WebUIUser | None:
+    """Return the WebUI user that owns a configured per-user API key."""
+    raw = str(token or "").strip()
+    if not raw:
+        return None
+    for item in _webui_user_credentials():
+        if item.api_key and _constant_time_equal(raw, item.api_key):
+            return item.user
+    return None
+
+
 def webui_user_allows_nsfw(
     user: WebUIUser | None,
     *,
@@ -582,15 +643,17 @@ def webui_user_allows_nsfw(
 async def verify_api_key(
     authorization: str | None = Header(default=None),
     x_api_key: str | None = Header(default=None, alias="x-api-key"),
-) -> None:
-    """Validate Bearer token against configured ``api_key``.
+) -> WebUIUser | None:
+    """Validate Bearer token against global or per-WebUI-user API keys.
 
     Accepts either ``Authorization: Bearer <key>`` (OpenAI / grok2api style)
     or ``X-API-Key: <key>`` (official Anthropic SDK style) so that agents
     targeting the Anthropic-compatible endpoint work without reconfiguration.
     """
     allowed_keys = _get_keys()
-    if not allowed_keys:
+    user_credentials = _webui_user_credentials()
+    user_api_keys_configured = any(item.api_key for item in user_credentials)
+    if not allowed_keys and not user_api_keys_configured:
         return
 
     token = _extract_bearer(authorization) or x_api_key or None
@@ -598,7 +661,11 @@ async def verify_api_key(
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Missing or invalid Authorization header.")
 
     if not any(hmac.compare_digest(token, k) for k in allowed_keys):
+        for item in user_credentials:
+            if item.api_key and _constant_time_equal(token, item.api_key):
+                return item.user
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Invalid API key.")
+    return None
 
 
 async def verify_admin_key(
@@ -664,6 +731,7 @@ __all__ = [
     "get_webui_key",
     "is_webui_enabled",
     "authenticate_webui_authorization",
+    "authenticate_api_key_token",
     "authenticate_webui_credentials",
     "authenticate_webui_session_cookie",
     "authenticate_webui_token",

@@ -140,6 +140,17 @@ class ImageGenerationErrorTests(unittest.TestCase):
         self.assertIn("Cloudflare challenge", message)
         self.assertIn("proxy.clearance", message)
 
+    def test_plain_waf_block_403_error_mentions_clearance_configuration(self) -> None:
+        from app.products.openai import images
+
+        message = images._image_generation_upstream_error_message(
+            403,
+            "403 Your request was blocked.",
+        )
+
+        self.assertIn("Cloudflare challenge", message)
+        self.assertIn("proxy.clearance", message)
+
     def test_non_cloudflare_403_error_keeps_plain_status(self) -> None:
         from app.products.openai import images
 

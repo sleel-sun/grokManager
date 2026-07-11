@@ -106,9 +106,11 @@ def _list_files(media_type: str, page: int, page_size: int) -> dict[str, Any]:
 
 @router.get("")
 async def cache_stats():
+    app_url = get_config().get_str("app.app_url", "").strip().rstrip("/")
     return {
         "local_image": _stats("image"),
         "local_video": _stats("video"),
+        "public_base_url": app_url,
     }
 
 

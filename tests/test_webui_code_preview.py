@@ -11,6 +11,7 @@ from fastapi import HTTPException
 from app.platform.auth import middleware as auth_middleware
 from app.products.web.webui import attachments as attachments_module
 from app.products.web.webui import code_preview as code_preview_module
+from app.products.web.webui import pages as pages_module
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -83,8 +84,21 @@ def test_code_preview_styles_are_present() -> None:
 def test_chat_page_busts_cached_preview_assets() -> None:
     html = CHAT_HTML.read_text(encoding="utf-8")
 
-    assert "/static/css/app.css?v={{APP_VERSION}}-imageref1" in html
-    assert "/static/js/webui/chat.js?v={{APP_VERSION}}-imageref1" in html
+    assert "/static/css/app.css?v={{APP_VERSION}}-chatimageprompt3" in html
+    assert "/static/js/webui/chat.js?v={{APP_VERSION}}-streambatch1" in html
+
+
+def test_webui_chat_batches_stream_text_before_rendering() -> None:
+    js = _chat_js()
+
+    assert "STREAM_TEXT_FLUSH_MS = 90" in js
+    assert "STREAM_TEXT_FLUSH_CHARS = 48" in js
+    assert "function flushAssistantStreamBuffers(entry)" in js
+    assert "function scheduleAssistantStreamFlush(entry)" in js
+    assert "entry.pendingText += delta" in js
+    assert "entry.pendingReasoning += delta" in js
+    assert "window.setTimeout" in js
+    assert "flushAssistantStreamBuffers(assistantEntry);" in js
 
 
 def test_code_preview_page_and_route_exist() -> None:
@@ -286,6 +300,32 @@ def test_webui_chat_images_preview_in_modal() -> None:
     assert "event.preventDefault()" in js
     assert ".image-preview-modal" in css
     assert ".msg-previewable-image" in css
+
+
+def test_webui_chat_external_links_use_redirect_endpoint() -> None:
+    js = _chat_js()
+    pages = WEBUI_PAGES.read_text(encoding="utf-8")
+
+    assert "LINK_REDIRECT_ENDPOINT = '/webui/redirect'" in js
+    assert "function enhanceExternalLinkRedirects(root)" in js
+    assert "link.href = redirectedLinkHref(safeHref)" in js
+    assert "enhanceExternalLinkRedirects(card);" in js
+    assert "link.closest('pre, code, .msg-download-attachment')" in js
+    assert "link.classList.contains('msg-image-preview-link')" in js
+    assert '@router.get("/webui/redirect")' in pages
+
+
+def test_webui_redirect_allows_only_http_urls(monkeypatch) -> None:
+    monkeypatch.setattr(pages_module, "is_webui_enabled", lambda: True)
+
+    response = asyncio.run(pages_module.webui_redirect("https://example.com/path?q=1"))
+
+    assert response.status_code == 302
+    assert response.headers["location"] == "https://example.com/path?q=1"
+    with pytest.raises(HTTPException):
+        pages_module._validate_redirect_url("javascript:alert(1)")
+    with pytest.raises(HTTPException):
+        pages_module._validate_redirect_url("/webui/chat")
 
 
 def test_webui_attachment_download_helpers_are_restricted_to_asset_hosts() -> None:

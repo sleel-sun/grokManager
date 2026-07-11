@@ -122,7 +122,7 @@ class ResponsesCreateRequest(BaseModel):
     background:           bool | None           = None
 
     class Config:
-        extra = "ignore"
+        extra = "allow"
 
 
 __all__ = [

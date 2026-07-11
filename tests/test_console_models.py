@@ -103,6 +103,13 @@ async def _fake_prepare_file_attachments(*_args, **_kwargs):
 
 class ConsoleModelRoutingTests(unittest.TestCase):
     AVAILABLE_CHAT_MODELS = (
+        "grok-4.5",
+        "grok-4.5-console",
+        "grok-4.5-high",
+        "grok-4.5-medium",
+        "grok-4.5-low",
+        "grok-4.3-build",
+        "grok-composer-2.5-fast",
         "grok-4.3",
         "grok-4.20-0309-non-reasoning",
         "grok-4.20-0309",
@@ -187,6 +194,21 @@ class ConsoleModelRoutingTests(unittest.TestCase):
         self.assertEqual(plan.referer, "https://console.x.ai/")
         self.assertEqual(plan.extra["upstream_model"], "grok-4.3")
 
+    def test_grok_45_uses_build_cli_responses_route(self) -> None:
+        spec = resolve("grok-4.5")
+
+        self.assertEqual(spec.tier, Tier.BASIC)
+        self.assertEqual(spec.mode_id, ModeId.CONSOLE)
+        self.assertTrue(spec.uses_grok_build_responses())
+        self.assertEqual(spec.upstream_model_name(), "grok-4.5")
+
+        plan = build_plan(spec, {})
+        self.assertEqual(
+            plan.endpoint,
+            "https://cli-chat-proxy.grok.com/v1/responses",
+        )
+        self.assertEqual(plan.extra["upstream_model"], "grok-4.5")
+
     def test_grok_420_auto_and_expert_require_paid_pools(self) -> None:
         for model, mode in (
             ("grok-4.20-auto", ModeId.AUTO),
@@ -219,6 +241,12 @@ class ConsoleModelRoutingTests(unittest.TestCase):
             "grok-4.20-multi-agent-high": "grok-4.20-multi-agent",
             "grok-4.20-multi-agent-medium": "grok-4.20-multi-agent",
             "grok-4.20-multi-agent-low": "grok-4.20-multi-agent",
+            "grok-4.5-console": "grok-4.5",
+            "grok-4.5-high": "grok-4.5",
+            "grok-4.5-medium": "grok-4.5",
+            "grok-4.5-low": "grok-4.5",
+            "grok-4.3-build": "grok-4.3",
+            "grok-composer-2.5-fast": "grok-composer-2.5-fast",
             "grok-4.3-console": "grok-4.3",
             "grok-4.3-high": "grok-4.3",
             "grok-4.3-medium": "grok-4.3",
@@ -231,7 +259,10 @@ class ConsoleModelRoutingTests(unittest.TestCase):
             with self.subTest(model=public_model):
                 spec = resolve(public_model)
 
-                self.assertTrue(spec.uses_console_responses())
+                self.assertTrue(
+                    spec.uses_console_responses()
+                    or spec.uses_grok_build_responses()
+                )
                 self.assertEqual(spec.upstream_model_name(), upstream_model)
 
     def test_composer_uses_text_trigger_alias(self) -> None:
@@ -277,6 +308,12 @@ class ConsoleModelRoutingTests(unittest.TestCase):
 
     def test_console_reasoning_effort_payload_policy(self) -> None:
         cases = (
+            ("grok-4.5-console", None, "medium"),
+            ("grok-4.5-console", "high", "high"),
+            ("grok-4.5-console", "none", None),
+            ("grok-4.5-low", "high", "low"),
+            ("grok-4.5-medium", None, "medium"),
+            ("grok-4.5-high", "low", "high"),
             ("grok-4.3-console", None, "medium"),
             ("grok-4.3-console", "high", "high"),
             ("grok-4.3-console", "none", None),
@@ -672,16 +709,20 @@ class ConsoleModelRoutingTests(unittest.TestCase):
                 "arguments": '{"id":"A1"}',
             },
         }).decode())
+        completed = adapter.feed(orjson.dumps({
+            "type": "response.completed",
+            "response": {},
+        }).decode())
 
         self.assertEqual(ignored, [])
         self.assertEqual(client_function_tool_names([
             {"type": "function", "function": {"name": "lookup"}},
             {"type": "function", "function": {"name": "web_search"}},
         ]), {"lookup"})
-        self.assertEqual(len(emitted), 1)
-        self.assertEqual(emitted[0].kind, "tool_calls")
-        self.assertEqual(emitted[0].tool_calls[0].name, "lookup")
-        self.assertEqual(emitted[0].tool_calls[0].arguments, '{"id":"A1"}')
+        self.assertEqual(emitted, [])
+        tool_event = next(ev for ev in completed if ev.kind == "tool_calls")
+        self.assertEqual(tool_event.tool_calls[0].name, "lookup")
+        self.assertEqual(tool_event.tool_calls[0].arguments, '{"id":"A1"}')
 
     def test_console_native_adapter_keeps_arguments_delta_before_item_id(self) -> None:
         adapter = ConsoleResponsesStreamAdapter(function_tool_names={"lookup"})
@@ -707,9 +748,39 @@ class ConsoleModelRoutingTests(unittest.TestCase):
                 "arguments": '{"id":"A1"}',
             },
         }).decode())
+        completed = adapter.feed(orjson.dumps({
+            "type": "response.completed",
+            "response": {},
+        }).decode())
 
-        self.assertEqual(len(emitted), 1)
-        self.assertEqual(emitted[0].tool_calls[0].arguments, '{"id":"A1"}')
+        self.assertEqual(emitted, [])
+        tool_event = next(ev for ev in completed if ev.kind == "tool_calls")
+        self.assertEqual(tool_event.tool_calls[0].arguments, '{"id":"A1"}')
+
+    def test_console_native_adapter_waits_for_all_parallel_tool_calls(self) -> None:
+        adapter = ConsoleResponsesStreamAdapter(function_tool_names={"lookup", "notify"})
+
+        for index, name in enumerate(("lookup", "notify")):
+            emitted = adapter.feed(orjson.dumps({
+                "type": "response.output_item.done",
+                "output_index": index,
+                "item": {
+                    "id": f"fc_{index}",
+                    "type": "function_call",
+                    "call_id": f"call_{index}",
+                    "name": name,
+                    "arguments": "{}",
+                },
+            }).decode())
+            self.assertEqual(emitted, [])
+
+        completed = adapter.feed(orjson.dumps({
+            "type": "response.completed",
+            "response": {},
+        }).decode())
+
+        tool_event = next(ev for ev in completed if ev.kind == "tool_calls")
+        self.assertEqual([call.name for call in tool_event.tool_calls], ["lookup", "notify"])
 
     def test_chat_completions_function_named_search_tools_reach_console_payload(self) -> None:
         capture = self._run_console_chat_capture(

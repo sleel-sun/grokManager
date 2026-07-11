@@ -1102,8 +1102,48 @@ async def responses_endpoint(req: ResponsesCreateRequest):
         emit_think = True
 
     request_overrides: dict | None = None
-    if spec.uses_console_responses() and isinstance(req.reasoning, dict) and "effort" in req.reasoning:
+    if (spec.uses_console_responses() or spec.uses_grok_build_responses()) and isinstance(req.reasoning, dict) and "effort" in req.reasoning:
         request_overrides = {"_reasoning_effort": req.reasoning.get("effort")}
+
+    if spec.uses_grok_build_responses():
+        from app.dataplane.reverse.protocol.grok_build import post_responses
+        from ._format import make_resp_id
+        from .responses import _guard_response_stream
+
+        payload = req.model_dump(exclude_none=True)
+        payload.pop("tool_scope", None)
+        payload["model"] = spec.upstream_model_name()
+        payload["stream"] = is_stream
+        requested_effort = (
+            req.reasoning.get("effort")
+            if isinstance(req.reasoning, dict)
+            else None
+        )
+        effort = spec.console_reasoning_effort(requested_effort)
+        if effort in (None, "none", "minimal"):
+            effort = "low"
+        elif effort == "xhigh":
+            effort = "high"
+        payload["reasoning"] = {**(req.reasoning or {}), "effort": effort}
+
+        result = await post_responses(
+            payload,
+            model=spec.upstream_model_name(),
+            stream=is_stream,
+        )
+        upstream_headers = build_upstream_response_headers(spec)
+        if isinstance(result, dict):
+            return JSONResponse(result, headers=upstream_headers)
+        guarded = _guard_response_stream(
+            result,
+            response_id=make_resp_id("resp"),
+            model=req.model,
+        )
+        return StreamingResponse(
+            _sse_with_heartbeat(_safe_sse_responses(guarded)),
+            media_type="text/event-stream",
+            headers={**_SSE_HEADERS, **upstream_headers},
+        )
 
     from .responses import create as responses_create
 

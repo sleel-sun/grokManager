@@ -425,7 +425,10 @@ uv run grokmanager-maintainer --count 5 --workers 2  # 2 个并发 worker × 每
 | `grok-4.20-auto` | `auto` | `super`，优先使用 heavy 后回退 super |
 | `grok-4.20-expert` | `expert` | `super`，优先使用 heavy 后回退 super |
 | `grok-4.20-heavy` | `heavy` | `heavy` |
-| `grok-4.3` | `auto` | `basic`（走 xAI Console Responses 上游，命中 `https://console.x.ai`） |
+| `grok-4.5` | `build` | 独立 Grok Build CLI OAuth 上游 |
+| `grok-4.3-build` | `build` | 面向 OpenClaw/Codex 等 Agent，使用 Build OAuth 号池 |
+| `grok-composer-2.5-fast` | `build` | Grok Build CLI OAuth，上游账号需要 Composer 权限/额度 |
+| `grok-4.3` | `console` | `basic`（走 xAI Console Responses 上游，命中 `https://console.x.ai`） |
 | `grok-4.3-beta` | `grok-420-computer-use-sa` | `super` |
 
 #### Console 免费账号模型
@@ -447,6 +450,20 @@ uv run grokmanager-maintainer --count 5 --workers 2  # 2 个并发 worker × 每
 | `grok-4.20-multi-agent-high` | `grok-4.20-multi-agent` | 固定 `high` | 免费账号，多智能体，16 agents |
 | `grok-4.20-multi-agent-xhigh` | `grok-4.20-multi-agent` | 固定 `xhigh` | 免费账号，多智能体，16 agents |
 | `grok-build-console` | `grok-build-0.1` | 默认 | 免费账号，Grok Build 0.1 |
+
+#### Grok 4.5 Build OAuth
+
+`grok-4.5`、`grok-4.5-low`、`grok-4.5-medium` 和 `grok-4.5-high`
+使用 Grok Build CLI 专用上游，不使用普通 Grok SSO/Console 账号池。
+
+将 Grok CLI 生成的 `~/.grok/auth.json` 放到项目的
+`data/grok_auth.json`，然后重启服务。文件会通过 Docker 的 `/app/data`
+挂载读取；access token 到期时服务会使用 `refresh_token` 自动刷新并原子写回。
+
+```bash
+install -m 600 ~/.grok/auth.json data/grok_auth.json
+docker compose up -d --build grokmanager
+```
 
 ### Image
 

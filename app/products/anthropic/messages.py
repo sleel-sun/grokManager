@@ -9,6 +9,7 @@ responses.py — only the input/output format conversion differs.
 
 import asyncio
 import os
+import re
 import time
 from typing import Any, AsyncGenerator
 
@@ -57,6 +58,66 @@ def _make_tool_id() -> str:
 
 def _sse(event: str, data: dict) -> str:
     return f"event: {event}\ndata: {orjson.dumps(data).decode()}\n\n"
+
+
+_STREAM_DELTA_MIN_CHARS = 48
+_STREAM_DELTA_MAX_DELAY_S = 0.09
+_STREAM_DELTA_BOUNDARY_RE = re.compile(r"[\n。！？.!?；;：:]$")
+
+
+class _AnthropicStreamDeltaCoalescer:
+    """Coalesce tiny Anthropic content_block_delta text payloads."""
+
+    def __init__(
+        self,
+        delta_type: str,
+        field_name: str,
+        *,
+        min_chars: int = _STREAM_DELTA_MIN_CHARS,
+        max_delay_s: float = _STREAM_DELTA_MAX_DELAY_S,
+    ) -> None:
+        self.delta_type = delta_type
+        self.field_name = field_name
+        self.min_chars = max(1, min_chars)
+        self.max_delay_s = max(0.0, max_delay_s)
+        self._parts: list[str] = []
+        self._started_at = 0.0
+
+    def add(self, index: int, content: str) -> list[str]:
+        if not content:
+            return []
+        if not self._parts:
+            self._started_at = time.monotonic()
+        self._parts.append(content)
+        if self._should_flush():
+            return self.flush(index)
+        return []
+
+    def flush(self, index: int) -> list[str]:
+        if not self._parts:
+            return []
+        content = "".join(self._parts)
+        self._parts.clear()
+        self._started_at = 0.0
+        return [
+            _sse("content_block_delta", {
+                "type": "content_block_delta",
+                "index": index,
+                "delta": {"type": self.delta_type, self.field_name: content},
+            })
+        ]
+
+    def _should_flush(self) -> bool:
+        content = "".join(self._parts)
+        if len(content) >= self.min_chars:
+            return True
+        if _STREAM_DELTA_BOUNDARY_RE.search(content):
+            return True
+        return bool(
+            self._started_at
+            and self.max_delay_s
+            and time.monotonic() - self._started_at >= self.max_delay_s
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -334,7 +395,7 @@ async def create(
         )
         native_tool_names = (
             client_function_tool_names(chat_tools)
-            if not client_tools_only and spec.uses_console_responses()
+            if not client_tools_only and spec.uses_responses_protocol()
             else set()
         )
         if local_tools:
@@ -383,6 +444,14 @@ async def create(
             tool_output_tokens    = 0
             block_index           = 0  # tracks next content_block index
             collected_annotations: list[dict] = []
+            think_delta_coalescer = _AnthropicStreamDeltaCoalescer(
+                "thinking_delta",
+                "thinking",
+            )
+            text_delta_coalescer = _AnthropicStreamDeltaCoalescer(
+                "text_delta",
+                "text",
+            )
 
             try:
                 try:
@@ -433,15 +502,14 @@ async def create(
                                         "content_block": {"type": "thinking", "thinking": ""},
                                     })
                                 think_buf.append(ev.content)
-                                yield _sse("content_block_delta", {
-                                    "type":  "content_block_delta",
-                                    "index": block_index,
-                                    "delta": {"type": "thinking_delta", "thinking": ev.content},
-                                })
+                                for chunk in think_delta_coalescer.add(block_index, ev.content):
+                                    yield chunk
 
                             elif ev.kind == "text":
                                 # Close thinking block if open
                                 if think_started and not think_closed:
+                                    for chunk in think_delta_coalescer.flush(block_index):
+                                        yield chunk
                                     think_closed = True
                                     yield _sse("content_block_stop", {
                                         "type":  "content_block_stop",
@@ -453,6 +521,15 @@ async def create(
                                 if sieve is not None:
                                     safe_text, calls = sieve.feed(ev.content)
                                     if calls is not None:
+                                        if text_started:
+                                            for chunk in text_delta_coalescer.flush(block_index):
+                                                yield chunk
+                                            yield _sse("content_block_stop", {
+                                                "type":  "content_block_stop",
+                                                "index": block_index,
+                                            })
+                                            block_index += 1
+                                            text_started = False
                                         # Emit tool_use blocks
                                         for call in calls:
                                             yield _sse("content_block_start", {
@@ -495,17 +572,16 @@ async def create(
                                             "content_block": {"type": "text", "text": ""},
                                         })
                                     text_buf.append(text_chunk)
-                                    yield _sse("content_block_delta", {
-                                        "type":  "content_block_delta",
-                                        "index": block_index,
-                                        "delta": {"type": "text_delta", "text": text_chunk},
-                                    })
+                                    for chunk in text_delta_coalescer.add(block_index, text_chunk):
+                                        yield chunk
 
                             elif ev.kind == "annotation" and ev.annotation_data:
                                 collected_annotations.append(ev.annotation_data)
 
                             elif ev.kind == "tool_calls" and ev.tool_calls:
                                 if think_started and not think_closed:
+                                    for chunk in think_delta_coalescer.flush(block_index):
+                                        yield chunk
                                     think_closed = True
                                     yield _sse("content_block_stop", {
                                         "type":  "content_block_stop",
@@ -514,6 +590,8 @@ async def create(
                                     block_index += 1
 
                                 if text_started:
+                                    for chunk in text_delta_coalescer.flush(block_index):
+                                        yield chunk
                                     yield _sse("content_block_stop", {
                                         "type":  "content_block_stop",
                                         "index": block_index,
@@ -564,6 +642,8 @@ async def create(
                         if calls:
                             # Close text block if open
                             if text_started:
+                                for chunk in text_delta_coalescer.flush(block_index):
+                                    yield chunk
                                 yield _sse("content_block_stop", {
                                     "type":  "content_block_stop",
                                     "index": block_index,
@@ -623,24 +703,20 @@ async def create(
                                 chunk = img_text + "\n"
                                 text_buf.append(chunk)
                                 if text_started:
-                                    yield _sse("content_block_delta", {
-                                        "type":  "content_block_delta",
-                                        "index": block_index,
-                                        "delta": {"type": "text_delta", "text": chunk},
-                                    })
+                                    for item in text_delta_coalescer.add(block_index, chunk):
+                                        yield item
 
                         references = adapter.references_suffix()
                         if references:
                             text_buf.append(references)
                             if text_started:
-                                yield _sse("content_block_delta", {
-                                    "type":  "content_block_delta",
-                                    "index": block_index,
-                                    "delta": {"type": "text_delta", "text": references},
-                                })
+                                for chunk in text_delta_coalescer.add(block_index, references):
+                                    yield chunk
 
                         # Close open blocks
                         if think_started and not think_closed:
+                            for chunk in think_delta_coalescer.flush(block_index):
+                                yield chunk
                             yield _sse("content_block_stop", {
                                 "type":  "content_block_stop",
                                 "index": block_index,
@@ -648,6 +724,8 @@ async def create(
                             block_index += 1
 
                         if text_started:
+                            for chunk in text_delta_coalescer.flush(block_index):
+                                yield chunk
                             yield _sse("content_block_stop", {
                                 "type":  "content_block_stop",
                                 "index": block_index,

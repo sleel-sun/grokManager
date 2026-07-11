@@ -35,6 +35,29 @@ def test_cloudflare_403_does_not_spin_through_accounts() -> None:
     assert chat._should_retry_same_account_upstream(exc)
 
 
+def test_plain_waf_block_403_is_cloudflare_challenge() -> None:
+    exc = UpstreamError(
+        "Chat upstream returned 403",
+        status=403,
+        body="403 Your request was blocked.",
+    )
+
+    assert not chat._should_retry_upstream(exc, frozenset())
+    assert chat._should_retry_same_account_upstream(exc)
+
+
+def test_chat_403_block_message_mentions_clearance() -> None:
+    with pytest.raises(UpstreamError) as err:
+        chat._raise_chat_status_error(
+            spec=None,
+            status_code=403,
+            body="403 Your request was blocked.",
+        )
+
+    assert "Cloudflare/WAF block" in err.value.message
+    assert "proxy.clearance" in err.value.message
+
+
 def test_chat_retry_count_has_account_swap_floor() -> None:
     with patch.object(chat, "selection_max_retries", return_value=1):
         assert chat._chat_max_retries(_FakeConfig()) == 20
