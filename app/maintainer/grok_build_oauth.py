@@ -10,6 +10,7 @@ import os
 import tempfile
 import threading
 import time
+import uuid
 from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
@@ -449,6 +450,7 @@ def save_pool_credential(source_id: str, tokens: dict[str, Any]) -> None:
             "source": "grok_sso_device_flow",
             "email": email,
             "updated_at": time.time(),
+            "generation": uuid.uuid4().hex,
         },
     )
 

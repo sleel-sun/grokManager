@@ -27,6 +27,7 @@ from app.maintainer.grok_build_oauth import (
     refresh_pool_credential,
     source_id_for_sso,
 )
+from app.maintainer.grok_build_usage import delete_usage, load_usage
 from app.platform.errors import AppError, ErrorKind, ValidationError
 from app.platform.config.snapshot import get_config
 from app.platform.logging.logger import logger
@@ -76,11 +77,46 @@ def _safe_entries() -> dict[str, dict[str, Any]]:
 
 
 def _serialize_entry(
-    source_id: str, entry: dict[str, Any], now: float
+    source_id: str,
+    entry: dict[str, Any],
+    now: float,
+    stored_usage: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     expires_at = entry.get("expires_at")
     expiry = parse_pool_expiry(expires_at)
     expired = bool(expiry and expiry <= now)
+    legacy_usage = entry.get("usage") if isinstance(entry.get("usage"), dict) else {}
+    stored_usage = stored_usage or {}
+    legacy_quota = entry.get("quota") if isinstance(entry.get("quota"), dict) else {}
+
+    def safe_int(value: Any) -> int:
+        try:
+            return max(0, int(value or 0))
+        except (TypeError, ValueError):
+            return 0
+
+    usage = {
+        key: safe_int(legacy_usage.get(key)) + safe_int(stored_usage.get(key))
+        for key in (
+            "request_count",
+            "success_count",
+            "failure_count",
+            "input_tokens",
+            "output_tokens",
+            "total_tokens",
+        )
+    }
+    usage["last_status"] = stored_usage.get("last_status")
+    if usage["last_status"] is None:
+        usage["last_status"] = legacy_usage.get("last_status")
+    usage["last_used_at"] = stored_usage.get("last_used_at")
+    if usage["last_used_at"] is None:
+        usage["last_used_at"] = legacy_usage.get("last_used_at")
+
+    def quota_value(stored_key: str, legacy_key: str) -> Any:
+        value = stored_usage.get(stored_key)
+        return legacy_quota.get(legacy_key) if value is None else value
+
     return {
         "source_id": source_id,
         "source": str(entry.get("source") or ""),
@@ -98,13 +134,37 @@ def _serialize_entry(
         "has_id_token": bool(str(entry.get("id_token") or "").strip()),
         "oidc_issuer": str(entry.get("oidc_issuer") or ""),
         "oidc_client_id": str(entry.get("oidc_client_id") or ""),
+        "usage": {
+            "request_count": safe_int(usage.get("request_count")),
+            "success_count": safe_int(usage.get("success_count")),
+            "failure_count": safe_int(usage.get("failure_count")),
+            "input_tokens": safe_int(usage.get("input_tokens")),
+            "output_tokens": safe_int(usage.get("output_tokens")),
+            "total_tokens": safe_int(usage.get("total_tokens")),
+            "last_status": usage.get("last_status"),
+            "last_used_at": usage.get("last_used_at"),
+        },
+        "quota": {
+            "limit": quota_value("quota_limit", "limit"),
+            "remaining": quota_value("quota_remaining", "remaining"),
+            "reset": quota_value("quota_reset", "reset"),
+            "updated_at": quota_value("quota_updated_at", "updated_at"),
+        },
     }
 
 
 def _pool_snapshot() -> tuple[list[dict[str, Any]], dict[str, int]]:
     now = time.time()
+    usage_by_source = load_usage()
     accounts = [
-        _serialize_entry(source_id, entry, now)
+        _serialize_entry(
+            source_id,
+            entry,
+            now,
+            usage_by_source.get(
+                (source_id, str(entry.get("generation") or "legacy"))
+            ),
+        )
         for source_id, entry in _safe_entries().items()
     ]
     accounts.sort(key=lambda item: (item["expired"], item["source_id"]))
@@ -116,6 +176,13 @@ def _pool_snapshot() -> tuple[list[dict[str, Any]], dict[str, int]]:
         "with_refresh_token": sum(1 for item in accounts if item["has_refresh_token"]),
         "with_id_token": sum(1 for item in accounts if item["has_id_token"]),
         "sources": len(accounts),
+        "request_count": sum(item["usage"]["request_count"] for item in accounts),
+        "success_count": sum(item["usage"]["success_count"] for item in accounts),
+        "failure_count": sum(item["usage"]["failure_count"] for item in accounts),
+        "total_tokens": sum(item["usage"]["total_tokens"] for item in accounts),
+        "quota_known": sum(
+            1 for item in accounts if item["quota"].get("remaining") is not None
+        ),
     }
     return accounts, summary
 
@@ -430,6 +497,7 @@ async def delete_grok_build_account(source_id: str):
             code="grok_build_account_not_found",
             status=404,
         )
+    await asyncio.to_thread(delete_usage, [source_id])
     return _json({"status": "success", "deleted": 1, "source_id": source_id})
 
 
@@ -443,6 +511,8 @@ async def delete_grok_build_accounts(req: SourceIdsRequest):
     if not source_ids:
         raise ValidationError("No source IDs provided", param="source_ids")
     deleted, not_found = await asyncio.to_thread(delete_pool_entries, source_ids)
+    if deleted:
+        await asyncio.to_thread(delete_usage, deleted)
     return _json(
         {
             "status": "success",

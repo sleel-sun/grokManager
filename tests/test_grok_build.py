@@ -5,8 +5,11 @@ from unittest.mock import patch
 from app.control.model.registry import resolve
 from app.dataplane.reverse.protocol.grok_build import (
     _headers,
+    _response_usage,
     _restore_custom_tool_response,
     _restore_custom_tool_stream,
+    _sse_event_usage,
+    _sse_event_status,
     _select_entry,
     sanitize_responses_payload,
 )
@@ -21,6 +24,29 @@ async def _collect_stream(source):
 
 
 class GrokBuildTests(unittest.TestCase):
+    def test_usage_is_extracted_from_response_and_stream_events(self) -> None:
+        usage = {"input_tokens": 12, "output_tokens": 8, "total_tokens": 20}
+
+        self.assertEqual(_response_usage({"usage": usage}), usage)
+        self.assertEqual(
+            _sse_event_usage(
+                'event: response.completed\ndata: {"type":"response.completed",'
+                '"response":{"usage":{"input_tokens":12,"output_tokens":8,'
+                '"total_tokens":20}}}'
+            ),
+            usage,
+        )
+        self.assertEqual(
+            _sse_event_status('data: {"type":"response.completed"}'), 200
+        )
+        self.assertEqual(
+            _sse_event_status('data: {"type":"response.failed"}'), 502
+        )
+        self.assertEqual(
+            _sse_event_status('data: {"type":"response.incomplete"}'), 422
+        )
+        self.assertEqual(_sse_event_status("data: [DONE]"), 200)
+
     def test_model_uses_isolated_build_profile(self) -> None:
         spec = resolve("grok-4.5")
 
@@ -286,6 +312,25 @@ class GrokBuildTests(unittest.TestCase):
         self.assertIn('"input":"text(1)"', output)
         self.assertNotIn('"name":"exec","input":"text(1)"', output)
         self.assertIn("data: [DONE]", output)
+
+    def test_custom_tool_stream_closes_inner_stream_on_cancel(self) -> None:
+        closed = False
+
+        async def source():
+            nonlocal closed
+            try:
+                yield 'data: {"type":"response.output_text.delta"}\n\n'
+                yield "data: [DONE]\n\n"
+            finally:
+                closed = True
+
+        async def run() -> None:
+            stream = _restore_custom_tool_stream(source(), {"exec"})
+            await anext(stream)
+            await stream.aclose()
+
+        asyncio.run(run())
+        self.assertTrue(closed)
 
     def test_chat_compatibility_uses_build_transport(self) -> None:
         async def fake_post(payload, *, model, stream):

@@ -80,6 +80,7 @@ composer_fast_upstream_model = "grok-4.3"
 [grok_build]
 auth_file = "data/grok_auth.json"
 job_dir = "data/grok_build_jobs"
+usage_db = "data/grok_build_usage.db"
 base_url = "https://cli-chat-proxy.grok.com/v1"
 client_version = "0.2.93"
 client_identifier = "grok-pager"

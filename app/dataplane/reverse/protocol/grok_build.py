@@ -20,6 +20,90 @@ _credential_cursor = 0
 _CUSTOM_TOOL_INPUT_KEY = "input"
 
 
+def _response_headers(response: Any) -> dict[str, str]:
+    try:
+        return {str(key): str(value) for key, value in response.headers.items()}
+    except (AttributeError, TypeError):
+        return {}
+
+
+def _response_usage(payload: Any) -> dict[str, Any]:
+    if not isinstance(payload, dict):
+        return {}
+    usage = payload.get("usage")
+    if isinstance(usage, dict):
+        return usage
+    response = payload.get("response")
+    if isinstance(response, dict) and isinstance(response.get("usage"), dict):
+        return response["usage"]
+    return {}
+
+
+def _sse_event_payload(event: str) -> dict[str, Any]:
+    data = "\n".join(
+        line[5:].strip()
+        for line in event.splitlines()
+        if line.startswith("data:")
+    )
+    if not data or data == "[DONE]":
+        return {}
+    try:
+        payload = orjson.loads(data)
+    except orjson.JSONDecodeError:
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _sse_event_usage(event: str) -> dict[str, Any]:
+    return _response_usage(_sse_event_payload(event))
+
+
+def _sse_event_status(event: str) -> int | None:
+    if any(line.strip() == "data: [DONE]" for line in event.splitlines()):
+        return 200
+    event_type = str(_sse_event_payload(event).get("type") or "")
+    if event_type == "response.completed":
+        return 200
+    if event_type in {"response.failed", "response.error"}:
+        return 502
+    if event_type == "response.incomplete":
+        return 422
+    return None
+
+
+async def _record_build_usage(
+    source_id: str | None,
+    generation: str,
+    response: Any,
+    *,
+    usage: dict[str, Any] | None = None,
+    count_request: bool = True,
+    status_code: int | None = None,
+) -> None:
+    if not source_id:
+        return
+    from app.maintainer.grok_build_usage import record_usage
+
+    try:
+        await asyncio.to_thread(
+            record_usage,
+            source_id,
+            generation=generation or "legacy",
+            status_code=int(
+                response.status_code if status_code is None else status_code
+            ),
+            usage=usage,
+            headers=_response_headers(response),
+            count_request=count_request,
+        )
+    except Exception as exc:
+        logger.debug(
+            "Grok Build usage accounting failed: source_id={} error_type={}",
+            source_id,
+            type(exc).__name__,
+        )
+
+
 def _custom_tool_names(payload: dict[str, Any]) -> set[str]:
     names = {
         str(tool.get("name") or "")
@@ -299,23 +383,26 @@ async def _restore_custom_tool_stream(
     buffer = ""
     custom_item_ids: set[str] = set()
     custom_call_ids: set[str] = set()
-    async for chunk in source:
-        buffer += chunk.replace("\r\n", "\n")
-        while "\n\n" in buffer:
-            frame, buffer = buffer.split("\n\n", 1)
-            yield _rewrite_sse_frame(
-                frame,
-                names,
-                custom_item_ids,
-                custom_call_ids,
-            )
-    if buffer:
-        if "data:" in buffer:
-            yield _rewrite_sse_frame(
-                buffer, names, custom_item_ids, custom_call_ids
-            )
-        else:
-            yield buffer
+    try:
+        async for chunk in source:
+            buffer += chunk.replace("\r\n", "\n")
+            while "\n\n" in buffer:
+                frame, buffer = buffer.split("\n\n", 1)
+                yield _rewrite_sse_frame(
+                    frame,
+                    names,
+                    custom_item_ids,
+                    custom_call_ids,
+                )
+        if buffer:
+            if "data:" in buffer:
+                yield _rewrite_sse_frame(
+                    buffer, names, custom_item_ids, custom_call_ids
+                )
+            else:
+                yield buffer
+    finally:
+        await source.aclose()
 
 
 def _message_text(item: dict[str, Any]) -> str:
@@ -556,7 +643,7 @@ async def _refresh(entry: dict[str, Any]) -> dict[str, Any]:
 
 async def _credential(
     *, force_refresh: bool = False, entry_key: str | None = None
-) -> tuple[str, str]:
+) -> tuple[str, str, str]:
     async with _credential_lock:
         path, document, selected_key, entry = _load_document(entry_key)
         expiry = _parse_expiry(entry.get("expires_at"))
@@ -568,11 +655,11 @@ async def _credential(
         token = str(entry.get("key") or entry.get("access_token") or "").strip()
         if not token:
             raise UpstreamError("Grok Build OAuth access token is missing", status=503)
-        return token, selected_key
+        return token, selected_key, str(entry.get("generation") or "legacy")
 
 
 async def access_token(*, force_refresh: bool = False) -> str:
-    token, _entry_key = await _credential(force_refresh=force_refresh)
+    token, _entry_key, _generation = await _credential(force_refresh=force_refresh)
     return token
 
 
@@ -605,10 +692,12 @@ async def post_responses(
     session = ResettableSession(**build_session_kwargs(lease=lease))
 
     selected_key: str | None = None
+    selected_generation = "legacy"
+    logical_recorded = False
 
     async def request(force_refresh: bool = False):
-        nonlocal selected_key
-        token, selected_key = await _credential(
+        nonlocal selected_key, selected_generation
+        token, selected_key, selected_generation = await _credential(
             force_refresh=force_refresh,
             entry_key=selected_key,
         )
@@ -626,9 +715,15 @@ async def post_responses(
         for attempt in range(attempts):
             response = await request()
             if response.status_code == 401:
+                await _record_build_usage(
+                    selected_key, selected_generation, response, count_request=False
+                )
                 response = await request(force_refresh=True)
             if response.status_code == 200:
                 break
+            await _record_build_usage(
+                selected_key, selected_generation, response, count_request=False
+            )
             if response.status_code not in (401, 403, 429) or attempt + 1 >= attempts:
                 break
             selected_key = None
@@ -646,30 +741,88 @@ async def post_responses(
                 sorted(payload),
                 _payload_diagnostics(payload),
             )
+            if response is not None:
+                await _record_build_usage(
+                    selected_key, selected_generation, response
+                )
+                logical_recorded = True
             raise UpstreamError(
                 f"Grok Build upstream returned {status}",
                 status=status,
                 body=body,
             )
         if not stream:
-            result = orjson.loads(response.content)
+            try:
+                result = orjson.loads(response.content)
+            except orjson.JSONDecodeError:
+                await _record_build_usage(
+                    selected_key,
+                    selected_generation,
+                    response,
+                    status_code=502,
+                )
+                logical_recorded = True
+                raise
+            await _record_build_usage(
+                selected_key,
+                selected_generation,
+                response,
+                usage=_response_usage(result),
+            )
+            logical_recorded = True
             await session.close()
             return _restore_custom_tool_response(result, custom_tool_names)
     except Exception:
+        if not logical_recorded and selected_key:
+            await _record_build_usage(
+                selected_key,
+                selected_generation,
+                response,
+                status_code=502,
+            )
         await session.close()
         raise
 
     async def chunks() -> AsyncGenerator[str, None]:
         decoder = codecs.getincrementaldecoder("utf-8")()
+        event_buffer = ""
+        stream_usage: dict[str, Any] = {}
+        terminal_status: int | None = None
+        outcome_status = 502
         try:
             async for chunk in response.aiter_content():
                 text = decoder.decode(chunk)
                 if text:
+                    event_buffer = (event_buffer + text).replace("\r\n", "\n")
+                    while "\n\n" in event_buffer:
+                        event, event_buffer = event_buffer.split("\n\n", 1)
+                        stream_usage.update(_sse_event_usage(event))
+                        terminal_status = _sse_event_status(event) or terminal_status
                     yield text
             tail = decoder.decode(b"", final=True)
             if tail:
+                event_buffer = (event_buffer + tail).replace("\r\n", "\n")
                 yield tail
+        except asyncio.CancelledError:
+            outcome_status = 499
+            raise
+        except GeneratorExit:
+            outcome_status = 499
+            raise
+        except Exception:
+            outcome_status = 502
+            raise
         finally:
+            if event_buffer:
+                stream_usage.update(_sse_event_usage(event_buffer))
+                terminal_status = _sse_event_status(event_buffer) or terminal_status
+            await _record_build_usage(
+                selected_key,
+                selected_generation,
+                response,
+                usage=stream_usage,
+                status_code=terminal_status or outcome_status,
+            )
             await session.close()
 
     stream_chunks = chunks()

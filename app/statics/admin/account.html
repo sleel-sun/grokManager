@@ -681,6 +681,10 @@
     .build-auth-source { max-width:220px; overflow:hidden; text-overflow:ellipsis }
     .build-auth-email { max-width:260px; overflow:hidden; text-overflow:ellipsis }
     .build-auth-token { color:#736c62 }
+    .build-auth-metric { color:#5f594f; font-size:12px; line-height:1.55 }
+    .build-auth-metric-sub { color:#999083; font-size:10px }
+    .build-auth-quota-known { color:#34785a; font-weight:650 }
+    .build-auth-quota-empty { color:#a55d56; font-weight:650 }
     .build-auth-error { color:#a55d56; max-width:260px; overflow:hidden; text-overflow:ellipsis }
     @keyframes spin {
       from { transform:rotate(0deg) }
@@ -1531,6 +1535,22 @@
         <div class="build-auth-stat-label" data-i18n="account.buildAuth.statSources">SSO 来源数</div>
         <div class="build-auth-stat-value" id="build-auth-stat-sources">0</div>
       </div>
+      <div class="build-auth-stat">
+        <div class="build-auth-stat-label" data-i18n="account.buildAuth.statCalls">累计调用</div>
+        <div class="build-auth-stat-value" id="build-auth-stat-calls">0</div>
+      </div>
+      <div class="build-auth-stat">
+        <div class="build-auth-stat-label" data-i18n="account.buildAuth.statSuccessRate">调用成功率</div>
+        <div class="build-auth-stat-value" id="build-auth-stat-success-rate">-</div>
+      </div>
+      <div class="build-auth-stat">
+        <div class="build-auth-stat-label" data-i18n="account.buildAuth.statTokens">累计 Token</div>
+        <div class="build-auth-stat-value" id="build-auth-stat-tokens">0</div>
+      </div>
+      <div class="build-auth-stat">
+        <div class="build-auth-stat-label" data-i18n="account.buildAuth.statQuotaKnown">已获取额度</div>
+        <div class="build-auth-stat-value" id="build-auth-stat-quota-known">0 / 0</div>
+      </div>
     </div>
     <div class="build-auth-progress" id="build-auth-progress" role="status" aria-live="polite">
       <div class="build-auth-progress-title" id="build-auth-progress-title">任务进度</div>
@@ -1588,13 +1608,15 @@
             <th data-i18n="account.buildAuth.colAccount">账户</th>
             <th data-i18n="account.buildAuth.colStatus">状态</th>
             <th data-i18n="account.buildAuth.colToken">凭证</th>
+            <th data-i18n="account.buildAuth.colQuota">额度</th>
+            <th data-i18n="account.buildAuth.colUsage">使用情况</th>
             <th data-i18n="account.buildAuth.colExpiry">过期时间</th>
             <th data-i18n="account.buildAuth.colUpdated">更新时间</th>
             <th data-i18n="account.colActions">操作</th>
           </tr>
         </thead>
         <tbody id="build-auth-tbody">
-          <tr><td colspan="8" class="empty-state" data-i18n="account.buildAuth.loading">正在加载 Build OAuth 号池…</td></tr>
+          <tr><td colspan="10" class="empty-state" data-i18n="account.buildAuth.loading">正在加载 Build OAuth 号池…</td></tr>
         </tbody>
       </table>
     </div>
@@ -2331,6 +2353,53 @@ function buildAuthStatusBadge(item) {
   return `<span class="badge badge-${cls}">${xh(labels[status])}</span>`;
 }
 
+function buildAuthUsage(item) {
+  return item && typeof item.usage === 'object' && item.usage ? item.usage : {};
+}
+
+function buildAuthQuota(item) {
+  return item && typeof item.quota === 'object' && item.quota ? item.quota : {};
+}
+
+function buildAuthNumber(value) {
+  const number = Number(value);
+  return Number.isFinite(number) ? number.toLocaleString() : '-';
+}
+
+function buildAuthQuotaHtml(item) {
+  const quota = buildAuthQuota(item);
+  const remaining = quota.remaining == null || quota.remaining === '' ? null : Number(quota.remaining);
+  const limit = quota.limit == null || quota.limit === '' ? null : Number(quota.limit);
+  const reset = buildAuthDateValue(quota.reset);
+  if (!Number.isFinite(remaining)) {
+    return `<div class="build-auth-metric"><span class="build-auth-metric-sub">${xh(tr('account.buildAuth.quotaUnknown', null, '上游未提供'))}</span></div>`;
+  }
+  const exhausted = remaining <= 0;
+  const value = Number.isFinite(limit)
+    ? `${buildAuthNumber(remaining)} / ${buildAuthNumber(limit)}`
+    : tr('account.buildAuth.quotaRemaining', { n: buildAuthNumber(remaining) }, `剩余 ${buildAuthNumber(remaining)}`);
+  const resetValue = reset ? reset.toLocaleString() : String(quota.reset || '');
+  const resetText = resetValue
+    ? tr('account.buildAuth.quotaResetAt', { time: resetValue }, `重置 ${resetValue}`)
+    : '';
+  return `<div class="build-auth-metric"><span class="${exhausted ? 'build-auth-quota-empty' : 'build-auth-quota-known'}">${xh(value)}</span>${resetText ? `<div class="build-auth-metric-sub">${xh(resetText)}</div>` : ''}</div>`;
+}
+
+function buildAuthUsageHtml(item) {
+  const usage = buildAuthUsage(item);
+  const requests = Number(usage.request_count || 0);
+  const success = Number(usage.success_count || 0);
+  const failures = Number(usage.failure_count || 0);
+  const total = success + failures;
+  const rate = total ? `${((success / total) * 100).toFixed(1)}%` : '-';
+  const tokens = Number(usage.total_tokens || 0);
+  const lastUsed = buildAuthDateValue(usage.last_used_at);
+  const title = lastUsed
+    ? tr('account.buildAuth.lastUsedAt', { time: lastUsed.toLocaleString() }, `最近使用 ${lastUsed.toLocaleString()}`)
+    : tr('account.buildAuth.neverUsed', null, '尚未使用');
+  return `<div class="build-auth-metric" title="${xe(title)}">${xh(tr('account.buildAuth.usageRequests', { n: buildAuthNumber(requests) }, `调用 ${buildAuthNumber(requests)}`))}<div class="build-auth-metric-sub">${xh(tr('account.buildAuth.usageDetail', { rate, failures: buildAuthNumber(failures), tokens: buildAuthNumber(tokens) }, `成功率 ${rate} · 失败 ${buildAuthNumber(failures)} · Token ${buildAuthNumber(tokens)}`))}</div></div>`;
+}
+
 function buildAuthFilteredAccounts() {
   const query = buildAuthQuery.trim().toLowerCase();
   return buildAuthAccounts.filter(item => {
@@ -2354,11 +2423,25 @@ function deriveBuildAuthSummary() {
   const expired = buildAuthAccounts.filter(item => buildAuthStatus(item) === 'expired').length;
   const sources = new Set(buildAuthAccounts.map(buildAuthSourceId).filter(Boolean)).size;
   const source = buildAuthSummary || {};
+  const fallbackUsage = buildAuthAccounts.reduce((summary, item) => {
+    const usage = buildAuthUsage(item);
+    summary.requests += Number(usage.request_count || 0);
+    summary.success += Number(usage.success_count || 0);
+    summary.failures += Number(usage.failure_count || 0);
+    summary.tokens += Number(usage.total_tokens || 0);
+    if (buildAuthQuota(item).remaining != null) summary.quotaKnown += 1;
+    return summary;
+  }, { requests: 0, success: 0, failures: 0, tokens: 0, quotaKnown: 0 });
   return {
     total: Number(firstDefined(source.total, source.count, buildAuthAccounts.length)),
     active: Number(firstDefined(source.active, source.valid, active)),
     expired: Number(firstDefined(source.expired, expired)),
     sources: Number(firstDefined(source.sources, source.source_count, source.sso_sources, sources)),
+    requests: Number(firstDefined(source.request_count, fallbackUsage.requests)),
+    success: Number(firstDefined(source.success_count, fallbackUsage.success)),
+    failures: Number(firstDefined(source.failure_count, fallbackUsage.failures)),
+    tokens: Number(firstDefined(source.total_tokens, fallbackUsage.tokens)),
+    quotaKnown: Number(firstDefined(source.quota_known, fallbackUsage.quotaKnown)),
   };
 }
 
@@ -2449,8 +2532,13 @@ function renderBuildAuthPool() {
   $('build-auth-stat-active', summary.active);
   $('build-auth-stat-expired', summary.expired);
   $('build-auth-stat-sources', summary.sources);
+  $('build-auth-stat-calls', buildAuthNumber(summary.requests));
+  const completedCalls = summary.success + summary.failures;
+  $('build-auth-stat-success-rate', completedCalls ? `${((summary.success / completedCalls) * 100).toFixed(1)}%` : '-');
+  $('build-auth-stat-tokens', buildAuthNumber(summary.tokens));
+  $('build-auth-stat-quota-known', `${buildAuthNumber(summary.quotaKnown)} / ${buildAuthNumber(summary.total)}`);
   if (buildAuthLoadError) {
-    tbody.innerHTML = `<tr><td colspan="8" class="empty-state">${xh(tr('account.buildAuth.loadFailed', null, 'Build OAuth 号池加载失败'))}: ${xh(buildAuthLoadError.message || buildAuthLoadError)}</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="10" class="empty-state">${xh(tr('account.buildAuth.loadFailed', null, 'Build OAuth 号池加载失败'))}: ${xh(buildAuthLoadError.message || buildAuthLoadError)}</td></tr>`;
     renderBuildAuthPagination(0, 1);
     updateBuildAuthSelectionControls([]);
     return;
@@ -2462,7 +2550,7 @@ function renderBuildAuthPool() {
   const items = filtered.slice((buildAuthPage - 1) * BUILD_AUTH_PAGE_SIZE, buildAuthPage * BUILD_AUTH_PAGE_SIZE);
   tbody.innerHTML = items.length
     ? items.map(buildAuthRowHtml).join('')
-    : `<tr><td colspan="8" class="empty-state">${xh((buildAuthQuery || buildAuthStatusFilter !== 'all' || buildAuthRefreshFilter !== 'all' || buildAuthIdTokenFilter !== 'all') ? tr('account.buildAuth.noMatch', null, '没有符合筛选条件的凭证。') : tr('account.buildAuth.empty', null, '暂无 Build OAuth 凭证。'))}</td></tr>`;
+    : `<tr><td colspan="10" class="empty-state">${xh((buildAuthQuery || buildAuthStatusFilter !== 'all' || buildAuthRefreshFilter !== 'all' || buildAuthIdTokenFilter !== 'all') ? tr('account.buildAuth.noMatch', null, '没有符合筛选条件的凭证。') : tr('account.buildAuth.empty', null, '暂无 Build OAuth 凭证。'))}</td></tr>`;
   renderBuildAuthPagination(filtered.length, pages);
   updateBuildAuthSelectionControls(items);
   renderBuildAuthTaskProgress();
@@ -2572,6 +2660,8 @@ function exportFilteredBuildAuth() {
     source_id: buildAuthSourceId(item),
     email: buildAuthEmail(item),
     status: buildAuthStatus(item),
+    quota: buildAuthQuota(item),
+    usage: buildAuthUsage(item),
     expires_at: buildAuthExpiry(item) || null,
     updated_at: item.updated_at || item.updatedAt || item.created_at || item.createdAt || null,
   }));
@@ -2645,6 +2735,8 @@ function buildAuthRowHtml(item) {
     <td class="build-auth-email" title="${xe(email)}">${xh(email)}</td>
     <td>${buildAuthStatusBadge(item)}</td>
     <td class="build-auth-token">${credential}</td>
+    <td>${buildAuthQuotaHtml(item)}</td>
+    <td>${buildAuthUsageHtml(item)}</td>
     <td style="font-size:12px;color:#837b70">${xh(expiry ? expiry.toLocaleString() : '-')}</td>
     <td style="font-size:12px;color:#91897d">${xh(updated ? updated.toLocaleString() : '-')}</td>
     <td><div class="row-actions">

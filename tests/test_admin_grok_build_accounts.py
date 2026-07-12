@@ -17,6 +17,7 @@ from app.maintainer.grok_build_oauth import (
     save_pool_entry_if_refresh_token,
     save_pool_credential,
 )
+from app.maintainer.grok_build_usage import load_usage, record_usage
 from app.products.web.admin import grok_build_accounts as admin
 
 
@@ -37,6 +38,52 @@ def _record(token: str, *, tags=None, ext=None):
 
 
 class GrokBuildPoolStorageTests(unittest.TestCase):
+    def test_usage_and_upstream_quota_are_accumulated_per_credential(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "grok_auth.json"
+            with (
+                patch("app.maintainer.grok_build_oauth.pool_path", return_value=path),
+                patch(
+                    "app.maintainer.grok_build_usage.usage_db_path",
+                    return_value=Path(tmpdir) / "usage.db",
+                ),
+                patch("app.maintainer.grok_build_usage.time.time", return_value=1234.0),
+            ):
+                save_pool_entry(
+                    "sso:a",
+                    {"access_token": "secret", "refresh_token": "refresh"},
+                )
+                record_usage(
+                    "sso:a",
+                    generation="gen-a",
+                    status_code=200,
+                    usage={
+                        "input_tokens": 10,
+                        "output_tokens": 5,
+                        "total_tokens": 15,
+                    },
+                    headers={
+                        "X-RateLimit-Limit-Requests": "100",
+                        "X-RateLimit-Remaining-Requests": "82",
+                        "X-RateLimit-Reset-Requests": "60s",
+                    },
+                )
+                record_usage("sso:a", generation="gen-a", status_code=429)
+
+                entry = pool_entries()["sso:a"]
+                usage = load_usage()[("sso:a", "gen-a")]
+
+        self.assertEqual(entry["access_token"], "secret")
+        self.assertNotIn("usage", entry)
+        self.assertEqual(usage["request_count"], 2)
+        self.assertEqual(usage["success_count"], 1)
+        self.assertEqual(usage["failure_count"], 1)
+        self.assertEqual(usage["total_tokens"], 15)
+        self.assertEqual(usage["last_status"], 429)
+        self.assertEqual(usage["quota_limit"], "100")
+        self.assertEqual(usage["quota_remaining"], "82")
+        self.assertEqual(usage["quota_reset"], "60s")
+
     def test_refresh_cas_does_not_overwrite_rotated_credential(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             path = Path(tmpdir) / "grok_auth.json"
@@ -150,8 +197,22 @@ class GrokBuildAdminTests(unittest.IsolatedAsyncioTestCase):
             "source": "grok_sso_device_flow",
             "email": "build@example.com",
             "updated_at": 1_700_000_000,
+            "usage": {
+                "request_count": 7,
+                "success_count": 6,
+                "failure_count": 1,
+                "input_tokens": 100,
+                "output_tokens": 50,
+                "total_tokens": 150,
+                "last_status": 200,
+                "last_used_at": 1_700_000_001,
+            },
+            "quota": {"limit": "100", "remaining": "82", "reset": "60s"},
         }
-        with patch.object(admin, "_safe_entries", return_value={"sso:abc": entry}):
+        with (
+            patch.object(admin, "_safe_entries", return_value={"sso:abc": entry}),
+            patch.object(admin, "load_usage", return_value={}),
+        ):
             response = await admin.list_grok_build_accounts(page=1, page_size=100)
 
         payload = orjson.loads(response.body)
@@ -164,6 +225,11 @@ class GrokBuildAdminTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(payload["accounts"][0]["updated_at"], 1_700_000_000)
         self.assertTrue(payload["accounts"][0]["has_refresh_token"])
         self.assertTrue(payload["accounts"][0]["has_id_token"])
+        self.assertEqual(payload["accounts"][0]["usage"]["request_count"], 7)
+        self.assertEqual(payload["accounts"][0]["usage"]["total_tokens"], 150)
+        self.assertEqual(payload["accounts"][0]["quota"]["remaining"], "82")
+        self.assertEqual(payload["summary"]["request_count"], 7)
+        self.assertEqual(payload["summary"]["quota_known"], 1)
 
     async def test_convert_selects_only_missing_active_grok_accounts(self) -> None:
         existing_id = admin.source_id_for_sso("existing-sso")
