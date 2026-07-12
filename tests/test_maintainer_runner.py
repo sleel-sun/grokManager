@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from typing import Any
-from unittest.mock import MagicMock, patch
+from unittest.mock import ANY, MagicMock, patch
 
 from app.maintainer.runner import (
     build_profile,
@@ -31,6 +31,8 @@ from app.maintainer.runner import (
     _worker_entry,
     _split_count,
     _wait_while_paused,
+    _grok_build_oauth_settings,
+    authorize_registered_sso_for_grok_build,
     run_batch,
     run_batch_parallel,
 )
@@ -770,6 +772,68 @@ class MaintainerBatchHelpersTests(unittest.TestCase):
 
 
 class MaintainerBatchProfileIsolationTests(unittest.TestCase):
+    def test_grok_build_oauth_settings_default_enabled_optional(self) -> None:
+        with patch("app.maintainer.runner.load_config", return_value={}):
+            settings = _grok_build_oauth_settings()
+
+        self.assertTrue(settings["enabled"])
+        self.assertFalse(settings["required"])
+        self.assertEqual(settings["delay_sec"], 0.0)
+        self.assertEqual(settings["poll_timeout_sec"], 90.0)
+
+    def test_authorize_registered_sso_honors_maintainer_config(self) -> None:
+        config = {
+            "grok_build": {
+                "auto_oauth_after_register": True,
+                "required": True,
+                "delay_sec": 3,
+                "proxy": "http://user:secret@proxy.example:8080",
+            }
+        }
+        with (
+            patch("app.maintainer.runner.load_config", return_value=config),
+            patch(
+                "app.maintainer.grok_build_oauth.authorize_sso_accounts",
+                return_value=[{"source_id": "hash"}],
+            ) as authorize_mock,
+        ):
+            results = authorize_registered_sso_for_grok_build(["sso-a", "sso-a"])
+
+        self.assertEqual(results, [{"source_id": "hash"}])
+        authorize_mock.assert_called_once_with(
+            ["sso-a"],
+            delay_sec=3.0,
+            required=True,
+            proxy="http://user:secret@proxy.example:8080",
+            poll_timeout_sec=90.0,
+            logger=ANY,
+        )
+
+    def test_run_batch_pushes_sso_before_grok_build_oauth(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config_path = Path(tmpdir) / "maintainer.config.json"
+            config_path.write_text("{}", encoding="utf-8")
+            calls: list[str] = []
+            with (
+                patch("app.maintainer.runner.start_browser"),
+                patch("app.maintainer.runner.stop_browser"),
+                patch(
+                    "app.maintainer.runner.run_single_registration",
+                    return_value={"sso": "sso-new"},
+                ),
+                patch(
+                    "app.maintainer.runner.push_sso_to_api",
+                    side_effect=lambda _tokens: calls.append("push"),
+                ),
+                patch(
+                    "app.maintainer.runner.authorize_registered_sso_for_grok_build",
+                    side_effect=lambda _tokens: calls.append("oauth"),
+                ),
+            ):
+                run_batch(config_path=config_path, count=1, output=Path(tmpdir) / "sso.txt")
+
+        self.assertEqual(calls, ["push", "oauth"])
+
     def test_run_batch_resets_isolated_profile_between_rounds(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             tmp_path = Path(tmpdir)
@@ -805,6 +869,7 @@ class MaintainerBatchProfileIsolationTests(unittest.TestCase):
                 patch("app.maintainer.runner.start_browser"),
                 patch("app.maintainer.runner.stop_browser"),
                 patch("app.maintainer.runner.push_sso_to_api"),
+                patch("app.maintainer.runner.authorize_registered_sso_for_grok_build"),
                 patch(
                     "app.maintainer.runner.run_single_registration",
                     side_effect=fake_registration,
@@ -851,6 +916,7 @@ class MaintainerBatchProfileIsolationTests(unittest.TestCase):
                 patch("app.maintainer.runner.start_browser"),
                 patch("app.maintainer.runner.stop_browser"),
                 patch("app.maintainer.runner.push_sso_to_api"),
+                patch("app.maintainer.runner.authorize_registered_sso_for_grok_build"),
                 patch("app.maintainer.runner.time.sleep"),
                 patch(
                     "app.maintainer.runner.run_single_registration",
@@ -903,6 +969,7 @@ class MaintainerBatchProfileIsolationTests(unittest.TestCase):
                 patch("app.maintainer.runner.start_browser"),
                 patch("app.maintainer.runner.stop_browser"),
                 patch("app.maintainer.runner.push_sso_to_api"),
+                patch("app.maintainer.runner.authorize_registered_sso_for_grok_build"),
                 patch("app.maintainer.runner.time.sleep"),
                 patch(
                     "app.maintainer.runner.run_single_registration",
@@ -920,6 +987,13 @@ class MaintainerBatchProfileIsolationTests(unittest.TestCase):
 
 
 class RunBatchParallelSpawnTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self._oauth_patcher = patch(
+            "app.maintainer.runner.authorize_registered_sso_for_grok_build"
+        )
+        self._oauth_patcher.start()
+        self.addCleanup(self._oauth_patcher.stop)
+
     def _build_ctx_mock(self, captured_processes: list[MagicMock]) -> MagicMock:
         """Return a context-like object that records every Process(...) call."""
         ctx = MagicMock()

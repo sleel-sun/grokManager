@@ -539,6 +539,130 @@
       color:#8a8a8a;
       font-size:13px;
     }
+    .build-auth-card {
+      margin-top:28px;
+      padding:20px;
+      border-radius:16px;
+      background:#f1ece2;
+    }
+    .build-auth-head {
+      display:flex;
+      align-items:flex-start;
+      justify-content:space-between;
+      gap:18px;
+      margin-bottom:16px;
+    }
+    .build-auth-title-row {
+      display:flex;
+      align-items:center;
+      gap:8px;
+    }
+    .build-auth-title { font-size:15px; font-weight:650; color:#25221d }
+    .build-auth-sub { margin-top:5px; color:#777065; font-size:12px; line-height:1.5 }
+    .build-auth-actions {
+      display:flex;
+      align-items:center;
+      justify-content:flex-end;
+      gap:8px;
+      flex-wrap:wrap;
+    }
+    .build-auth-limit {
+      width:92px !important;
+      height:32px;
+      border-radius:999px;
+      background:rgba(255,255,255,.72);
+      border-color:rgba(117,103,83,.12);
+    }
+    .build-auth-limit-label { color:#777065; font-size:11px; white-space:nowrap }
+    #build-auth-status-filter { width:116px !important }
+    .build-auth-force {
+      height:32px;
+      padding:0 10px;
+      border-radius:999px;
+      display:inline-flex;
+      align-items:center;
+      gap:6px;
+      background:rgba(255,255,255,.58);
+      color:#716a60;
+      font-size:12px;
+      white-space:nowrap;
+    }
+    .build-auth-stats {
+      display:grid;
+      grid-template-columns:repeat(4,minmax(0,1fr));
+      gap:10px;
+      margin-bottom:14px;
+    }
+    .build-auth-stat {
+      min-height:66px;
+      padding:11px 13px;
+      border-radius:12px;
+      background:rgba(255,255,255,.7);
+    }
+    .build-auth-stat-label { color:#91897d; font-size:10px; font-weight:600 }
+    .build-auth-stat-value { margin-top:10px; color:#302d28; font-size:19px; font-weight:650 }
+    .build-auth-toolbar {
+      display:flex;
+      align-items:flex-start;
+      justify-content:space-between;
+      gap:10px;
+      margin-bottom:8px;
+      color:#837b70;
+      font-size:12px;
+    }
+    .build-auth-toolbar-left,
+    .build-auth-toolbar-actions {
+      display:flex;
+      align-items:center;
+      gap:7px;
+      flex-wrap:wrap;
+    }
+    .build-auth-toolbar-actions { justify-content:flex-end }
+    .build-auth-pager { display:flex; align-items:center; gap:5px }
+    .build-auth-search { width:min(280px,100%) !important; height:30px; background:rgba(255,255,255,.74) }
+    .build-auth-batch-btn {
+      height:28px;
+      padding:0 9px;
+      border-radius:999px;
+      background:rgba(255,255,255,.62);
+      color:#7b7368;
+      font-size:11px;
+      font-weight:600;
+      white-space:nowrap;
+    }
+    .build-auth-batch-btn:hover { background:#fff; color:#4b463f }
+    .build-auth-batch-btn:disabled { opacity:.42; pointer-events:none }
+    .build-auth-batch-danger { color:#a55d56 }
+    .build-auth-selection { min-width:56px; font-variant-numeric:tabular-nums }
+    .build-auth-progress {
+      display:none;
+      grid-template-columns:minmax(150px,1fr) repeat(4,minmax(72px,auto));
+      align-items:center;
+      gap:8px;
+      margin-bottom:12px;
+      padding:10px 12px;
+      border-radius:12px;
+      background:rgba(255,255,255,.64);
+      color:#777065;
+      font-size:11px;
+    }
+    .build-auth-progress.show { display:grid }
+    .build-auth-progress-title { color:#3f3b35; font-weight:650 }
+    .build-auth-progress-value { font-variant-numeric:tabular-nums; white-space:nowrap }
+    .build-auth-table-wrap {
+      overflow-x:auto;
+      border-radius:13px;
+      background:rgba(255,255,255,.78);
+      -webkit-overflow-scrolling:touch;
+    }
+    .build-auth-table { width:max-content; min-width:100% }
+    .build-auth-table th,
+    .build-auth-table td { background:transparent; white-space:nowrap }
+    .build-auth-table tr:hover td { background:rgba(255,255,255,.52) }
+    .build-auth-source { max-width:220px; overflow:hidden; text-overflow:ellipsis }
+    .build-auth-email { max-width:260px; overflow:hidden; text-overflow:ellipsis }
+    .build-auth-token { color:#736c62 }
+    .build-auth-error { color:#a55d56; max-width:260px; overflow:hidden; text-overflow:ellipsis }
     @keyframes spin {
       from { transform:rotate(0deg) }
       to { transform:rotate(360deg) }
@@ -1118,6 +1242,16 @@
       .gpt-detail-grid {
         grid-template-columns:1fr;
       }
+      .build-auth-card { padding:15px; margin-left:-4px; margin-right:-4px }
+      .build-auth-head { flex-direction:column }
+      .build-auth-actions { width:100%; justify-content:flex-start }
+      .build-auth-stats { grid-template-columns:repeat(2,minmax(0,1fr)) }
+      .build-auth-toolbar { align-items:flex-start; flex-direction:column }
+      .build-auth-toolbar-left,
+      .build-auth-toolbar-actions { width:100%; justify-content:flex-start }
+      .build-auth-search { width:100% !important }
+      .build-auth-progress { grid-template-columns:repeat(2,minmax(0,1fr)) }
+      .build-auth-progress-title { grid-column:1 / -1 }
     }
   </style>
 </head>
@@ -1325,6 +1459,116 @@
       </table>
     </div>
   </div>
+
+  <section class="build-auth-card" aria-labelledby="build-auth-title">
+    <div class="build-auth-head">
+      <div>
+        <div class="build-auth-title-row">
+          <div class="build-auth-title" id="build-auth-title" data-i18n="account.buildAuth.title">Grok Build OAuth 号池</div>
+          <span class="section-count-badge" id="build-auth-count">0</span>
+        </div>
+        <div class="build-auth-sub" data-i18n="account.buildAuth.subtitle">独立管理 Build API OAuth 凭证，可从现有 Grok SSO 账户自动转换。</div>
+      </div>
+      <div class="build-auth-actions">
+        <span class="build-auth-limit-label" data-i18n="account.buildAuth.limitLabel">转换数量（0=全部）</span>
+        <input class="input build-auth-limit" id="build-auth-limit" type="number" min="0" value="10" inputmode="numeric" data-i18n-title="account.buildAuth.limitHint" title="本次转换数量，0 表示全部">
+        <label class="build-auth-force" data-i18n-title="account.buildAuth.forceHint" title="重新转换已有凭证的账户">
+          <input type="checkbox" id="build-auth-force">
+          <span data-i18n="account.buildAuth.force">强制重建</span>
+        </label>
+        <button type="button" onclick="loadBuildAuthPool(true)" class="page-action-btn">
+          <span data-i18n="account.buildAuth.refresh">刷新</span>
+        </button>
+        <button type="button" onclick="convertBuildAuthPool()" class="page-action-btn page-action-btn-primary" id="build-auth-convert-btn">
+          <span data-i18n="account.buildAuth.convert">Grok SSO → Build OAuth</span>
+        </button>
+      </div>
+    </div>
+    <div class="build-auth-stats">
+      <div class="build-auth-stat">
+        <div class="build-auth-stat-label" data-i18n="account.buildAuth.statTotal">凭证总数</div>
+        <div class="build-auth-stat-value" id="build-auth-stat-total">0</div>
+      </div>
+      <div class="build-auth-stat">
+        <div class="build-auth-stat-label" data-i18n="account.buildAuth.statActive">有效凭证</div>
+        <div class="build-auth-stat-value" id="build-auth-stat-active">0</div>
+      </div>
+      <div class="build-auth-stat">
+        <div class="build-auth-stat-label" data-i18n="account.buildAuth.statExpired">过期凭证</div>
+        <div class="build-auth-stat-value" id="build-auth-stat-expired">0</div>
+      </div>
+      <div class="build-auth-stat">
+        <div class="build-auth-stat-label" data-i18n="account.buildAuth.statSources">SSO 来源数</div>
+        <div class="build-auth-stat-value" id="build-auth-stat-sources">0</div>
+      </div>
+    </div>
+    <div class="build-auth-progress" id="build-auth-progress" role="status" aria-live="polite">
+      <div class="build-auth-progress-title" id="build-auth-progress-title">任务进度</div>
+      <div class="build-auth-progress-value"><span data-i18n="account.buildAuth.progressPending">等待</span> <b id="build-auth-progress-pending">0</b></div>
+      <div class="build-auth-progress-value"><span data-i18n="account.buildAuth.progressSucceeded">成功</span> <b id="build-auth-progress-succeeded">0</b></div>
+      <div class="build-auth-progress-value"><span data-i18n="account.buildAuth.progressFailed">失败</span> <b id="build-auth-progress-failed">0</b></div>
+      <div class="build-auth-progress-value"><span data-i18n="account.buildAuth.progressSkipped">跳过</span> <b id="build-auth-progress-skipped">0</b></div>
+    </div>
+    <div class="build-auth-toolbar">
+      <div class="build-auth-toolbar-left">
+        <div class="build-auth-pager">
+          <button type="button" onclick="prevBuildAuthPage()" class="pagi-btn" id="build-auth-prev" aria-label="上一页">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="15 18 9 12 15 6"/></svg>
+          </button>
+          <span class="pagi-page" id="build-auth-page">0 / 0</span>
+          <button type="button" onclick="nextBuildAuthPage()" class="pagi-btn" id="build-auth-next" aria-label="下一页">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"/></svg>
+          </button>
+        </div>
+        <span class="build-auth-selection" id="build-auth-selection-count">已选 0</span>
+        <button type="button" class="build-auth-batch-btn" onclick="selectBuildAuthPage()" data-i18n="account.buildAuth.selectPage">选中本页</button>
+        <button type="button" class="build-auth-batch-btn" onclick="selectAllFilteredBuildAuth()" data-i18n="account.buildAuth.selectFiltered">选中筛选结果</button>
+        <button type="button" class="build-auth-batch-btn" id="build-auth-clear-btn" onclick="clearBuildAuthSelection()" disabled data-i18n="account.buildAuth.clearSelection">清空选择</button>
+      </div>
+      <div class="build-auth-toolbar-actions">
+        <button type="button" class="build-auth-batch-btn" id="build-auth-refresh-selected" onclick="refreshSelectedBuildAuth()" disabled data-i18n="account.buildAuth.refreshSelected">批量刷新</button>
+        <button type="button" class="build-auth-batch-btn build-auth-batch-danger" id="build-auth-delete-selected" onclick="deleteSelectedBuildAuth()" disabled data-i18n="account.buildAuth.deleteSelected">批量删除</button>
+        <button type="button" class="build-auth-batch-btn" onclick="exportFilteredBuildAuth()" data-i18n="account.buildAuth.exportMetadata">导出元数据</button>
+        <select class="input toolbar-page-size" id="build-auth-status-filter" onchange="filterBuildAuthStatus(this.value)">
+          <option value="all" data-i18n="account.buildAuth.filterAll">全部状态</option>
+          <option value="active" data-i18n="account.buildAuth.filterActive">有效</option>
+          <option value="expiring" data-i18n="account.buildAuth.filterExpiring">即将过期</option>
+          <option value="expired" data-i18n="account.buildAuth.filterExpired">已过期</option>
+        </select>
+        <select class="input toolbar-page-size" id="build-auth-refresh-filter" onchange="filterBuildAuthRefresh(this.value)">
+          <option value="all" data-i18n="account.buildAuth.filterRefreshAll">全部刷新能力</option>
+          <option value="refreshable" data-i18n="account.buildAuth.filterRefreshable">可自动刷新</option>
+          <option value="access_only" data-i18n="account.buildAuth.filterAccessOnly">不可自动刷新</option>
+        </select>
+        <select class="input toolbar-page-size" id="build-auth-id-token-filter" onchange="filterBuildAuthIdToken(this.value)">
+          <option value="all" data-i18n="account.buildAuth.filterIdTokenAll">全部 ID Token</option>
+          <option value="present" data-i18n="account.buildAuth.filterIdTokenPresent">有 ID Token</option>
+          <option value="missing" data-i18n="account.buildAuth.filterIdTokenMissing">无 ID Token</option>
+        </select>
+        <button type="button" class="build-auth-batch-btn" onclick="resetBuildAuthFilters()" data-i18n="account.buildAuth.resetFilters">重置筛选</button>
+        <input class="input build-auth-search" id="build-auth-search" type="search" autocomplete="off" data-i18n-placeholder="account.buildAuth.search" placeholder="搜索邮箱 / 来源 ID / 状态" oninput="searchBuildAuth(this.value)">
+      </div>
+    </div>
+    <div class="build-auth-table-wrap">
+      <table class="build-auth-table">
+        <thead>
+          <tr>
+            <th><input type="checkbox" id="build-auth-cb-all" onchange="toggleBuildAuthPageSelection(this.checked)"></th>
+            <th data-i18n="account.buildAuth.colSource">来源 ID</th>
+            <th data-i18n="account.buildAuth.colAccount">账户</th>
+            <th data-i18n="account.buildAuth.colStatus">状态</th>
+            <th data-i18n="account.buildAuth.colToken">凭证</th>
+            <th data-i18n="account.buildAuth.colExpiry">过期时间</th>
+            <th data-i18n="account.buildAuth.colUpdated">更新时间</th>
+            <th data-i18n="account.colActions">操作</th>
+          </tr>
+        </thead>
+        <tbody id="build-auth-tbody">
+          <tr><td colspan="8" class="empty-state" data-i18n="account.buildAuth.loading">正在加载 Build OAuth 号池…</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
 
   <div class="section-head">
     <div class="section-title" data-i18n="account.sectionOverview">账户概览</div>
@@ -1824,6 +2068,14 @@ let allTokens = [], curStatus = 'all', curNsfw = 'all', curPool = 'all', curPage
 let gptAccountPage = 1, gptAccountPageSize = loadSavedGptAccountPageSize();
 let gptAccountStatus = 'all', gptAccountPlan = 'all', gptAccountLogin = 'all', gptAccountQuery = '';
 let gptAccounts = [], gptAccountLoadError = null;
+let buildAuthAccounts = [], buildAuthSummary = {}, buildAuthLoadError = null;
+let buildAuthQuery = '', buildAuthPage = 1;
+let buildAuthStatusFilter = 'all', buildAuthRefreshFilter = 'all', buildAuthIdTokenFilter = 'all';
+const BUILD_AUTH_PAGE_SIZE = 20;
+const refreshingBuildAuth = new Set();
+const selectedBuildAuth = new Set();
+let buildAuthConvertTaskId = '';
+let buildAuthTaskProgress = null;
 let gptOAuthSession = null;
 let _gptDetailAccountId = '';
 const gptAccountTesting = new Set();
@@ -1877,7 +2129,16 @@ function applyAccountI18n() {
   if (gptPageSizeSel) gptPageSizeSel.value = String(gptAccountPageSize);
   const gptSearch = document.getElementById('gpt-account-search');
   if (gptSearch) gptSearch.value = gptAccountQuery;
+  const buildSearch = document.getElementById('build-auth-search');
+  if (buildSearch) buildSearch.value = buildAuthQuery;
+  const buildStatus = document.getElementById('build-auth-status-filter');
+  if (buildStatus) buildStatus.value = buildAuthStatusFilter;
+  const buildRefresh = document.getElementById('build-auth-refresh-filter');
+  if (buildRefresh) buildRefresh.value = buildAuthRefreshFilter;
+  const buildIdToken = document.getElementById('build-auth-id-token-filter');
+  if (buildIdToken) buildIdToken.value = buildAuthIdTokenFilter;
   updateImportFileState();
+  renderBuildAuthPool();
   renderGptAccounts();
   render();
 }
@@ -1898,6 +2159,7 @@ function waitI18n() {
   if (!key || !await verifyKey(ADMIN_API + '/verify', key).catch(() => false))
     return location.href = '/admin/login';
   load();
+  loadBuildAuthPool();
 })();
 
 // ── API ────────────────────────────────────────────────────────────────────
@@ -1973,6 +2235,516 @@ function isExternalGptToken(token) {
     || id.startsWith('gptimgcred_')
     || id.startsWith('gpt_')
     || id.startsWith('gptcred_');
+}
+
+function normalizeBuildAuthAccounts(data) {
+  let raw = data && (data.accounts || data.items || data.auths || data.credentials || data.data);
+  if (raw == null && Array.isArray(data)) raw = data;
+  if (Array.isArray(raw)) return raw.map((item, index) => ({ ...(item || {}), _listIndex: index }));
+  if (raw && typeof raw === 'object') {
+    return Object.entries(raw).map(([sourceId, item], index) => ({
+      ...(item && typeof item === 'object' ? item : {}),
+      source_id: (item && (item.source_id || item.sourceId)) || sourceId,
+      _listIndex: index,
+    }));
+  }
+  return [];
+}
+
+function buildAuthSourceId(item) {
+  return String(item.source_id || item.sourceId || item.account_id || item.accountId || item.id || '');
+}
+
+function buildAuthEmail(item) {
+  return String(item.email || item.account || item.username || item.login || item.source_email || '');
+}
+
+function buildAuthExpiry(item) {
+  return item.expires_at || item.expiresAt || item.expiry || item.expiration || (item.oauth && item.oauth.expires_at) || null;
+}
+
+function buildAuthHasCredential(item) {
+  return Boolean(item.has_credential || item.has_access_token || item.access_token || item.refresh_token
+    || (item.oauth && (item.oauth.access_token || item.oauth.refresh_token)));
+}
+
+function buildAuthDateValue(value) {
+  if (value == null || value === '') return null;
+  if (typeof value === 'number' || /^\d+(\.\d+)?$/.test(String(value))) {
+    const number = Number(value);
+    return new Date(number < 1e12 ? number * 1000 : number);
+  }
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
+function buildAuthStatus(item) {
+  const explicit = String(item.status || item.state || '').toLowerCase();
+  if (item.error || ['invalid', 'failed', 'error', 'revoked'].includes(explicit)) return 'invalid';
+  const expiry = buildAuthDateValue(buildAuthExpiry(item));
+  if (explicit === 'expired' || (expiry && expiry.getTime() <= Date.now())) return 'expired';
+  if (expiry && expiry.getTime() <= Date.now() + 7 * 24 * 60 * 60 * 1000) return 'expiring';
+  if (['active', 'valid', 'ready', 'ok'].includes(explicit)) return 'active';
+  return buildAuthHasCredential(item) ? 'active' : 'invalid';
+}
+
+function buildAuthStatusBadge(item) {
+  const status = buildAuthStatus(item);
+  const labels = {
+    active: tr('account.buildAuth.statusActive', null, '有效'),
+    expiring: tr('account.buildAuth.statusExpiring', null, '即将过期'),
+    expired: tr('account.buildAuth.statusExpired', null, '已过期'),
+    invalid: tr('account.buildAuth.statusInvalid', null, '异常'),
+  };
+  const cls = status === 'active' ? 'active' : (status === 'expiring' ? 'cooling' : (status === 'expired' ? 'failed' : 'invalid'));
+  return `<span class="badge badge-${cls}">${xh(labels[status])}</span>`;
+}
+
+function buildAuthFilteredAccounts() {
+  const query = buildAuthQuery.trim().toLowerCase();
+  return buildAuthAccounts.filter(item => {
+    if (buildAuthStatusFilter !== 'all' && buildAuthStatus(item) !== buildAuthStatusFilter) return false;
+    const hasCredential = buildAuthHasCredential(item);
+    const hasRefreshToken = Boolean(item.has_refresh_token || item.refresh_token || (item.oauth && item.oauth.refresh_token));
+    const hasIdToken = Boolean(item.has_id_token || item.id_token || (item.oauth && item.oauth.id_token));
+    if (buildAuthRefreshFilter === 'refreshable' && !hasRefreshToken) return false;
+    if (buildAuthRefreshFilter === 'access_only' && (!hasCredential || hasRefreshToken)) return false;
+    if (buildAuthIdTokenFilter === 'present' && !hasIdToken) return false;
+    if (buildAuthIdTokenFilter === 'missing' && hasIdToken) return false;
+    if (!query) return true;
+    return [
+    buildAuthSourceId(item), buildAuthEmail(item), buildAuthStatus(item), item.label, item.error,
+    ].some(value => String(value || '').toLowerCase().includes(query));
+  });
+}
+
+function deriveBuildAuthSummary() {
+  const active = buildAuthAccounts.filter(item => ['active', 'expiring'].includes(buildAuthStatus(item))).length;
+  const expired = buildAuthAccounts.filter(item => buildAuthStatus(item) === 'expired').length;
+  const sources = new Set(buildAuthAccounts.map(buildAuthSourceId).filter(Boolean)).size;
+  const source = buildAuthSummary || {};
+  return {
+    total: Number(firstDefined(source.total, source.count, buildAuthAccounts.length)),
+    active: Number(firstDefined(source.active, source.valid, active)),
+    expired: Number(firstDefined(source.expired, expired)),
+    sources: Number(firstDefined(source.sources, source.source_count, source.sso_sources, sources)),
+  };
+}
+
+function firstDefined() {
+  for (let i = 0; i < arguments.length; i += 1) {
+    if (arguments[i] != null) return arguments[i];
+  }
+  return undefined;
+}
+
+async function loadBuildAuthPool(notify = false) {
+  try {
+    const [accountData, summaryData] = await Promise.all([
+      _api('GET', '/grok-build/accounts?page=1&page_size=5000'),
+      _api('GET', '/grok-build/summary').catch(() => ({})),
+    ]);
+    buildAuthSummary = summaryData && (summaryData.summary || summaryData.data || summaryData) || {};
+    const firstPage = normalizeBuildAuthAccounts(accountData);
+    const listSummary = accountData && (accountData.summary || accountData.meta) || {};
+    const total = Number(firstDefined(listSummary.total, accountData && accountData.total, buildAuthSummary.total, firstPage.length));
+    const pageCount = Math.max(1, Math.ceil(total / 5000));
+    const remainingRequests = [];
+    for (let page = 2; page <= pageCount; page += 1) {
+      remainingRequests.push(_api('GET', `/grok-build/accounts?page=${page}&page_size=5000`));
+    }
+    const remainingPages = await Promise.all(remainingRequests);
+    const merged = firstPage.concat(...remainingPages.map(normalizeBuildAuthAccounts));
+    const unique = new Map();
+    merged.forEach((item, index) => unique.set(buildAuthSourceId(item) || `__row_${index}`, item));
+    buildAuthAccounts = [...unique.values()];
+    buildAuthLoadError = null;
+    renderBuildAuthPool();
+    if (notify) showToast(tr('account.buildAuth.refreshDone', null, 'Build OAuth 号池已刷新'), 'success');
+  } catch (e) {
+    buildAuthLoadError = e;
+    renderBuildAuthPool();
+    if (notify) showToast(`${tr('account.buildAuth.loadFailed', null, 'Build OAuth 号池加载失败')}: ${e.message}`, 'error');
+  }
+}
+
+function renderBuildAuthPool() {
+  const tbody = document.getElementById('build-auth-tbody');
+  if (!tbody) return;
+  const summary = deriveBuildAuthSummary();
+  $('build-auth-count', summary.total);
+  $('build-auth-stat-total', summary.total);
+  $('build-auth-stat-active', summary.active);
+  $('build-auth-stat-expired', summary.expired);
+  $('build-auth-stat-sources', summary.sources);
+  if (buildAuthLoadError) {
+    tbody.innerHTML = `<tr><td colspan="8" class="empty-state">${xh(tr('account.buildAuth.loadFailed', null, 'Build OAuth 号池加载失败'))}: ${xh(buildAuthLoadError.message || buildAuthLoadError)}</td></tr>`;
+    renderBuildAuthPagination(0, 1);
+    updateBuildAuthSelectionControls([]);
+    return;
+  }
+  pruneBuildAuthSelection();
+  const filtered = buildAuthFilteredAccounts();
+  const pages = Math.max(1, Math.ceil(filtered.length / BUILD_AUTH_PAGE_SIZE));
+  if (buildAuthPage > pages) buildAuthPage = pages;
+  const items = filtered.slice((buildAuthPage - 1) * BUILD_AUTH_PAGE_SIZE, buildAuthPage * BUILD_AUTH_PAGE_SIZE);
+  tbody.innerHTML = items.length
+    ? items.map(buildAuthRowHtml).join('')
+    : `<tr><td colspan="8" class="empty-state">${xh((buildAuthQuery || buildAuthStatusFilter !== 'all' || buildAuthRefreshFilter !== 'all' || buildAuthIdTokenFilter !== 'all') ? tr('account.buildAuth.noMatch', null, '没有符合筛选条件的凭证。') : tr('account.buildAuth.empty', null, '暂无 Build OAuth 凭证。'))}</td></tr>`;
+  renderBuildAuthPagination(filtered.length, pages);
+  updateBuildAuthSelectionControls(items);
+  renderBuildAuthTaskProgress();
+}
+
+function renderBuildAuthPagination(total, pages) {
+  $('build-auth-page', `${total ? buildAuthPage : 0} / ${pages}`);
+  const prev = document.getElementById('build-auth-prev');
+  const next = document.getElementById('build-auth-next');
+  if (prev) prev.disabled = buildAuthPage <= 1;
+  if (next) next.disabled = buildAuthPage >= pages;
+}
+
+function pruneBuildAuthSelection() {
+  const ids = new Set(buildAuthAccounts.map(buildAuthSourceId).filter(Boolean));
+  selectedBuildAuth.forEach(id => { if (!ids.has(id)) selectedBuildAuth.delete(id); });
+}
+
+function currentBuildAuthPageItems() {
+  const filtered = buildAuthFilteredAccounts();
+  return filtered.slice((buildAuthPage - 1) * BUILD_AUTH_PAGE_SIZE, buildAuthPage * BUILD_AUTH_PAGE_SIZE);
+}
+
+function updateBuildAuthSelectionControls(pageItems = currentBuildAuthPageItems()) {
+  const pageIds = pageItems.map(buildAuthSourceId).filter(Boolean);
+  const selectedOnPage = pageIds.filter(id => selectedBuildAuth.has(id)).length;
+  const all = document.getElementById('build-auth-cb-all');
+  if (all) {
+    all.checked = Boolean(pageIds.length) && selectedOnPage === pageIds.length;
+    all.indeterminate = selectedOnPage > 0 && selectedOnPage < pageIds.length;
+  }
+  $('build-auth-selection-count', tr('account.buildAuth.selectedCount', { n: selectedBuildAuth.size }, `已选 ${selectedBuildAuth.size}`));
+  ['build-auth-clear-btn', 'build-auth-refresh-selected', 'build-auth-delete-selected'].forEach(id => {
+    const button = document.getElementById(id);
+    if (button) button.disabled = selectedBuildAuth.size === 0 || Boolean(buildAuthConvertTaskId);
+  });
+}
+
+function toggleBuildAuthRow(input) {
+  const sourceId = input && input.dataset.sourceId;
+  if (!sourceId) return;
+  input.checked ? selectedBuildAuth.add(sourceId) : selectedBuildAuth.delete(sourceId);
+  updateBuildAuthSelectionControls();
+}
+
+function toggleBuildAuthPageSelection(checked) {
+  currentBuildAuthPageItems().forEach(item => {
+    const sourceId = buildAuthSourceId(item);
+    if (!sourceId) return;
+    checked ? selectedBuildAuth.add(sourceId) : selectedBuildAuth.delete(sourceId);
+  });
+  renderBuildAuthPool();
+}
+
+function selectBuildAuthPage() {
+  toggleBuildAuthPageSelection(true);
+}
+
+function selectAllFilteredBuildAuth() {
+  buildAuthFilteredAccounts().forEach(item => {
+    const sourceId = buildAuthSourceId(item);
+    if (sourceId) selectedBuildAuth.add(sourceId);
+  });
+  renderBuildAuthPool();
+}
+
+function clearBuildAuthSelection() {
+  selectedBuildAuth.clear();
+  renderBuildAuthPool();
+}
+
+function filterBuildAuthStatus(status) {
+  buildAuthStatusFilter = status || 'all';
+  buildAuthPage = 1;
+  renderBuildAuthPool();
+}
+
+function filterBuildAuthRefresh(value) {
+  buildAuthRefreshFilter = value || 'all';
+  buildAuthPage = 1;
+  renderBuildAuthPool();
+}
+
+function filterBuildAuthIdToken(value) {
+  buildAuthIdTokenFilter = value || 'all';
+  buildAuthPage = 1;
+  renderBuildAuthPool();
+}
+
+function resetBuildAuthFilters() {
+  buildAuthStatusFilter = 'all';
+  buildAuthRefreshFilter = 'all';
+  buildAuthIdTokenFilter = 'all';
+  buildAuthQuery = '';
+  ['build-auth-status-filter', 'build-auth-refresh-filter', 'build-auth-id-token-filter'].forEach(id => {
+    const select = document.getElementById(id);
+    if (select) select.value = 'all';
+  });
+  const search = document.getElementById('build-auth-search');
+  if (search) search.value = '';
+  buildAuthPage = 1;
+  renderBuildAuthPool();
+}
+
+function exportFilteredBuildAuth() {
+  const metadata = buildAuthFilteredAccounts().map(item => ({
+    source_id: buildAuthSourceId(item),
+    email: buildAuthEmail(item),
+    status: buildAuthStatus(item),
+    expires_at: buildAuthExpiry(item) || null,
+    updated_at: item.updated_at || item.updatedAt || item.created_at || item.createdAt || null,
+  }));
+  const blob = new Blob([JSON.stringify({ exported_at: new Date().toISOString(), total: metadata.length, accounts: metadata }, null, 2)], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = `grok-build-oauth-metadata-${new Date().toISOString().slice(0, 10)}.json`;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+  showToast(tr('account.buildAuth.exportDone', { n: metadata.length }, `已导出 ${metadata.length} 条元数据`), 'success');
+}
+
+function buildAuthProgressCounts(task) {
+  const source = task && typeof task === 'object'
+    ? Object.assign(
+        {},
+        task,
+        task.summary && typeof task.summary === 'object' ? task.summary : {},
+        task.result && typeof task.result === 'object' ? task.result : {},
+        task.progress && typeof task.progress === 'object' ? task.progress : {},
+      )
+    : {};
+  const succeeded = Number(firstDefined(source.succeeded, source.converted, source.success, source.ok, 0)) || 0;
+  const failed = Number(firstDefined(source.failed, source.fail, 0)) || 0;
+  const skipped = Number(firstDefined(source.skipped, source.skip, 0)) || 0;
+  const total = Number(firstDefined(source.total, source.requested, 0)) || 0;
+  const reportedPending = firstDefined(source.pending, source.queued);
+  return {
+    pending: reportedPending == null ? Math.max(0, total - succeeded - failed - skipped) : Number(reportedPending) || 0,
+    succeeded,
+    failed,
+    skipped,
+  };
+}
+
+function setBuildAuthTaskProgress(kind, task) {
+  buildAuthTaskProgress = { kind, ...buildAuthProgressCounts(task) };
+  renderBuildAuthTaskProgress();
+}
+
+function renderBuildAuthTaskProgress() {
+  const panel = document.getElementById('build-auth-progress');
+  if (!panel) return;
+  panel.classList.toggle('show', Boolean(buildAuthTaskProgress));
+  if (!buildAuthTaskProgress) return;
+  const kindLabel = buildAuthTaskProgress.kind === 'refresh'
+    ? tr('account.buildAuth.refreshProgress', null, '批量刷新进度')
+    : tr('account.buildAuth.convertProgress', null, '转换任务进度');
+  $('build-auth-progress-title', kindLabel);
+  $('build-auth-progress-pending', buildAuthTaskProgress.pending);
+  $('build-auth-progress-succeeded', buildAuthTaskProgress.succeeded);
+  $('build-auth-progress-failed', buildAuthTaskProgress.failed);
+  $('build-auth-progress-skipped', buildAuthTaskProgress.skipped);
+}
+
+function buildAuthRowHtml(item) {
+  const sourceId = buildAuthSourceId(item);
+  const email = buildAuthEmail(item) || '-';
+  const expiry = buildAuthDateValue(buildAuthExpiry(item));
+  const updated = buildAuthDateValue(item.updated_at || item.updatedAt || item.created_at || item.createdAt);
+  const refreshing = refreshingBuildAuth.has(sourceId);
+  const credential = buildAuthHasCredential(item)
+    ? `<span class="badge badge-active">${xh(tr('account.buildAuth.credentialSaved', null, '已保存'))}</span>`
+    : `<span class="badge badge-invalid">${xh(tr('account.buildAuth.credentialMissing', null, '缺失'))}</span>`;
+  return `<tr>
+    <td><input type="checkbox" class="build-auth-row-cb" data-source-id="${xe(sourceId)}" ${selectedBuildAuth.has(sourceId) ? 'checked' : ''} onchange="toggleBuildAuthRow(this)"></td>
+    <td class="build-auth-source" title="${xe(sourceId)}"><span class="tok">${xh(sourceId || '-')}</span></td>
+    <td class="build-auth-email" title="${xe(email)}">${xh(email)}</td>
+    <td>${buildAuthStatusBadge(item)}</td>
+    <td class="build-auth-token">${credential}</td>
+    <td style="font-size:12px;color:#837b70">${xh(expiry ? expiry.toLocaleString() : '-')}</td>
+    <td style="font-size:12px;color:#91897d">${xh(updated ? updated.toLocaleString() : '-')}</td>
+    <td><div class="row-actions">
+      <button type="button" onclick="refreshBuildAuthAccount('${xe(sourceId)}')" class="row-icon-btn${refreshing ? ' is-loading' : ''}" data-tip="${xe(tr('account.buildAuth.refreshOne', null, '刷新凭证'))}" aria-label="${xe(tr('account.buildAuth.refreshOne', null, '刷新凭证'))}" ${refreshing ? 'disabled' : ''}>
+        <svg viewBox="0 0 24 24" stroke-width="1.8"><path d="M20 11a8 8 0 0 0-14.6-4.6"/><path d="M4 4v5h5"/><path d="M4 13a8 8 0 0 0 14.6 4.6"/><path d="M20 20v-5h-5"/></svg>
+      </button>
+      <button type="button" onclick="deleteBuildAuthAccount('${xe(sourceId)}')" class="row-icon-btn row-icon-danger" data-tip="${xe(tr('account.actionDelete', null, '删除'))}" aria-label="${xe(tr('account.actionDelete', null, '删除'))}">
+        <svg viewBox="0 0 24 24" stroke-width="1.8"><path d="M5 7h14"/><path d="M9 7V4h6v3"/><path d="M8 10v7"/><path d="M12 10v7"/><path d="M16 10v7"/><path d="M7 7l1 13h8l1-13"/></svg>
+      </button>
+    </div></td>
+  </tr>`;
+}
+
+function searchBuildAuth(value) {
+  buildAuthQuery = value || '';
+  buildAuthPage = 1;
+  renderBuildAuthPool();
+}
+
+function prevBuildAuthPage() {
+  if (buildAuthPage <= 1) return;
+  buildAuthPage -= 1;
+  renderBuildAuthPool();
+}
+
+function nextBuildAuthPage() {
+  const pages = Math.max(1, Math.ceil(buildAuthFilteredAccounts().length / BUILD_AUTH_PAGE_SIZE));
+  if (buildAuthPage >= pages) return;
+  buildAuthPage += 1;
+  renderBuildAuthPool();
+}
+
+async function refreshBuildAuthAccount(sourceId) {
+  if (!sourceId || refreshingBuildAuth.has(sourceId)) return;
+  refreshingBuildAuth.add(sourceId);
+  renderBuildAuthPool();
+  try {
+    await _api('POST', `/grok-build/accounts/${encodeURIComponent(sourceId)}/refresh`);
+    showToast(tr('account.buildAuth.refreshOneDone', null, 'Build OAuth 凭证已刷新'), 'success');
+    await loadBuildAuthPool();
+  } catch (e) {
+    showToast(`${tr('account.buildAuth.refreshOneFailed', null, '凭证刷新失败')}: ${e.message}`, 'error');
+  } finally {
+    refreshingBuildAuth.delete(sourceId);
+    renderBuildAuthPool();
+  }
+}
+
+function refreshSelectedBuildAuth() {
+  const sourceIds = [...selectedBuildAuth];
+  if (!sourceIds.length || buildAuthConvertTaskId) return;
+  openConfirm(
+    tr('account.buildAuth.refreshSelectedTitle', null, '批量刷新 Build OAuth'),
+    tr('account.buildAuth.refreshSelectedBody', { n: sourceIds.length }, `刷新选中的 <b>${sourceIds.length}</b> 个 Build OAuth 凭证？`),
+    async () => {
+      const button = document.getElementById('build-auth-convert-btn');
+      try {
+        if (button) button.disabled = true;
+        buildAuthConvertTaskId = 'starting';
+        updateBuildAuthSelectionControls();
+        setBuildAuthTaskProgress('refresh', { pending: sourceIds.length });
+        const response = await _api('POST', '/grok-build/accounts/refresh', { source_ids: sourceIds });
+        const taskId = response.task_id || response.taskId || (response.task && (response.task.id || response.task.task_id));
+        if (!taskId) throw new Error(tr('account.buildAuth.taskMissing', null, '服务端未返回任务 ID'));
+        buildAuthConvertTaskId = String(taskId);
+        updateBuildAuthSelectionControls();
+        const result = await pollBuildAuthConvert(buildAuthConvertTaskId, 'refresh');
+        const succeeded = firstDefined(result.succeeded, result.success, result.ok, 0);
+        const failed = firstDefined(result.failed, result.fail, 0);
+        showToast(tr('account.buildAuth.refreshSelectedDone', { succeeded, failed }, `批量刷新完成：成功 ${succeeded}，失败 ${failed}`), failed ? 'error' : 'success');
+        await loadBuildAuthPool();
+      } catch (e) {
+        showToast(`${tr('account.buildAuth.refreshSelectedFailed', null, '批量刷新失败')}: ${e.message}`, 'error');
+      } finally {
+        buildAuthConvertTaskId = '';
+        if (button) button.disabled = false;
+        updateBuildAuthSelectionControls();
+      }
+    },
+  );
+}
+
+function deleteSelectedBuildAuth() {
+  const sourceIds = [...selectedBuildAuth];
+  if (!sourceIds.length || buildAuthConvertTaskId) return;
+  openConfirm(
+    tr('account.buildAuth.deleteSelectedTitle', null, '批量删除 Build OAuth'),
+    tr('account.buildAuth.deleteSelectedBody', { n: sourceIds.length }, `确认删除选中的 <b>${sourceIds.length}</b> 个 Build OAuth 凭证？`),
+    async () => {
+      try {
+        const result = await _api('POST', '/grok-build/accounts/delete', { source_ids: sourceIds });
+        const deletedIds = Array.isArray(result.deleted) ? result.deleted : sourceIds;
+        const deleted = Number(firstDefined(result.deleted_count, result.succeeded, result.ok, deletedIds.length)) || 0;
+        deletedIds.forEach(id => selectedBuildAuth.delete(id));
+        showToast(tr('account.buildAuth.deleteSelectedDone', { n: deleted }, `已删除 ${deleted} 个 Build OAuth 凭证`), 'success');
+        await loadBuildAuthPool();
+      } catch (e) {
+        showToast(`${tr('account.buildAuth.deleteSelectedFailed', null, '批量删除失败')}: ${e.message}`, 'error');
+      }
+    },
+  );
+}
+
+function deleteBuildAuthAccount(sourceId) {
+  if (!sourceId) return;
+  openConfirm(
+    tr('account.buildAuth.deleteTitle', null, '删除 Build OAuth 凭证'),
+    tr('account.buildAuth.deleteBody', { id: `<code>${xh(sourceId)}</code>` }, `确认删除来源 <code>${xh(sourceId)}</code> 的 Build OAuth 凭证？`),
+    async () => {
+      try {
+        await _api('DELETE', `/grok-build/accounts/${encodeURIComponent(sourceId)}`);
+        showToast(tr('account.buildAuth.deleteDone', null, 'Build OAuth 凭证已删除'), 'success');
+        await loadBuildAuthPool();
+      } catch (e) {
+        showToast(`${tr('account.deleteFailed', null, '删除失败')}: ${e.message}`, 'error');
+      }
+    },
+  );
+}
+
+function buildAuthTaskFinished(status) {
+  return ['completed', 'complete', 'done', 'success', 'succeeded', 'failed', 'error', 'cancelled', 'canceled'].includes(String(status || '').toLowerCase());
+}
+
+async function pollBuildAuthConvert(taskId, kind = 'convert') {
+  for (;;) {
+    await new Promise(resolve => setTimeout(resolve, 1200));
+    const task = await _api('GET', `/grok-build/tasks/${encodeURIComponent(taskId)}`);
+    setBuildAuthTaskProgress(kind, task);
+    const status = task.status || (task.task && task.task.status);
+    if (!buildAuthTaskFinished(status)) continue;
+    const result = task.result || task.summary || (task.task && (task.task.result || task.task.summary)) || task;
+    if (['failed', 'error', 'cancelled', 'canceled'].includes(String(status).toLowerCase())) {
+      throw new Error(task.error || task.message || result.error || status);
+    }
+    return result;
+  }
+}
+
+async function convertBuildAuthPool() {
+  if (buildAuthConvertTaskId) return;
+  const limitEl = document.getElementById('build-auth-limit');
+  const forceEl = document.getElementById('build-auth-force');
+  const button = document.getElementById('build-auth-convert-btn');
+  const parsedLimit = Number.parseInt(limitEl && limitEl.value, 10);
+  const limit = Number.isFinite(parsedLimit) && parsedLimit >= 0 ? parsedLimit : 10;
+  if (limitEl) limitEl.value = String(limit);
+  try {
+    if (button) button.disabled = true;
+    buildAuthConvertTaskId = 'starting';
+    updateBuildAuthSelectionControls();
+    setBuildAuthTaskProgress('convert', { pending: limit });
+    showToast(limit === 0
+      ? tr('account.buildAuth.convertStartingAll', null, '正在转换全部 Grok SSO 账户…')
+      : tr('account.buildAuth.convertStarting', { n: limit }, `正在转换最多 ${limit} 个 Grok SSO 账户…`), 'info');
+    const response = await _api('POST', '/grok-build/convert', { limit, force: Boolean(forceEl && forceEl.checked) });
+    const taskId = response.task_id || response.taskId || (response.task && (response.task.id || response.task.task_id));
+    if (!taskId) throw new Error(tr('account.buildAuth.taskMissing', null, '服务端未返回转换任务 ID'));
+    buildAuthConvertTaskId = String(taskId);
+    updateBuildAuthSelectionControls();
+    const result = await pollBuildAuthConvert(buildAuthConvertTaskId, 'convert');
+    const converted = firstDefined(result.succeeded, result.converted, result.created, result.success, result.ok, 0);
+    const failed = firstDefined(result.failed, result.fail, 0);
+    showToast(tr('account.buildAuth.convertDone', { converted, failed }, `转换完成：成功 ${converted}，失败 ${failed}`), failed ? 'error' : 'success');
+    await loadBuildAuthPool();
+  } catch (e) {
+    showToast(`${tr('account.buildAuth.convertFailed', null, 'Grok SSO → Build OAuth 转换失败')}: ${e.message}`, 'error');
+  } finally {
+    buildAuthConvertTaskId = '';
+    if (button) button.disabled = false;
+    updateBuildAuthSelectionControls();
+  }
 }
 
 async function loadGptAccounts() {

@@ -3810,6 +3810,65 @@ def push_sso_to_api(new_tokens: list[str]) -> None:
         print(f"[Warn] 推送 API 失败: {exc}")
 
 
+def _grok_build_oauth_settings() -> dict[str, Any]:
+    try:
+        section = load_config().get("grok_build", {})
+    except Exception:
+        section = {}
+    if not isinstance(section, dict):
+        section = {}
+    try:
+        delay_sec = max(0.0, float(section.get("delay_sec", 0) or 0))
+    except (TypeError, ValueError):
+        delay_sec = 0.0
+    try:
+        poll_timeout_sec = max(30.0, float(section.get("poll_timeout_sec", 90) or 90))
+    except (TypeError, ValueError):
+        poll_timeout_sec = 90.0
+    proxy = str(
+        section.get("oauth_proxy")
+        or section.get("proxy")
+        or os.getenv("MAINTAINER_PROXY")
+        or ""
+    ).strip()
+    return {
+        "enabled": as_bool(section.get("auto_oauth_after_register", True), default=True),
+        "required": as_bool(section.get("required", False), default=False),
+        "delay_sec": delay_sec,
+        "poll_timeout_sec": poll_timeout_sec,
+        "proxy": proxy,
+    }
+
+
+def authorize_registered_sso_for_grok_build(tokens: list[str]) -> list[dict[str, Any]]:
+    settings = _grok_build_oauth_settings()
+    normalized = _merge_tokens([], [str(token).strip() for token in tokens])
+    if not settings["enabled"] or not normalized:
+        return []
+
+    from .grok_build_oauth import authorize_sso_accounts
+
+    print(f"[*] 开始为 {len(normalized)} 个新注册账号顺序生成 Grok Build OAuth 凭证...")
+    try:
+        results = authorize_sso_accounts(
+            normalized,
+            delay_sec=settings["delay_sec"],
+            required=settings["required"],
+            proxy=settings["proxy"] or None,
+            poll_timeout_sec=settings["poll_timeout_sec"],
+            logger=run_logger,
+        )
+    except Exception as exc:
+        if settings["required"]:
+            raise
+        print(f"[Warn] Grok Build OAuth 批处理失败: {type(exc).__name__}")
+        if run_logger:
+            run_logger.warning("Grok Build OAuth 批处理失败: %s", type(exc).__name__)
+        return []
+    print(f"[*] Grok Build OAuth 完成: {len(results)}/{len(normalized)}")
+    return results
+
+
 def run_single_registration(output_path: Path, extract_numbers: bool = False) -> dict[str, str]:
     open_signup_page()
     email, dev_token = fill_email_and_submit()
@@ -4081,9 +4140,14 @@ def run_batch(
                 time.sleep(2)
 
     finally:
+        oauth_error: BaseException | None = None
         if collected_sso and push_to_api:
             print(f"\n[*] 注册完成，推送 {len(collected_sso)} 个 token 到 API...")
             push_sso_to_api(collected_sso)
+            try:
+                authorize_registered_sso_for_grok_build(collected_sso)
+            except BaseException as exc:  # preserve cleanup before required failure
+                oauth_error = exc
 
         stop_browser()
         _emit(
@@ -4094,6 +4158,8 @@ def run_batch(
                 "last_error": failed_rounds[-1] if failed_rounds else "",
             },
         )
+        if oauth_error is not None:
+            raise oauth_error
 
     return collected_sso
 
@@ -4553,6 +4619,7 @@ def run_batch_parallel(
         orch_logger.info("并发注册完成，父进程统一推送 %d 个 token 到 API", len(all_tokens))
         set_config_path(config_path_str)
         push_sso_to_api(all_tokens)
+        authorize_registered_sso_for_grok_build(all_tokens)
 
     return all_tokens
 

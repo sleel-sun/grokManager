@@ -221,14 +221,24 @@
         <div class="card-body">
           <form id="maintainer-form" class="form-grid">
             <div class="field">
+              <label for="email-provider">邮箱来源</label>
+              <select class="select" id="email-provider" name="email_provider">
+                <option value="worker">临时邮箱 Worker</option>
+                <option value="hotmail">Hotmail / Outlook</option>
+              </select>
+              <small>Hotmail 模式读取四段凭证文件：邮箱----密码----ClientID----refresh_token。</small>
+            </div>
+
+            <div id="worker-email-fields" class="form-grid">
+            <div class="field">
               <label for="worker-domain">邮箱 Worker 域名</label>
-              <input class="input" id="worker-domain" name="email_worker_domain" placeholder="mail.example.com" autocomplete="off" required>
+              <input class="input" id="worker-domain" name="email_worker_domain" placeholder="mail.example.com" autocomplete="off">
               <small>只填域名，不要带 https://。对应 maintainer 配置里的 email.worker_domain。</small>
             </div>
 
             <div class="field">
               <label for="email-domains">可用邮箱域名</label>
-              <input class="input" id="email-domains" name="email_domains" placeholder="example.com, mail.example.com" autocomplete="off" required>
+              <input class="input" id="email-domains" name="email_domains" placeholder="example.com, mail.example.com" autocomplete="off">
               <small>多个域名用英文逗号分隔。</small>
             </div>
 
@@ -236,6 +246,20 @@
               <label for="email-admin-password">邮箱 Worker 管理密码</label>
               <input class="input" id="email-admin-password" name="email_admin_password" type="password" autocomplete="off">
               <small id="password-hint">会保存到本机运行时配置文件；已保存后可留空沿用，不会在状态接口和日志尾部返回。</small>
+            </div>
+            </div>
+
+            <div id="hotmail-email-fields" class="form-grid" hidden>
+              <div class="field">
+                <label for="hotmail-credentials-file">Hotmail 凭证文件</label>
+                <input class="input" id="hotmail-credentials-file" placeholder="data/maintainer/mail_credentials.txt" autocomplete="off">
+                <small>相对路径按项目根目录解析；容器部署建议放在 data/maintainer 下。</small>
+              </div>
+              <div class="field">
+                <label for="hotmail-max-aliases">每个主邮箱最大地址数</label>
+                <input class="input" id="hotmail-max-aliases" type="number" min="1" max="1000" value="5">
+                <small>包含主邮箱、成功/失败别名及当前运行占用的别名。</small>
+              </div>
             </div>
 
             <div class="inline">
@@ -258,6 +282,15 @@
               <label for="workers">并发 worker 数</label>
               <input class="input" id="workers" name="workers" type="number" min="1" value="1" required>
               <small>同时起多少个浏览器子进程（1 为顺序运行）。workers × 注册数量 = 本次任务总注册数。无上限，但每个 worker 大约要 0.5-1GB 内存 + 1 个 Chromium 进程，请按机器实际容量调；运行后查看「实际并发 worker」状态卡 / orchestrator 日志确认 spawn 数。</small>
+            </div>
+
+            <div class="field">
+              <label>Grok Build OAuth</label>
+              <div class="switch-row">
+                <label class="check"><input id="grok-build-auto-oauth" type="checkbox" checked> 注册后自动铸造 Build OAuth</label>
+                <label class="check"><input id="grok-build-required" type="checkbox"> OAuth 失败时任务失败</label>
+              </div>
+              <small>使用新注册账号的 SSO 走纯 HTTP Device Flow，写入 data/grok_auth.json。</small>
             </div>
 
             <div class="field">
@@ -571,6 +604,7 @@ function renderStatus(data) {
 
 function renderSavedConfig(data) {
   if (!data || typeof data !== 'object') return;
+  document.getElementById('email-provider').value = data.email_provider || 'worker';
   document.getElementById('worker-domain').value = data.email_worker_domain || '';
   document.getElementById('email-domains').value = Array.isArray(data.email_domains)
     ? data.email_domains.join(', ')
@@ -582,6 +616,13 @@ function renderSavedConfig(data) {
   passwordHint.textContent = data.has_email_admin_password
     ? '已保存 Worker 管理密码；留空会沿用已保存值，输入新密码会覆盖。'
     : '会保存到本机运行时配置文件；不会在状态接口和日志尾部返回。';
+  document.getElementById('hotmail-credentials-file').value = data.hotmail_credentials_file || '';
+  const maxAliases = Number(data.hotmail_max_aliases_per_account);
+  document.getElementById('hotmail-max-aliases').value = Number.isFinite(maxAliases) && maxAliases >= 1
+    ? Math.floor(maxAliases)
+    : 5;
+  document.getElementById('grok-build-auto-oauth').checked = data.grok_build_auto_oauth_after_register !== false;
+  document.getElementById('grok-build-required').checked = !!data.grok_build_required;
   const savedCount = Number(data.count);
   if (Number.isFinite(savedCount) && savedCount >= 1) {
     document.getElementById('count').value = savedCount;
@@ -624,6 +665,14 @@ function renderSavedConfig(data) {
     document.getElementById('turnstile-solver-poll-sec').value = Math.floor(solverPoll);
   }
   refreshBrowserModeHint();
+  refreshEmailProviderFields();
+}
+
+function refreshEmailProviderFields() {
+  const provider = document.getElementById('email-provider').value;
+  const hotmail = ['hotmail', 'outlook', 'outlookmail'].includes(provider);
+  document.getElementById('worker-email-fields').hidden = hotmail;
+  document.getElementById('hotmail-email-fields').hidden = !hotmail;
 }
 
 async function refreshStatus() {
@@ -672,9 +721,14 @@ function readPayload() {
   const payload = {
     count,
     workers,
+    email_provider: document.getElementById('email-provider').value,
     email_worker_domain: document.getElementById('worker-domain').value.trim(),
     email_domains: document.getElementById('email-domains').value.split(',').map((item) => item.trim()).filter(Boolean),
     email_admin_password: document.getElementById('email-admin-password').value,
+    hotmail_credentials_file: document.getElementById('hotmail-credentials-file').value.trim(),
+    hotmail_max_aliases_per_account: clampPositiveInt(document.getElementById('hotmail-max-aliases').value, 5),
+    grok_build_auto_oauth_after_register: document.getElementById('grok-build-auto-oauth').checked,
+    grok_build_required: document.getElementById('grok-build-required').checked,
     pool: document.getElementById('pool').value,
     headless: document.getElementById('headless').checked,
     use_xvfb: document.getElementById('use-xvfb').checked,
@@ -689,6 +743,7 @@ function readPayload() {
     gpt_fixed_password: document.getElementById('gpt-fixed-password').value,
   };
   refreshBrowserModeHint();
+  refreshEmailProviderFields();
   return payload;
 }
 
@@ -964,6 +1019,8 @@ document.getElementById('workers').addEventListener('input', () => {
 ['headless', 'use-xvfb'].forEach((id) => {
   document.getElementById(id).addEventListener('change', () => refreshBrowserModeHint());
 });
+document.getElementById('email-provider').addEventListener('change', refreshEmailProviderFields);
+refreshEmailProviderFields();
 
 (async () => {
   await waitI18n();

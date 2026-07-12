@@ -3,21 +3,30 @@ from __future__ import annotations
 from email import policy
 from email.parser import Parser
 import html
+import hashlib
+import imaplib
 import logging
+import os
+from pathlib import Path
 import random
 import re
+import secrets
 import string
+import tempfile
 import time
 from typing import Any
+from email.utils import parsedate_to_datetime
 
 import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
-from .settings import as_bool, load_config, pick_conf
+from .settings import as_bool, load_config, pick_conf, project_root
 
 
 _temp_email_cache: dict[str, str] = {}
+_hotmail_sessions: dict[str, dict[str, str]] = {}
+_hotmail_alias_counts: dict[str, int] = {}
 _EMAIL_RE = re.compile(r"[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}", re.IGNORECASE)
 _RECIPIENT_FIELD_NAMES = {
     "address",
@@ -81,6 +90,9 @@ _CODE_SEPARATOR_RE = re.compile(r"[\s\-‐‑‒–—―ー]+")
 
 def get_email_and_token() -> tuple[str | None, str | None]:
     conf = load_config()
+    provider = str(pick_conf(conf, "email", "provider", default="worker") or "worker").lower()
+    if provider in {"hotmail", "outlook", "outlookmail"}:
+        return create_hotmail_alias(conf)
 
     worker_domain = str(pick_conf(conf, "email", "worker_domain", default="") or "")
     admin_password = str(pick_conf(conf, "email", "admin_password", default="") or "")
@@ -120,6 +132,9 @@ def get_email_and_token() -> tuple[str | None, str | None]:
 
 def get_oai_code(dev_token: str, email: str, timeout: int = 120) -> str | None:
     conf = load_config()
+    provider = str(pick_conf(conf, "email", "provider", default="worker") or "worker").lower()
+    if provider in {"hotmail", "outlook", "outlookmail"}:
+        return wait_for_hotmail_code(conf, dev_token, email, timeout)
     worker_domain = str(pick_conf(conf, "email", "worker_domain", default="") or "")
     admin_password = str(pick_conf(conf, "email", "admin_password", default="") or "")
     verify_ssl = as_bool(
@@ -145,6 +160,228 @@ def get_oai_code(dev_token: str, email: str, timeout: int = 120) -> str | None:
         code = code.replace("-", "")
 
     return code
+
+
+def _project_path(value: str) -> Path:
+    path = Path(value).expanduser()
+    return path.resolve() if path.is_absolute() else (project_root() / path).resolve()
+
+
+def load_hotmail_credentials(path: Path) -> list[dict[str, str]]:
+    credentials = []
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError as exc:
+        logging.getLogger("grok_maintainer").error("读取 Hotmail 凭证失败: %s", exc)
+        return []
+    for line in lines:
+        raw = line.strip()
+        if not raw or raw.startswith("#"):
+            continue
+        parts = raw.split("----", 3)
+        if len(parts) != 4 or not all(part.strip() for part in parts):
+            logging.getLogger("grok_maintainer").warning("忽略无效 Hotmail 凭证行")
+            continue
+        email, password, client_id, refresh_token = (part.strip() for part in parts)
+        credentials.append({
+            "email": email,
+            "password": password,
+            "client_id": client_id,
+            "refresh_token": refresh_token,
+        })
+    return credentials
+
+
+def create_hotmail_alias(conf: dict[str, Any]) -> tuple[str | None, str | None]:
+    path = _project_path(str(pick_conf(conf, "email", "credentials_file", default="mail_credentials.txt")))
+    credentials = load_hotmail_credentials(path)
+    max_aliases = max(1, int(pick_conf(conf, "email", "max_aliases_per_account", default=5) or 5))
+    available = [
+        item
+        for item in credentials
+        if _hotmail_reserved_alias_count(path, item["email"]) < max_aliases
+    ]
+    if not available:
+        logging.getLogger("grok_maintainer").error("没有可用的 Hotmail 凭证")
+        return None, None
+    alias_mode = str(pick_conf(conf, "email", "alias_mode", default="plus") or "plus").lower()
+    length = max(4, int(pick_conf(conf, "email", "alias_random_length", default=8) or 8))
+    random.shuffle(available)
+    for credential in available:
+        base_email = credential["email"]
+        used = _hotmail_reserved_alias_count(path, base_email)
+        candidates = [base_email] if used == 0 else []
+        if alias_mode not in {"none", "original"}:
+            local, domain = base_email.rsplit("@", 1)
+            candidates.extend(
+                f"{local}+{''.join(random.choices(string.ascii_lowercase + string.digits, k=length))}@{domain}"
+                for _ in range(100)
+            )
+        for alias in candidates:
+            if not _reserve_hotmail_alias(path, base_email, alias):
+                continue
+            token = "hotmail:" + secrets.token_urlsafe(24)
+            _hotmail_sessions[token] = {**credential, "credentials_file": str(path)}
+            _hotmail_alias_counts[base_email.lower()] = used + 1
+            return alias, token
+    logging.getLogger("grok_maintainer").error("Hotmail alias 预留失败或已耗尽")
+    return None, None
+
+
+def _hotmail_reservation_dir(path: Path) -> Path:
+    return path.parent / f".{path.name}.aliases"
+
+
+def _hotmail_base_key(base_email: str) -> str:
+    return hashlib.sha256(base_email.strip().lower().encode()).hexdigest()[:20]
+
+
+def _hotmail_reserved_alias_count(path: Path, base_email: str) -> int:
+    directory = _hotmail_reservation_dir(path)
+    if not directory.exists():
+        return 0
+    return sum(1 for _ in directory.glob(f"{_hotmail_base_key(base_email)}-*.reserve"))
+
+
+def _reserve_hotmail_alias(path: Path, base_email: str, alias: str) -> bool:
+    directory = _hotmail_reservation_dir(path)
+    directory.mkdir(parents=True, exist_ok=True)
+    try:
+        os.chmod(directory, 0o700)
+    except OSError:
+        pass
+    alias_key = hashlib.sha256(alias.strip().lower().encode()).hexdigest()[:20]
+    reservation = directory / f"{_hotmail_base_key(base_email)}-{alias_key}.reserve"
+    try:
+        fd = os.open(reservation, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+    except FileExistsError:
+        return False
+    with os.fdopen(fd, "w", encoding="utf-8") as handle:
+        handle.write(alias.strip().lower() + "\n")
+    return True
+
+
+def refresh_hotmail_access_token(credential: dict[str, str]) -> str:
+    response = requests.post(
+        "https://login.microsoftonline.com/common/oauth2/v2.0/token",
+        data={
+            "client_id": credential["client_id"],
+            "grant_type": "refresh_token",
+            "refresh_token": credential["refresh_token"],
+            "scope": "https://outlook.office.com/IMAP.AccessAsUser.All offline_access",
+        },
+        timeout=30,
+    )
+    response.raise_for_status()
+    payload = response.json()
+    access_token = str(payload.get("access_token") or "")
+    if not access_token:
+        raise RuntimeError("Microsoft OAuth response missing access_token")
+    rotated = str(payload.get("refresh_token") or "").strip()
+    if rotated and rotated != credential["refresh_token"]:
+        rewrite_hotmail_refresh_token(Path(credential["credentials_file"]), credential, rotated)
+        credential["refresh_token"] = rotated
+    return access_token
+
+
+def rewrite_hotmail_refresh_token(path: Path, credential: dict[str, str], refresh_token: str) -> None:
+    lines = path.read_text(encoding="utf-8").splitlines(keepends=True)
+    replacement = "----".join((credential["email"], credential["password"], credential["client_id"], refresh_token))
+    updated = False
+    output = []
+    for line in lines:
+        parts = line.rstrip("\r\n").split("----", 3)
+        if not updated and len(parts) == 4 and parts[0].strip().lower() == credential["email"].lower() and parts[2].strip() == credential["client_id"]:
+            output.append(replacement + ("\n" if line.endswith(("\n", "\r")) else ""))
+            updated = True
+        else:
+            output.append(line)
+    if not updated:
+        raise RuntimeError("Hotmail credential disappeared before refresh token update")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, temp_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.writelines(output)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.chmod(temp_name, 0o600)
+        os.replace(temp_name, path)
+        os.chmod(path, 0o600)
+    finally:
+        if os.path.exists(temp_name):
+            os.unlink(temp_name)
+
+
+def fetch_hotmail_messages(credential: dict[str, str], host: str, last_n: int) -> list[dict[str, Any]]:
+    access_token = refresh_hotmail_access_token(credential)
+    auth = f"user={credential['email']}\x01auth=Bearer {access_token}\x01\x01".encode()
+    client = imaplib.IMAP4_SSL(host)
+    try:
+        client.authenticate("XOAUTH2", lambda _challenge: auth)
+        client.select("INBOX", readonly=True)
+        status, data = client.search(None, "ALL")
+        if status != "OK" or not data:
+            return []
+        ids = data[0].split()[-max(1, last_n):]
+        rows = []
+        for message_id in reversed(ids):
+            status, payload = client.fetch(message_id, "(RFC822)")
+            if status != "OK":
+                continue
+            raw = next((part[1] for part in payload if isinstance(part, tuple) and isinstance(part[1], bytes)), b"")
+            if raw:
+                rows.append({"id": message_id.decode(errors="replace"), "raw": raw.decode("utf-8", errors="replace")})
+        return rows
+    finally:
+        try:
+            client.logout()
+        except Exception:
+            pass
+
+
+def wait_for_hotmail_code(conf: dict[str, Any], dev_token: str, target_email: str, timeout: int) -> str | None:
+    credential = _hotmail_sessions.get(dev_token)
+    if not credential:
+        logging.getLogger("grok_maintainer").error("Hotmail 邮箱会话不存在或已过期")
+        return None
+    hosts = pick_conf(conf, "email", "imap_hosts", default=["outlook.office365.com", "imap-mail.outlook.com"])
+    if isinstance(hosts, str):
+        hosts = [item.strip() for item in hosts.split(",") if item.strip()]
+    hosts = list(hosts or ["outlook.office365.com"])
+    poll_interval = max(0.1, float(pick_conf(conf, "email", "poll_interval", default=3) or 3))
+    last_n = max(1, int(pick_conf(conf, "email", "imap_last_n", default=20) or 20))
+    recent_seconds = max(0, int(pick_conf(conf, "email", "recent_seconds", default=600) or 600))
+    require_match = as_bool(pick_conf(conf, "email", "require_recipient_match", default=True), True)
+    deadline = time.time() + timeout
+    first_attempt = True
+    while first_attempt or time.time() <= deadline:
+        first_attempt = False
+        for host in hosts:
+            try:
+                for mail in fetch_hotmail_messages(credential, str(host), last_n):
+                    if recent_seconds and not hotmail_mail_is_recent(mail, recent_seconds):
+                        continue
+                    code = extract_verification_code_from_mail(mail, target_email if require_match else "")
+                    if code:
+                        return code.replace("-", "")
+            except Exception as exc:
+                logging.getLogger("grok_maintainer").warning("Hotmail IMAP 拉取失败 (%s): %s", host, exc)
+        if time.time() < deadline:
+            time.sleep(poll_interval)
+    return None
+
+
+def hotmail_mail_is_recent(mail: dict[str, Any], recent_seconds: int) -> bool:
+    raw = raw_mail_source(mail)
+    try:
+        message = Parser(policy=policy.default).parsestr(raw)
+        stamp = message.get("date")
+        if not stamp:
+            return True
+        return time.time() - parsedate_to_datetime(str(stamp)).timestamp() <= recent_seconds
+    except Exception:
+        return True
 
 
 def wait_for_verification_code(

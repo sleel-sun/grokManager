@@ -3,7 +3,6 @@
 import asyncio
 import codecs
 import json
-import os
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, AsyncGenerator
@@ -436,24 +435,15 @@ def sanitize_responses_payload(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def _auth_path() -> Path:
-    configured = get_config().get_str("grok_build.auth_file", "data/grok_auth.json")
-    path = Path(configured).expanduser()
-    if not path.is_absolute():
-        path = Path.cwd() / path
-    return path
+    from app.maintainer.grok_build_oauth import pool_path
+
+    return pool_path()
 
 
 def _parse_expiry(value: Any) -> float:
-    if isinstance(value, (int, float)):
-        stamp = float(value)
-        return stamp / 1000 if stamp > 10_000_000_000 else stamp
-    text = str(value or "").strip()
-    if not text:
-        return 0.0
-    try:
-        return datetime.fromisoformat(text.replace("Z", "+00:00")).timestamp()
-    except ValueError:
-        return 0.0
+    from app.maintainer.grok_build_oauth import parse_pool_expiry
+
+    return parse_pool_expiry(value)
 
 
 def _select_entry(
@@ -481,14 +471,16 @@ def _select_entry(
 def _load_document(
     preferred_key: str | None = None,
 ) -> tuple[Path, dict[str, Any], str, dict[str, Any]]:
+    from app.maintainer.grok_build_oauth import read_pool_document
+
     path = _auth_path()
     try:
-        document = json.loads(path.read_text(encoding="utf-8"))
+        document = read_pool_document()
     except FileNotFoundError as exc:
         raise UpstreamError(
             f"Grok Build auth file not found: {path}", status=503
         ) from exc
-    except (OSError, json.JSONDecodeError) as exc:
+    except (OSError, ValueError) as exc:
         raise UpstreamError("Invalid Grok Build auth file", status=503) from exc
     if not isinstance(document, dict):
         raise UpstreamError("Invalid Grok Build auth document", status=503)
@@ -497,9 +489,11 @@ def _load_document(
 
 
 def _credential_count() -> int:
+    from app.maintainer.grok_build_oauth import read_pool_document
+
     try:
-        document = json.loads(_auth_path().read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+        document = read_pool_document()
+    except (OSError, ValueError):
         return 1
     if not isinstance(document, dict):
         return 1
@@ -522,16 +516,11 @@ def _save_document(
     entry_key: str,
     entry: dict[str, Any],
 ) -> None:
-    if entry_key == "default" and ("key" in document or "access_token" in document):
-        updated = entry
-    else:
-        document[entry_key] = entry
-        updated = document
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(json.dumps(updated, ensure_ascii=True, indent=2), encoding="utf-8")
-    os.chmod(tmp, 0o600)
-    os.replace(tmp, path)
+    from app.maintainer.grok_build_oauth import save_pool_entry
+
+    # Merge the refreshed entry into the latest on-disk document instead of
+    # replacing it with the stale snapshot loaded before the network request.
+    save_pool_entry(entry_key, entry, require_existing=True)
 
 
 async def _refresh(entry: dict[str, Any]) -> dict[str, Any]:

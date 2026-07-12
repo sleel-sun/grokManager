@@ -167,6 +167,7 @@ from .assets import router as _assets_router  # noqa: E402
 from .cache import router as _cache_router  # noqa: E402
 from .gpt_accounts import router as _gpt_accounts_router  # noqa: E402
 from .gpt_image_accounts import router as _gpt_image_accounts_router  # noqa: E402
+from .grok_build_accounts import router as _grok_build_accounts_router  # noqa: E402
 from .maintainer import router as _maintainer_router  # noqa: E402
 from .model_permissions import router as _model_permissions_router  # noqa: E402
 from .users import router as _users_router  # noqa: E402
@@ -177,6 +178,7 @@ router.include_router(_assets_router)
 router.include_router(_cache_router)
 router.include_router(_gpt_accounts_router)
 router.include_router(_gpt_image_accounts_router)
+router.include_router(_grok_build_accounts_router)
 router.include_router(_maintainer_router)
 router.include_router(_model_permissions_router)
 router.include_router(_users_router)

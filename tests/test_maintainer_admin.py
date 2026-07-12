@@ -51,6 +51,33 @@ class MaintainerAdminTests(unittest.TestCase):
         self.assertEqual(cfg["web"]["turnstile_solver_api_key"], "solver-secret")
         self.assertEqual(cfg["web"]["turnstile_solver_timeout_sec"], 180)
         self.assertEqual(cfg["web"]["turnstile_solver_poll_sec"], 4)
+        self.assertTrue(cfg["grok_build"]["auto_oauth_after_register"])
+
+    def test_hotmail_runtime_config_does_not_require_worker_fields(self) -> None:
+        req = MaintainerRunRequest(
+            count=1,
+            email_provider="hotmail",
+            hotmail_credentials_file="data/maintainer/mail_credentials.txt",
+            hotmail_max_aliases_per_account=7,
+            grok_build_auto_oauth_after_register=True,
+            grok_build_required=False,
+        )
+
+        cfg = build_runtime_config(
+            req,
+            base_url="http://127.0.0.1:8000",
+            admin_token="admin-secret",
+        )
+
+        self.assertEqual(cfg["email"]["provider"], "hotmail")
+        self.assertEqual(
+            cfg["email"]["credentials_file"],
+            "data/maintainer/mail_credentials.txt",
+        )
+        self.assertEqual(cfg["email"]["max_aliases_per_account"], 7)
+        self.assertEqual(cfg["email"]["worker_domain"], "")
+        self.assertEqual(cfg["email"]["admin_password"], "")
+        self.assertTrue(cfg["grok_build"]["auto_oauth_after_register"])
 
     def test_build_gpt_runtime_config_targets_gpt_accounts_endpoint(self) -> None:
         req = MaintainerRunRequest(
@@ -138,6 +165,31 @@ class MaintainerAdminTests(unittest.TestCase):
         self.assertTrue(response["has_gpt_fixed_password"])
         self.assertNotIn("solver-secret", str(response))
         self.assertNotIn("gpt-password-secret", str(response))
+
+    def test_saved_config_response_exposes_hotmail_path_not_credentials(self) -> None:
+        response = build_saved_config_response(
+            {
+                "email": {
+                    "provider": "hotmail",
+                    "credentials_file": "data/maintainer/mail_credentials.txt",
+                    "max_aliases_per_account": 9,
+                },
+                "grok_build": {
+                    "auto_oauth_after_register": True,
+                    "required": False,
+                    "delay_sec": 2,
+                },
+            }
+        )
+
+        self.assertEqual(response["email_provider"], "hotmail")
+        self.assertEqual(
+            response["hotmail_credentials_file"],
+            "data/maintainer/mail_credentials.txt",
+        )
+        self.assertEqual(response["hotmail_max_aliases_per_account"], 9)
+        self.assertTrue(response["grok_build_auto_oauth_after_register"])
+        self.assertEqual(response["grok_build_delay_sec"], 2.0)
 
     def test_env_for_request_passes_manual_turnstile_wait(self) -> None:
         req = MaintainerRunRequest(

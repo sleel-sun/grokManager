@@ -21,9 +21,17 @@ wait_for_api() {
 }
 
 has_required_config() {
-  test -n "${MAINTAINER_EMAIL_WORKER_DOMAIN:-}" \
-    && test -n "${MAINTAINER_EMAIL_DOMAINS:-}" \
-    && test -n "${MAINTAINER_EMAIL_ADMIN_PASSWORD:-}"
+  provider="${MAINTAINER_EMAIL_PROVIDER:-worker}"
+  case "$provider" in
+    hotmail|outlook|outlookmail)
+      test -n "${MAINTAINER_HOTMAIL_CREDENTIALS_FILE:-}"
+      ;;
+    *)
+      test -n "${MAINTAINER_EMAIL_WORKER_DOMAIN:-}" \
+        && test -n "${MAINTAINER_EMAIL_DOMAINS:-}" \
+        && test -n "${MAINTAINER_EMAIL_ADMIN_PASSWORD:-}"
+      ;;
+  esac
 }
 
 bootstrap_env_from_saved_config() {
@@ -51,6 +59,7 @@ except Exception as exc:
 email = saved.get("email") if isinstance(saved.get("email"), dict) else {}
 api = saved.get("api") if isinstance(saved.get("api"), dict) else {}
 web = saved.get("web") if isinstance(saved.get("web"), dict) else {}
+grok_build = saved.get("grok_build") if isinstance(saved.get("grok_build"), dict) else {}
 
 exports: dict[str, str] = {}
 
@@ -71,6 +80,13 @@ def export_if_empty(key: str, value: object) -> None:
 export_if_empty("MAINTAINER_EMAIL_WORKER_DOMAIN", email.get("worker_domain"))
 export_if_empty("MAINTAINER_EMAIL_DOMAINS", email.get("email_domains"))
 export_if_empty("MAINTAINER_EMAIL_ADMIN_PASSWORD", email.get("admin_password"))
+export_if_empty("MAINTAINER_EMAIL_PROVIDER", email.get("provider"))
+export_if_empty("MAINTAINER_HOTMAIL_CREDENTIALS_FILE", email.get("credentials_file"))
+export_if_empty("MAINTAINER_HOTMAIL_MAX_ALIASES", email.get("max_aliases_per_account"))
+export_if_empty("MAINTAINER_GROK_BUILD_AUTO_OAUTH", grok_build.get("auto_oauth_after_register"))
+export_if_empty("MAINTAINER_GROK_BUILD_REQUIRED", grok_build.get("required"))
+export_if_empty("MAINTAINER_GROK_BUILD_DELAY_SEC", grok_build.get("delay_sec"))
+export_if_empty("MAINTAINER_GROK_BUILD_POLL_TIMEOUT_SEC", grok_build.get("poll_timeout_sec"))
 export_if_empty("MAINTAINER_API_TOKEN", api.get("token"))
 export_if_empty("MAINTAINER_POOL", api.get("pool"))
 export_if_empty("MAINTAINER_VERIFY_SSL", email.get("verify_ssl"))
@@ -80,10 +96,16 @@ export_if_empty("MAINTAINER_TURNSTILE_SOLVER_TIMEOUT_SEC", web.get("turnstile_so
 export_if_empty("MAINTAINER_TURNSTILE_SOLVER_POLL_SEC", web.get("turnstile_solver_poll_sec"))
 export_if_empty("MAINTAINER_TURNSTILE_MANUAL_WAIT_SEC", web.get("turnstile_manual_wait_sec"))
 
-worker_domain = os.getenv("MAINTAINER_EMAIL_WORKER_DOMAIN", "").strip() or exports.get("MAINTAINER_EMAIL_WORKER_DOMAIN", "")
-email_domains = os.getenv("MAINTAINER_EMAIL_DOMAINS", "").strip() or exports.get("MAINTAINER_EMAIL_DOMAINS", "")
-admin_password = os.getenv("MAINTAINER_EMAIL_ADMIN_PASSWORD", "") or exports.get("MAINTAINER_EMAIL_ADMIN_PASSWORD", "")
-if not (worker_domain and email_domains and admin_password):
+provider = os.getenv("MAINTAINER_EMAIL_PROVIDER", "").strip() or exports.get("MAINTAINER_EMAIL_PROVIDER", "worker")
+if provider in {"hotmail", "outlook", "outlookmail"}:
+    credentials = os.getenv("MAINTAINER_HOTMAIL_CREDENTIALS_FILE", "").strip() or exports.get("MAINTAINER_HOTMAIL_CREDENTIALS_FILE", "")
+    valid = bool(credentials)
+else:
+    worker_domain = os.getenv("MAINTAINER_EMAIL_WORKER_DOMAIN", "").strip() or exports.get("MAINTAINER_EMAIL_WORKER_DOMAIN", "")
+    email_domains = os.getenv("MAINTAINER_EMAIL_DOMAINS", "").strip() or exports.get("MAINTAINER_EMAIL_DOMAINS", "")
+    admin_password = os.getenv("MAINTAINER_EMAIL_ADMIN_PASSWORD", "") or exports.get("MAINTAINER_EMAIL_ADMIN_PASSWORD", "")
+    valid = bool(worker_domain and email_domains and admin_password)
+if not valid:
     print("[maintainer] saved WebUI config is missing required email fields", file=sys.stderr)
     sys.exit(1)
 
@@ -137,10 +159,13 @@ payload = {
         "workers": int(os.getenv("MAINTAINER_WORKERS", "1") or "1"),
     },
     "email": {
+        "provider": os.getenv("MAINTAINER_EMAIL_PROVIDER", "worker").strip().lower() or "worker",
         "worker_domain": os.getenv("MAINTAINER_EMAIL_WORKER_DOMAIN", "").strip(),
         "email_domains": domains,
         "admin_password": os.getenv("MAINTAINER_EMAIL_ADMIN_PASSWORD", ""),
         "verify_ssl": os.getenv("MAINTAINER_VERIFY_SSL", "true").lower() in {"1", "true", "yes", "on"},
+        "credentials_file": os.getenv("MAINTAINER_HOTMAIL_CREDENTIALS_FILE", "").strip(),
+        "max_aliases_per_account": int(os.getenv("MAINTAINER_HOTMAIL_MAX_ALIASES", "5") or "5"),
     },
     "api": {
         "endpoint": os.getenv("MAINTAINER_API_ENDPOINT", "").strip(),
@@ -155,6 +180,12 @@ payload = {
         "turnstile_solver_api_key": solver_api_key,
         "turnstile_solver_timeout_sec": solver_timeout,
         "turnstile_solver_poll_sec": solver_poll,
+    },
+    "grok_build": {
+        "auto_oauth_after_register": os.getenv("MAINTAINER_GROK_BUILD_AUTO_OAUTH", "true").lower() in {"1", "true", "yes", "on"},
+        "required": os.getenv("MAINTAINER_GROK_BUILD_REQUIRED", "false").lower() in {"1", "true", "yes", "on"},
+        "delay_sec": float(os.getenv("MAINTAINER_GROK_BUILD_DELAY_SEC", "0") or "0"),
+        "poll_timeout_sec": float(os.getenv("MAINTAINER_GROK_BUILD_POLL_TIMEOUT_SEC", "90") or "90"),
     },
 }
 with open(path, "w", encoding="utf-8") as handle:
@@ -180,7 +211,7 @@ export MAINTAINER_TURNSTILE_SOLVER_POLL_SEC="${MAINTAINER_TURNSTILE_SOLVER_POLL_
 bootstrap_env_from_saved_config
 
 while ! has_required_config; do
-  echo "[maintainer] missing MAINTAINER_EMAIL_WORKER_DOMAIN, MAINTAINER_EMAIL_DOMAINS, or MAINTAINER_EMAIL_ADMIN_PASSWORD; retrying"
+  echo "[maintainer] missing required email provider configuration; retrying"
   sleep 30
 done
 
