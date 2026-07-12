@@ -1,6 +1,7 @@
 import hashlib
 import logging
 import unittest
+from contextlib import nullcontext
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -10,6 +11,8 @@ from app.maintainer.grok_build_oauth import (
     authorize_sso_account,
     authorize_sso_accounts,
     poll_device_token,
+    refresh_due_pool_credentials,
+    refresh_pool_credential,
     source_id_for_sso,
 )
 
@@ -157,6 +160,92 @@ class GrokBuildOAuthTests(unittest.TestCase):
         self.assertEqual(label, "http://user:***@proxy.example:8080")
         self.assertNotIn("alice", label)
         self.assertNotIn("secret", label)
+
+    def test_refresh_pool_credential_rotates_tokens_with_cas(self) -> None:
+        session = MagicMock()
+        session.__enter__.return_value = session
+        session.__exit__.return_value = None
+        session.post.return_value = SimpleNamespace(
+            status_code=200,
+            json=lambda: {
+                "access_token": "new-access",
+                "refresh_token": "new-refresh",
+                "expires_in": 7200,
+            },
+        )
+        entry = {
+            "key": "old-access",
+            "access_token": "old-access",
+            "refresh_token": "old-refresh",
+            "expires_at": 1000,
+            "email": "build@example.com",
+        }
+        with (
+            patch(
+                "app.maintainer.grok_build_oauth.pool_entries",
+                return_value={"sso:a": entry},
+            ),
+            patch(
+                "app.maintainer.grok_build_oauth.requests.Session",
+                return_value=session,
+            ),
+            patch(
+                "app.maintainer.grok_build_oauth._oauth_config",
+                return_value=("client", "https://auth/token", "scope"),
+            ),
+            patch(
+                "app.maintainer.grok_build_oauth.pool_entry_refresh_lock",
+                return_value=nullcontext(),
+            ),
+            patch(
+                "app.maintainer.grok_build_oauth.time.time",
+                side_effect=[2000.0, 2001.0],
+            ),
+            patch(
+                "app.maintainer.grok_build_oauth.save_pool_entry_if_refresh_token",
+                return_value=True,
+            ) as save_mock,
+        ):
+            result = refresh_pool_credential("sso:a")
+
+        saved = save_mock.call_args.args[1]
+        self.assertEqual(saved["access_token"], "new-access")
+        self.assertEqual(saved["refresh_token"], "new-refresh")
+        self.assertEqual(saved["expires_at"], 9200.0)
+        self.assertEqual(saved["updated_at"], 2001.0)
+        self.assertEqual(saved["email"], "build@example.com")
+        self.assertEqual(save_mock.call_args.args[2], "old-refresh")
+        self.assertFalse(result["conflict"])
+
+    def test_auto_refresh_only_selects_due_refreshable_entries(self) -> None:
+        entries = {
+            "sso:due": {
+                "access_token": "a",
+                "refresh_token": "r",
+                "expires_at": 1100,
+            },
+            "sso:later": {
+                "access_token": "b",
+                "refresh_token": "r2",
+                "expires_at": 5000,
+            },
+            "sso:no-refresh": {"access_token": "c", "expires_at": 1050},
+        }
+        with (
+            patch("app.maintainer.grok_build_oauth.pool_entries", return_value=entries),
+            patch("app.maintainer.grok_build_oauth.time.time", return_value=1000),
+            patch(
+                "app.maintainer.grok_build_oauth.refresh_pool_credential",
+                return_value={"conflict": False},
+            ) as refresh_mock,
+        ):
+            result = refresh_due_pool_credentials(refresh_before_expiry_s=300)
+
+        refresh_mock.assert_called_once_with("sso:due")
+        self.assertEqual(result["checked"], 3)
+        self.assertEqual(result["eligible"], 2)
+        self.assertEqual(result["due"], 1)
+        self.assertEqual(result["refreshed"], 1)
 
 
 if __name__ == "__main__":

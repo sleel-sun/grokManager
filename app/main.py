@@ -15,6 +15,7 @@ import asyncio
 import os
 import platform
 import sys
+import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -331,6 +332,57 @@ async def lifespan(app: FastAPI):
                 interval = 300.0
             await asyncio.sleep(interval)
 
+    async def _grok_build_oauth_refresh_loop() -> None:
+        from app.maintainer.grok_build_oauth import refresh_due_pool_credentials
+
+        next_refresh_at = 0.0
+        while True:
+            try:
+                await _config.load()
+                enabled = _config.get_bool("grok_build.auto_refresh_enabled", True)
+                interval = max(
+                    30.0,
+                    _config.get_float("grok_build.auto_refresh_interval_s", 300.0),
+                )
+                now = time.monotonic()
+                if enabled and now >= next_refresh_at:
+                    result = await asyncio.to_thread(
+                        refresh_due_pool_credentials,
+                        refresh_before_expiry_s=max(
+                            0.0,
+                            _config.get_float(
+                                "grok_build.auto_refresh_before_expiry_s", 900.0
+                            ),
+                        ),
+                        limit=0,
+                    )
+                    if result["due"] or result["failed"]:
+                        logger.info(
+                            "Grok Build OAuth auto refresh completed: checked={} "
+                            "eligible={} due={} selected={} refreshed={} failed={} "
+                            "conflicts={} deferred={} skipped={}",
+                            result["checked"],
+                            result["eligible"],
+                            result["due"],
+                            result["selected"],
+                            result["refreshed"],
+                            result["failed"],
+                            result["conflicts"],
+                            result["deferred"],
+                            result["skipped"],
+                        )
+                    next_refresh_at = time.monotonic() + interval
+                elif not enabled:
+                    next_refresh_at = 0.0
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.debug(
+                    "Grok Build OAuth auto refresh loop error: error={}", exc
+                )
+                interval = 300.0
+            await asyncio.sleep(min(30.0, interval))
+
     console_reset_task = (
         asyncio.create_task(_console_reset_loop(), name="console-quota-reset")
         if is_leader else None
@@ -346,6 +398,13 @@ async def lifespan(app: FastAPI):
     gpt_remote_refresh_task = (
         asyncio.create_task(_gpt_remote_refresh_loop(), name="gpt-remote-refresh")
         if is_leader else None
+    )
+    grok_build_oauth_refresh_task = (
+        asyncio.create_task(
+            _grok_build_oauth_refresh_loop(), name="grok-build-oauth-refresh"
+        )
+        if is_leader
+        else None
     )
 
     logger.info("application startup completed")
@@ -366,6 +425,7 @@ async def lifespan(app: FastAPI):
         console_recovery_task,
         gpt_timeout_repair_task,
         gpt_remote_refresh_task,
+        grok_build_oauth_refresh_task,
     ):
         if task is None:
             continue

@@ -79,6 +79,7 @@ composer_fast_upstream_model = "grok-4.3"
 
 [grok_build]
 auth_file = "data/grok_auth.json"
+job_dir = "data/grok_build_jobs"
 base_url = "https://cli-chat-proxy.grok.com/v1"
 client_version = "0.2.93"
 client_identifier = "grok-pager"
@@ -88,6 +89,9 @@ oauth_client_id = "b1a00492-073a-47ea-816f-4c329264a828"
 oauth_token_url = "https://auth.x.ai/oauth2/token"
 oauth_scope = "openid profile email offline_access grok-cli:access api:access conversations:read conversations:write"
 refresh_skew_seconds = 180
+auto_refresh_enabled = true
+auto_refresh_interval_s = 300
+auto_refresh_before_expiry_s = 900
 
 
 # ==================== 本地缓存 ====================

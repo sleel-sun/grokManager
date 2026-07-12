@@ -575,6 +575,25 @@
     }
     .build-auth-limit-label { color:#777065; font-size:11px; white-space:nowrap }
     #build-auth-status-filter { width:116px !important }
+    .build-auth-auto {
+      display:inline-flex;
+      align-items:center;
+      gap:6px;
+      min-height:32px;
+      padding:0 10px;
+      border-radius:999px;
+      background:rgba(255,255,255,.58);
+      color:#716a60;
+      font-size:11px;
+      white-space:nowrap;
+    }
+    .build-auth-auto-input {
+      width:64px !important;
+      height:30px;
+      padding:0 8px;
+      text-align:center;
+      background:rgba(255,255,255,.72);
+    }
     .build-auth-force {
       height:32px;
       padding:0 10px;
@@ -1470,6 +1489,17 @@
         <div class="build-auth-sub" data-i18n="account.buildAuth.subtitle">独立管理 Build API OAuth 凭证，可从现有 Grok SSO 账户自动转换。</div>
       </div>
       <div class="build-auth-actions">
+        <label class="build-auth-auto" data-i18n-title="account.buildAuth.autoRefreshHint" title="服务端定时刷新即将过期的凭证">
+          <input type="checkbox" id="build-auth-auto-enabled">
+          <span data-i18n="account.buildAuth.autoRefresh">自动刷新</span>
+        </label>
+        <span class="build-auth-limit-label" data-i18n="account.buildAuth.autoInterval">检查间隔（分钟）</span>
+        <input class="input build-auth-auto-input" id="build-auth-auto-interval" type="number" min="1" value="5" inputmode="numeric">
+        <span class="build-auth-limit-label" data-i18n="account.buildAuth.autoBeforeExpiry">提前刷新（分钟）</span>
+        <input class="input build-auth-auto-input" id="build-auth-auto-before" type="number" min="0" value="15" inputmode="numeric">
+        <button type="button" onclick="saveBuildAuthAutoRefreshConfig()" class="page-action-btn" id="build-auth-auto-save">
+          <span data-i18n="account.buildAuth.autoSave">保存自动刷新</span>
+        </button>
         <span class="build-auth-limit-label" data-i18n="account.buildAuth.limitLabel">转换数量（0=全部）</span>
         <input class="input build-auth-limit" id="build-auth-limit" type="number" min="0" value="10" inputmode="numeric" data-i18n-title="account.buildAuth.limitHint" title="本次转换数量，0 表示全部">
         <label class="build-auth-force" data-i18n-title="account.buildAuth.forceHint" title="重新转换已有凭证的账户">
@@ -2160,6 +2190,7 @@ function waitI18n() {
     return location.href = '/admin/login';
   load();
   loadBuildAuthPool();
+  loadBuildAuthAutoRefreshConfig();
 })();
 
 // ── API ────────────────────────────────────────────────────────────────────
@@ -2365,6 +2396,47 @@ async function loadBuildAuthPool(notify = false) {
     buildAuthLoadError = e;
     renderBuildAuthPool();
     if (notify) showToast(`${tr('account.buildAuth.loadFailed', null, 'Build OAuth 号池加载失败')}: ${e.message}`, 'error');
+  }
+}
+
+async function loadBuildAuthAutoRefreshConfig() {
+  try {
+    const data = await _api('GET', '/config');
+    const config = data && data.grok_build || {};
+    const enabled = document.getElementById('build-auth-auto-enabled');
+    const interval = document.getElementById('build-auth-auto-interval');
+    const before = document.getElementById('build-auth-auto-before');
+    if (enabled) enabled.checked = config.auto_refresh_enabled !== false;
+    if (interval) interval.value = String(Math.max(1, Math.round(Number(config.auto_refresh_interval_s || 300) / 60)));
+    if (before) before.value = String(Math.max(0, Math.round(Number(firstDefined(config.auto_refresh_before_expiry_s, 900)) / 60)));
+  } catch (e) {
+    showToast(`${tr('account.buildAuth.autoLoadFailed', null, '自动刷新配置加载失败')}: ${e.message}`, 'error');
+  }
+}
+
+async function saveBuildAuthAutoRefreshConfig() {
+  const enabled = document.getElementById('build-auth-auto-enabled');
+  const interval = document.getElementById('build-auth-auto-interval');
+  const before = document.getElementById('build-auth-auto-before');
+  const button = document.getElementById('build-auth-auto-save');
+  const intervalMinutes = Math.max(1, Number.parseInt(interval && interval.value, 10) || 5);
+  const beforeMinutes = Math.max(0, Number.parseInt(before && before.value, 10) || 0);
+  if (interval) interval.value = String(intervalMinutes);
+  if (before) before.value = String(beforeMinutes);
+  try {
+    if (button) button.disabled = true;
+    await _api('POST', '/config', {
+      grok_build: {
+        auto_refresh_enabled: Boolean(enabled && enabled.checked),
+        auto_refresh_interval_s: intervalMinutes * 60,
+        auto_refresh_before_expiry_s: beforeMinutes * 60,
+      },
+    });
+    showToast(tr('account.buildAuth.autoSaveDone', null, '自动刷新配置已保存，将在 30 秒内生效'), 'success');
+  } catch (e) {
+    showToast(`${tr('account.buildAuth.autoSaveFailed', null, '自动刷新配置保存失败')}: ${e.message}`, 'error');
+  } finally {
+    if (button) button.disabled = false;
   }
 }
 

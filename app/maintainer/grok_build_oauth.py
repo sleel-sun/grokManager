@@ -23,6 +23,9 @@ from app.platform.config.snapshot import get_config
 DEVICE_GRANT = "urn:ietf:params:oauth:grant-type:device_code"
 _DEFAULT_LOGGER = logging.getLogger(__name__)
 _POOL_THREAD_LOCK = threading.RLock()
+_POOL_ENTRY_LOCKS_GUARD = threading.Lock()
+_POOL_ENTRY_LOCKS: dict[str, threading.RLock] = {}
+_AUTO_REFRESH_RETRY_AFTER: dict[str, float] = {}
 
 
 def _oauth_config() -> tuple[str, str, str]:
@@ -258,6 +261,16 @@ def pool_file_lock(path: Path | None = None):
         yield resolved
 
 
+@contextmanager
+def pool_entry_refresh_lock(source_id: str):
+    with _POOL_ENTRY_LOCKS_GUARD:
+        thread_lock = _POOL_ENTRY_LOCKS.setdefault(source_id, threading.RLock())
+    digest = hashlib.sha256(source_id.encode("utf-8")).hexdigest()[:24]
+    lock_path = pool_path().with_name(f".{pool_path().name}.{digest}.refresh")
+    with thread_lock, _PoolFileLock(lock_path):
+        yield
+
+
 def _read_pool_document_unlocked(
     path: Path, *, missing_ok: bool = True
 ) -> dict[str, Any]:
@@ -330,6 +343,31 @@ def save_pool_entry(
             return False
         document[source_id] = dict(entry)
         _write_pool_document_unlocked(path, document)
+        return True
+
+
+def save_pool_entry_if_refresh_token(
+    source_id: str,
+    entry: dict[str, Any],
+    expected_refresh_token: str,
+) -> bool:
+    """Persist a refresh result only if no other worker rotated it first."""
+    with pool_file_lock() as path:
+        document = _read_pool_document_unlocked(path)
+        if source_id == "default" and _is_single_credential(document):
+            current = document
+        else:
+            document = _aggregate_document(document)
+            current = document.get(source_id)
+        if not isinstance(current, dict):
+            return False
+        if str(current.get("refresh_token") or "") != expected_refresh_token:
+            return False
+        if source_id == "default" and _is_single_credential(document):
+            _write_pool_document_unlocked(path, dict(entry))
+        else:
+            document[source_id] = dict(entry)
+            _write_pool_document_unlocked(path, document)
         return True
 
 
@@ -413,6 +451,131 @@ def save_pool_credential(source_id: str, tokens: dict[str, Any]) -> None:
             "updated_at": time.time(),
         },
     )
+
+
+def refresh_pool_credential(
+    source_id: str,
+    *,
+    proxy: str | None = None,
+    timeout_sec: float = 30.0,
+) -> dict[str, Any]:
+    with pool_entry_refresh_lock(source_id):
+        entry = pool_entries().get(source_id)
+        if not isinstance(entry, dict):
+            raise ValueError("Grok Build OAuth credential not found")
+        refresh_token = str(entry.get("refresh_token") or "").strip()
+        if not refresh_token:
+            raise ValueError("Grok Build OAuth credential has no refresh token")
+
+        client_id, token_url, _scope = _oauth_config()
+        with requests.Session() as session:
+            _configure_proxy(session, proxy)
+            response = session.post(
+                token_url,
+                headers={
+                    "Accept": "application/json",
+                    "Content-Type": "application/x-www-form-urlencoded",
+                },
+                data={
+                    "grant_type": "refresh_token",
+                    "client_id": client_id,
+                    "refresh_token": refresh_token,
+                },
+                timeout=max(1.0, float(timeout_sec)),
+                impersonate="chrome",
+            )
+        try:
+            payload = response.json()
+        except Exception as exc:
+            raise RuntimeError("Grok Build OAuth refresh returned invalid JSON") from exc
+        if response.status_code != 200 or not isinstance(payload, dict):
+            raise RuntimeError(
+                f"Grok Build OAuth refresh failed ({response.status_code})"
+            )
+        access_token = str(payload.get("access_token") or "").strip()
+        if not access_token:
+            raise RuntimeError("Grok Build OAuth refresh returned no access token")
+
+        refreshed = dict(entry)
+        refreshed["key"] = access_token
+        refreshed["access_token"] = access_token
+        refreshed["refresh_token"] = payload.get("refresh_token") or refresh_token
+        if payload.get("id_token"):
+            refreshed["id_token"] = payload["id_token"]
+        expires_in = max(1, int(payload.get("expires_in") or 3600))
+        refreshed["expires_at"] = time.time() + expires_in
+        refreshed["updated_at"] = time.time()
+        refreshed["email"] = (
+            _jwt_email(refreshed.get("id_token"))
+            or _jwt_email(access_token)
+            or str(entry.get("email") or "")
+        )
+        saved = save_pool_entry_if_refresh_token(source_id, refreshed, refresh_token)
+    return {
+        "source_id": source_id,
+        "updated": saved,
+        "conflict": not saved,
+        "has_refresh_token": bool(refreshed["refresh_token"]),
+        "expires_at": refreshed["expires_at"],
+    }
+
+
+def refresh_due_pool_credentials(
+    *,
+    refresh_before_expiry_s: float = 900.0,
+    limit: int = 0,
+) -> dict[str, int]:
+    now = time.time()
+    entries = pool_entries()
+    due: list[tuple[float, str]] = []
+    for source_id, entry in entries.items():
+        expiry = parse_pool_expiry(entry.get("expires_at"))
+        if (
+            str(entry.get("refresh_token") or "").strip()
+            and expiry
+            and expiry <= now + max(0.0, float(refresh_before_expiry_s))
+        ):
+            due.append((expiry, source_id))
+    due.sort()
+    ready = [
+        item
+        for item in due
+        if _AUTO_REFRESH_RETRY_AFTER.get(item[1], 0.0) <= now
+    ]
+    selected = ready if limit <= 0 else ready[:limit]
+    refreshed = failed = conflicts = 0
+    for _expiry, source_id in selected:
+        try:
+            result = refresh_pool_credential(source_id)
+        except Exception as exc:
+            failed += 1
+            _AUTO_REFRESH_RETRY_AFTER[source_id] = now + 900.0
+            _DEFAULT_LOGGER.warning(
+                "Grok Build OAuth automatic refresh failed source_id=%s error=%s",
+                source_id,
+                type(exc).__name__,
+            )
+        else:
+            _AUTO_REFRESH_RETRY_AFTER.pop(source_id, None)
+            if result["conflict"]:
+                conflicts += 1
+            else:
+                refreshed += 1
+    return {
+        "checked": len(entries),
+        "eligible": sum(
+            1
+            for entry in entries.values()
+            if str(entry.get("refresh_token") or "").strip()
+        ),
+        "due": len(due),
+        "selected": len(selected),
+        "refreshed": refreshed,
+        "failed": failed,
+        "conflicts": conflicts,
+        "deferred": len(due) - len(ready),
+        "skipped": max(0, len(ready) - len(selected)),
+    }
 
 
 def authorize_sso_account(
@@ -518,11 +681,15 @@ __all__ = [
     "parse_pool_expiry",
     "poll_device_token",
     "pool_entries",
+    "pool_entry_refresh_lock",
     "pool_file_lock",
     "pool_path",
     "read_pool_document",
+    "refresh_due_pool_credentials",
+    "refresh_pool_credential",
     "request_device_code",
     "save_pool_entry",
+    "save_pool_entry_if_refresh_token",
     "save_pool_credential",
     "source_id_for_sso",
 ]

@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+import os
+import tempfile
 import threading
 import time
 import uuid
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import orjson
@@ -21,9 +24,11 @@ from app.maintainer.grok_build_oauth import (
     delete_pool_entries,
     parse_pool_expiry,
     pool_entries,
+    refresh_pool_credential,
     source_id_for_sso,
 )
 from app.platform.errors import AppError, ErrorKind, ValidationError
+from app.platform.config.snapshot import get_config
 from app.platform.logging.logger import logger
 
 from . import get_repo
@@ -152,11 +157,71 @@ def _job_view(job: dict[str, Any]) -> dict[str, Any]:
     return {key: value for key, value in job.items() if key not in {"tokens"}}
 
 
+def _job_dir() -> Path:
+    configured = get_config().get_str(
+        "grok_build.job_dir", "data/grok_build_jobs"
+    )
+    path = Path(configured).expanduser()
+    return path if path.is_absolute() else Path.cwd() / path
+
+
+def _persist_job(task_id: str) -> None:
+    with _JOB_LOCK:
+        job = _JOBS.get(task_id)
+        if not job or "created_at" not in job:
+            return
+        payload = orjson.dumps(_job_view(dict(job)))
+    directory = _job_dir()
+    directory.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(prefix=f".{task_id}.", dir=str(directory))
+    try:
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(payload)
+        os.chmod(tmp_name, 0o600)
+        os.replace(tmp_name, directory / f"{task_id}.json")
+    finally:
+        try:
+            os.unlink(tmp_name)
+        except FileNotFoundError:
+            pass
+
+
+def _load_persisted_job(task_id: str) -> dict[str, Any] | None:
+    try:
+        payload = orjson.loads((_job_dir() / f"{task_id}.json").read_bytes())
+    except (FileNotFoundError, OSError, orjson.JSONDecodeError):
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def _prune_persisted_jobs(max_jobs: int = 100) -> None:
+    try:
+        files = sorted(
+            _job_dir().glob("*.json"),
+            key=lambda path: path.stat().st_mtime,
+        )
+    except OSError:
+        return
+    excess = max(0, len(files) - max_jobs)
+    for path in files:
+        if excess <= 0:
+            break
+        try:
+            payload = orjson.loads(path.read_bytes())
+            if payload.get("status") != "completed":
+                continue
+            path.unlink()
+            excess -= 1
+        except (OSError, orjson.JSONDecodeError, AttributeError):
+            pass
+
+
 def _update_job(task_id: str, **updates: Any) -> None:
     with _JOB_LOCK:
         job = _JOBS.get(task_id)
         if job is not None:
             job.update(updates)
+    _persist_job(task_id)
 
 
 def _run_authorization_job(task_id: str, candidates: list[tuple[str, str]]) -> None:
@@ -178,12 +243,14 @@ def _run_authorization_job(task_id: str, candidates: list[tuple[str, str]]) -> N
                 source_id,
                 type(exc).__name__,
             )
+            _persist_job(task_id)
         else:
             with _JOB_LOCK:
                 job = _JOBS[task_id]
                 job["succeeded"] += 1
                 job["pending"] -= 1
                 job["progress"] += 1
+            _persist_job(task_id)
     with _JOB_LOCK:
         job = _JOBS[task_id]
         job.update(
@@ -197,6 +264,55 @@ def _run_authorization_job(task_id: str, candidates: list[tuple[str, str]]) -> N
                 "skipped": job["skipped"],
             },
         )
+    _persist_job(task_id)
+
+
+def _run_refresh_job(task_id: str, source_ids: list[str]) -> None:
+    _update_job(task_id, status="running", started_at=int(time.time() * 1000))
+    for source_id in source_ids:
+        try:
+            result = refresh_pool_credential(source_id)
+        except Exception as exc:
+            with _JOB_LOCK:
+                job = _JOBS[task_id]
+                job["failed"] += 1
+                job["pending"] -= 1
+                job["progress"] += 1
+                job["errors"].append(
+                    {"source_id": source_id, "error": type(exc).__name__}
+                )
+            logger.warning(
+                "admin Grok Build OAuth refresh failed source_id={} error_type={}",
+                source_id,
+                type(exc).__name__,
+            )
+            _persist_job(task_id)
+        else:
+            with _JOB_LOCK:
+                job = _JOBS[task_id]
+                if result.get("conflict"):
+                    job["skipped"] += 1
+                    job["errors"].append(
+                        {"source_id": source_id, "error": "refresh_conflict"}
+                    )
+                else:
+                    job["succeeded"] += 1
+                job["pending"] -= 1
+                job["progress"] += 1
+            _persist_job(task_id)
+    with _JOB_LOCK:
+        job = _JOBS[task_id]
+        job.update(
+            status="completed",
+            completed_at=int(time.time() * 1000),
+            result={
+                "refreshed": job["succeeded"],
+                "succeeded": job["succeeded"],
+                "failed": job["failed"],
+                "skipped": job["skipped"],
+            },
+        )
+    _persist_job(task_id)
 
 
 def _start_job(
@@ -234,9 +350,47 @@ def _start_job(
                 oldest = min(completed, key=lambda key: _JOBS[key]["created_at"])
                 _JOBS.pop(oldest, None)
         _JOBS[task_id] = job
+    _persist_job(task_id)
+    _prune_persisted_jobs()
     task = asyncio.create_task(
         asyncio.to_thread(_run_authorization_job, task_id, candidates)
     )
+    _BACKGROUND_TASKS.add(task)
+    task.add_done_callback(_BACKGROUND_TASKS.discard)
+    return _job_view(job)
+
+
+def _start_refresh_job(source_ids: list[str]) -> dict[str, Any]:
+    task_id = uuid.uuid4().hex
+    job = {
+        "task_id": task_id,
+        "type": "refresh",
+        "status": "pending",
+        "scanned": len(source_ids),
+        "selected": len(source_ids),
+        "total": len(source_ids),
+        "progress": 0,
+        "pending": len(source_ids),
+        "skipped": 0,
+        "succeeded": 0,
+        "failed": 0,
+        "errors": [],
+        "created_at": int(time.time() * 1000),
+        "started_at": None,
+        "completed_at": None,
+    }
+    with _JOB_LOCK:
+        if len(_JOBS) >= 100:
+            completed = [
+                key for key, value in _JOBS.items() if value["status"] == "completed"
+            ]
+            if completed:
+                oldest = min(completed, key=lambda key: _JOBS[key]["created_at"])
+                _JOBS.pop(oldest, None)
+        _JOBS[task_id] = job
+    _persist_job(task_id)
+    _prune_persisted_jobs()
+    task = asyncio.create_task(asyncio.to_thread(_run_refresh_job, task_id, source_ids))
     _BACKGROUND_TASKS.add(task)
     task.add_done_callback(_BACKGROUND_TASKS.discard)
     return _job_view(job)
@@ -319,7 +473,6 @@ async def convert_grok_sso_accounts(
 @router.post("/accounts/refresh")
 async def refresh_grok_build_accounts(
     req: SourceIdsRequest,
-    repo: "AccountRepository" = Depends(get_repo),
 ):
     requested = list(
         dict.fromkeys(
@@ -328,28 +481,7 @@ async def refresh_grok_build_accounts(
     )
     if not requested:
         raise ValidationError("No source IDs provided", param="source_ids")
-    records = await _list_active_sso_records(repo)
-    by_source_id = {source_id_for_sso(record.token): record.token for record in records}
-    candidates = [
-        (by_source_id[source_id], source_id)
-        for source_id in requested
-        if source_id in by_source_id
-    ]
-    unmatched = [source_id for source_id in requested if source_id not in by_source_id]
-    errors = [
-        {"source_id": source_id, "error": "active_sso_not_found"}
-        for source_id in unmatched
-    ]
-    return _json(
-        _start_job(
-            candidates,
-            scanned=len(requested),
-            skipped=len(unmatched),
-            job_type="refresh",
-            errors=errors,
-        ),
-        202,
-    )
+    return _json(_start_refresh_job(requested), 202)
 
 
 @router.get("/convert/{task_id}")
@@ -358,35 +490,27 @@ async def get_grok_build_conversion(task_id: str):
     with _JOB_LOCK:
         job = _JOBS.get(task_id)
         if job is None:
-            raise AppError(
-                "Grok Build OAuth conversion task not found",
-                kind=ErrorKind.VALIDATION,
-                code="grok_build_conversion_not_found",
-                status=404,
-            )
-        payload = _job_view(job)
+            payload = None
+        else:
+            payload = _job_view(job)
+    if payload is None:
+        payload = await asyncio.to_thread(_load_persisted_job, task_id)
+    if payload is None:
+        raise AppError(
+            "Grok Build OAuth conversion task not found",
+            kind=ErrorKind.VALIDATION,
+            code="grok_build_conversion_not_found",
+            status=404,
+        )
     return _json(payload)
 
 
 @router.post("/accounts/{source_id}/refresh")
 async def refresh_grok_build_account(
     source_id: str,
-    repo: "AccountRepository" = Depends(get_repo),
 ):
-    records = await _list_active_sso_records(repo)
-    record = next(
-        (item for item in records if source_id_for_sso(item.token) == source_id),
-        None,
-    )
-    if record is None:
-        raise AppError(
-            "Matching active Grok SSO account not found",
-            kind=ErrorKind.VALIDATION,
-            code="grok_sso_account_not_found",
-            status=404,
-        )
     try:
-        result = await asyncio.to_thread(authorize_sso_account, record.token, source_id)
+        result = await asyncio.to_thread(refresh_pool_credential, source_id)
     except Exception as exc:
         logger.warning(
             "admin Grok Build OAuth refresh failed source_id={} error_type={}",
@@ -399,6 +523,13 @@ async def refresh_grok_build_account(
             code="grok_build_refresh_failed",
             status=502,
         ) from exc
+    if result.get("conflict"):
+        raise AppError(
+            "Grok Build OAuth credential changed during refresh",
+            kind=ErrorKind.VALIDATION,
+            code="grok_build_refresh_conflict",
+            status=409,
+        )
     return _json({"status": "success", **result})
 
 

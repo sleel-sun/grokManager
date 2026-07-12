@@ -14,6 +14,7 @@ from app.maintainer.grok_build_oauth import (
     delete_pool_entries,
     pool_entries,
     save_pool_entry,
+    save_pool_entry_if_refresh_token,
     save_pool_credential,
 )
 from app.products.web.admin import grok_build_accounts as admin
@@ -36,6 +37,27 @@ def _record(token: str, *, tags=None, ext=None):
 
 
 class GrokBuildPoolStorageTests(unittest.TestCase):
+    def test_refresh_cas_does_not_overwrite_rotated_credential(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "grok_auth.json"
+            with patch("app.maintainer.grok_build_oauth.pool_path", return_value=path):
+                save_pool_entry(
+                    "sso:a",
+                    {"access_token": "new-access", "refresh_token": "new-refresh"},
+                )
+
+                saved = save_pool_entry_if_refresh_token(
+                    "sso:a",
+                    {"access_token": "stale-access", "refresh_token": "stale-new"},
+                    "old-refresh",
+                )
+
+                entry = pool_entries()["sso:a"]
+
+        self.assertFalse(saved)
+        self.assertEqual(entry["access_token"], "new-access")
+        self.assertEqual(entry["refresh_token"], "new-refresh")
+
     def test_saved_credential_includes_searchable_account_metadata(self) -> None:
         claims = base64.urlsafe_b64encode(
             json.dumps({"email": "build@example.com"}).encode("utf-8")
@@ -204,56 +226,77 @@ class GrokBuildAdminTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(captured, [130, 121])
 
-    async def test_batch_refresh_selects_matching_active_sso_accounts(self) -> None:
-        matched_id = admin.source_id_for_sso("active-sso")
+    async def test_batch_refresh_uses_selected_pool_entries_directly(self) -> None:
+        matched_id = "sso:active"
         missing_id = "sso:missing"
-        repo = _Repo(
-            [
-                _record("active-sso"),
-                _record("gpt_credential", tags=["gpt"], ext={"gpt": True}),
-            ]
-        )
         captured = {}
 
-        def fake_start(
-            candidates,
-            *,
-            scanned,
-            skipped,
-            job_type="convert",
-            errors=None,
-        ):
-            captured.update(
-                candidates=candidates,
-                scanned=scanned,
-                skipped=skipped,
-                job_type=job_type,
-                errors=errors,
-            )
+        def fake_start(source_ids):
+            captured["source_ids"] = source_ids
             return {
                 "task_id": "refresh-task",
                 "status": "pending",
-                "total": len(candidates),
+                "total": len(source_ids),
                 "progress": 0,
             }
 
-        with patch.object(admin, "_start_job", side_effect=fake_start):
+        with patch.object(admin, "_start_refresh_job", side_effect=fake_start):
             response = await admin.refresh_grok_build_accounts(
                 admin.SourceIdsRequest(source_ids=[matched_id, missing_id, matched_id]),
-                repo,
             )
 
         payload = orjson.loads(response.body)
         self.assertEqual(response.status_code, 202)
-        self.assertEqual(captured["candidates"], [("active-sso", matched_id)])
-        self.assertEqual(captured["scanned"], 2)
-        self.assertEqual(captured["skipped"], 1)
-        self.assertEqual(captured["job_type"], "refresh")
-        self.assertEqual(
-            captured["errors"],
-            [{"source_id": missing_id, "error": "active_sso_not_found"}],
-        )
+        self.assertEqual(captured["source_ids"], [matched_id, missing_id])
         self.assertEqual(payload["task_id"], "refresh-task")
+
+    async def test_refresh_job_tracks_per_entry_failures(self) -> None:
+        task_id = "refresh-progress-task"
+        admin._JOBS[task_id] = {
+            "status": "pending",
+            "total": 2,
+            "progress": 0,
+            "pending": 2,
+            "skipped": 0,
+            "succeeded": 0,
+            "failed": 0,
+            "errors": [],
+        }
+        with patch.object(
+            admin,
+            "refresh_pool_credential",
+            side_effect=[{"source_id": "sso:a"}, RuntimeError("secret")],
+        ):
+            admin._run_refresh_job(task_id, ["sso:a", "sso:b"])
+
+        job = admin._JOBS.pop(task_id)
+        self.assertEqual(job["status"], "completed")
+        self.assertEqual(job["progress"], 2)
+        self.assertEqual(job["pending"], 0)
+        self.assertEqual(job["succeeded"], 1)
+        self.assertEqual(job["failed"], 1)
+        self.assertNotIn("secret", str(job))
+
+    async def test_task_status_falls_back_to_shared_job_file(self) -> None:
+        task_id = "shared-task"
+        with tempfile.TemporaryDirectory() as tmpdir, patch.object(
+            admin, "_job_dir", return_value=Path(tmpdir)
+        ):
+            admin._JOBS[task_id] = {
+                "task_id": task_id,
+                "status": "running",
+                "created_at": 1,
+                "progress": 1,
+                "total": 2,
+            }
+            admin._persist_job(task_id)
+            admin._JOBS.pop(task_id)
+
+            response = await admin.get_grok_build_conversion(task_id)
+
+        payload = orjson.loads(response.body)
+        self.assertEqual(payload["task_id"], task_id)
+        self.assertEqual(payload["progress"], 1)
 
     async def test_job_tracks_progress_and_total(self) -> None:
         task_id = "progress-task"
