@@ -1,12 +1,3 @@
-<img alt="grokManager" src="https://github.com/user-attachments/assets/037a0a6e-7986-41cc-b4af-04df612ee886" />
-
-[![Python](https://img.shields.io/badge/python-3.13%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
-[![FastAPI](https://img.shields.io/badge/FastAPI-0.119%2B-009688?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
-[![Version](https://img.shields.io/badge/version-2.0.4.rc3-111827)](pyproject.toml)
-[![License](https://img.shields.io/badge/license-MIT-16a34a)](LICENSE)
-[![English](https://img.shields.io/badge/English-2563EB?logo=bookstack&logoColor=white)](docs/README.en.md)
-
-
 # grokManager
 
 > [!NOTE]
@@ -54,72 +45,6 @@
 
 <br>
 
-## 服务架构
-
-```mermaid
-flowchart LR
-    Client["Clients\nOpenAI SDK / curl / Browser"] --> API["FastAPI App"]
-    Maintainer["Maintainer\nBrowser Automation"] --> AdminAPI["Admin Token APIs"]
-
-    subgraph Products["Products"]
-        direction TB
-        OpenAI["OpenAI APIs\n/v1/*"]
-        Anthropic["Anthropic APIs\n/v1/messages"]
-        Web["Web Products\n/admin /webui/*"]
-        AdminAPI["Token Import APIs\n/admin/api/tokens\n/v1/admin/tokens"]
-    end
-
-    subgraph Control["Control"]
-        direction TB
-        Models["Model Registry"]
-        Accounts["Account Services"]
-        Proxies["Proxy Services"]
-    end
-
-    subgraph Dataplane["Dataplane"]
-        direction TB
-        Reverse["Reverse Protocol + Transport"]
-        AccountDP["AccountDirectory"]
-        ProxyDP["Proxy Runtime"]
-    end
-
-    subgraph Platform["Platform"]
-        direction TB
-        Tokens["Token Estimation"]
-        Storage["Storage"]
-        Config["Config Snapshot"]
-        Auth["Auth"]
-        Log["Logging"]
-    end
-
-    API --> OpenAI
-    API --> Anthropic
-    API --> Web
-    API --> AdminAPI
-
-    OpenAI --> Models
-    OpenAI --> AccountDP
-    OpenAI --> ProxyDP
-    OpenAI --> Reverse
-    OpenAI --> Tokens
-    OpenAI --> Storage
-
-    Anthropic --> Models
-    Anthropic --> AccountDP
-    Anthropic --> ProxyDP
-    Anthropic --> Reverse
-    Anthropic --> Tokens
-
-    Web --> Accounts
-    Web --> Config
-    Web --> Auth
-
-    Accounts --> AccountDP
-    Proxies --> ProxyDP
-    Models --> Reverse
-```
-
-<br>
 
 ## 快速开始
 
