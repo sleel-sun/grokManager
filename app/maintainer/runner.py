@@ -2068,7 +2068,7 @@ def _type_verification_code_like_user(code: str) -> bool:
             if not code_input:
                 continue
             code_input.input(code, clear=True)
-            value = str(code_input.attr("value") or "").strip()
+            value = str(code_input.property("value") or "").strip()
             if value == code:
                 return True
         except Exception:
@@ -2125,7 +2125,7 @@ def fill_code_and_submit(email: str, dev_token: str, timeout: int = 180) -> str:
     while time.time() < deadline:
         typed_like_user = _type_verification_code_like_user(code)
         try:
-            filled = page.run_js(
+            filled = "filled" if typed_like_user else page.run_js(
                 """
 const code = String(arguments[0] || '').trim();
 

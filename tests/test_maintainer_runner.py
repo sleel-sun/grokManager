@@ -11,6 +11,7 @@ from app.maintainer.runner import (
     click_email_signup_button,
     fill_code_and_submit,
     fill_profile_and_submit,
+    _type_verification_code_like_user,
     _install_turnstile_patch,
     _profile_snapshot_indicates_submitted,
     _snapshot_has_pending_turnstile,
@@ -383,7 +384,19 @@ class MaintainerRunnerTests(unittest.TestCase):
                 "A3FF0A",
             )
 
-        self.assertEqual(mock_page.run_js.call_count, 1)
+        self.assertEqual(mock_page.run_js.call_count, 0)
+
+    def test_real_code_input_reads_live_value_property(self) -> None:
+        mock_page = MagicMock()
+        code_input = MagicMock()
+        code_input.property.return_value = "A3FF0A"
+        mock_page.ele.return_value = code_input
+
+        with patch("app.maintainer.runner.page", mock_page):
+            self.assertTrue(_type_verification_code_like_user("A3FF0A"))
+
+        code_input.input.assert_called_once_with("A3FF0A", clear=True)
+        code_input.property.assert_called_once_with("value")
 
     def test_browser_debug_port_falls_back_when_default_is_busy(self) -> None:
         with (
