@@ -7,22 +7,20 @@
 
 from typing import Any, Dict, Optional
 
-import orjson
-
-from app.platform.logging.logger import logger
-from app.platform.config.snapshot import get_config
-from app.platform.errors import UpstreamError
 from app.control.proxy.models import ProxyFeedback, ProxyFeedbackKind, ProxyScope, RequestKind
 from app.dataplane.proxy import get_proxy_runtime
-from app.dataplane.proxy.adapters.headers import build_http_headers, build_ws_headers
+from app.dataplane.proxy.adapters.headers import build_ws_headers
 from app.dataplane.reverse.protocol.xai_livekit import (
     LIVEKIT_TOKEN_URL,
     build_token_request_payload,
     build_ws_url,
 )
+from app.dataplane.reverse.transport._proxy_feedback import upstream_feedback
 from app.dataplane.reverse.transport.http import post_json
 from app.dataplane.reverse.transport.websocket import WebSocketClient, WebSocketConnection
-from app.dataplane.reverse.transport._proxy_feedback import upstream_feedback
+from app.platform.config.snapshot import get_config
+from app.platform.errors import UpstreamError
+from app.platform.logging.logger import logger
 
 
 # ------------------------------------------------------------------

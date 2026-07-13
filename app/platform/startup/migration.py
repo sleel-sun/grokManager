@@ -31,6 +31,7 @@ from loguru import logger
 from app.platform.paths import data_path
 
 if TYPE_CHECKING:
+    from app.control.account.commands import AccountPatch
     from app.control.account.repository import AccountRepository
     from app.platform.config.backends.base import ConfigBackend
 
@@ -124,7 +125,7 @@ async def _migrate_accounts(target_repo: "AccountRepository") -> None:
 async def _copy_accounts(sqlite_path: Path, target: "AccountRepository") -> int:
     """Read all accounts from the local SQLite file and write to *target*."""
     from app.control.account.backends.local import LocalAccountRepository
-    from app.control.account.commands import AccountPatch, AccountUpsert, ListAccountsQuery
+    from app.control.account.commands import AccountUpsert, ListAccountsQuery
 
     source = LocalAccountRepository(sqlite_path)
     await source.initialize()
