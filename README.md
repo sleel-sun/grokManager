@@ -273,6 +273,8 @@ uv run grokmanager-maintainer --count 5 --workers 2  # 2 个并发 worker × 每
 
 最终注册页如果出现 Turnstile，maintainer 会先尝试现有真人化点击逻辑，并把内置 `turnstilePatch/script.js` 通过 CDP 注入到新页面，避免依赖 Chrome 扩展加载。`web.turnstile_manual_wait_sec` 控制自动点击失败后的人工等待时间：`0` 表示自动模式（只有真实图形桌面默认等待 180 秒；Headless、Xvfb、无 `DISPLAY` 的 Linux 服务器默认不等待），大于 0 表示固定等待秒数；如需完全关闭人工等待，可设置环境变量 `MAINTAINER_TURNSTILE_MANUAL_WAIT_SEC=off`。
 
+容器部署默认使用 Xvfb 非 Headless Chromium，降低 Headless 浏览器直接触发入口风控的概率。若注册页显示 `Attention Required! | Cloudflare`，这是出口 IP/ASN 硬拦截而不是 Turnstile；请使用 `docker compose -f docker-compose.yml -f docker-compose.antiban.yml up -d --build` 启用同出口的 Privoxy、WARP 和 FlareSolverr。FlareSolverr 未单独设置 `MAINTAINER_FLARESOLVERR_PROXY` 时会继承 `MAINTAINER_PROXY`，避免 clearance cookie 与注册浏览器出口不一致。
+
 ### 多进程并发注册
 
 - CLI 新增 `--workers N`（`N≥1`，**无上限**；按机器内存 / CPU / 上游配额自行控制），`N>1` 时以 `multiprocessing.spawn` 拉起 **恰好 `N`** 个子进程并行注册，每个子进程独立跑 `count` 轮迭代

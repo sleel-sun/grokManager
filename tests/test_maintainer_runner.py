@@ -102,12 +102,18 @@ class MaintainerRunnerTests(unittest.TestCase):
         with (
             patch("app.maintainer.runner.page", mock_page),
             patch("app.maintainer.runner.refresh_active_page", return_value=mock_page),
-            patch("app.maintainer.runner._click_cloudflare_challenge", return_value="not-found"),
+            patch("app.maintainer.runner._prewarm_cloudflare_clearance", return_value=False),
+            patch(
+                "app.maintainer.runner._click_cloudflare_challenge",
+                return_value="not-found",
+            ) as click_mock,
             patch("app.maintainer.runner.time.time", side_effect=[0.0, 0.0, 2.0]),
             patch("app.maintainer.runner.time.sleep"),
         ):
             with self.assertRaisesRegex(RuntimeError, "Cloudflare 硬拦截"):
                 click_email_signup_button(timeout=1)
+
+        click_mock.assert_not_called()
 
     def test_click_email_signup_button_attempts_cloudflare_click(self) -> None:
         mock_page = MagicMock()
@@ -184,6 +190,38 @@ class MaintainerRunnerTests(unittest.TestCase):
         set_cookie_call = mock_page.run_cdp.call_args_list[-1]
         self.assertEqual(set_cookie_call.args[0], "Network.setCookies")
         self.assertEqual(set_cookie_call.kwargs["cookies"][0]["name"], "cf_clearance")
+
+    def test_prewarm_cloudflare_clearance_reuses_browser_proxy(self) -> None:
+        class _Response:
+            def __enter__(self) -> "_Response":
+                return self
+
+            def __exit__(self, *_args: object) -> None:
+                return None
+
+            def read(self) -> bytes:
+                return json.dumps({"status": "ok", "solution": {"cookies": []}}).encode()
+
+        captured: dict[str, Any] = {}
+
+        def fake_urlopen(request: Any, **_kwargs: Any) -> _Response:
+            captured.update(json.loads(request.data.decode("utf-8")))
+            return _Response()
+
+        with (
+            patch.dict(
+                os.environ,
+                {
+                    "MAINTAINER_FLARESOLVERR_URL": "http://flaresolverr:8191",
+                    "MAINTAINER_PROXY": "http://privoxy:8118",
+                },
+                clear=True,
+            ),
+            patch("app.maintainer.runner.urllib_request.urlopen", side_effect=fake_urlopen),
+        ):
+            self.assertFalse(_prewarm_cloudflare_clearance())
+
+        self.assertEqual(captured["proxy"], {"url": "http://privoxy:8118"})
 
     def test_fill_profile_does_not_treat_debug_text_as_clicked(self) -> None:
         mock_page = MagicMock()
@@ -919,6 +957,10 @@ class MaintainerBatchProfileIsolationTests(unittest.TestCase):
                 patch("app.maintainer.runner.authorize_registered_sso_for_grok_build"),
                 patch("app.maintainer.runner.time.sleep"),
                 patch(
+                    "app.maintainer.runner._adapt_registration_environment_for_retry",
+                    return_value="已自动切换到 Xvfb 非 Headless Chromium",
+                ),
+                patch(
                     "app.maintainer.runner.run_single_registration",
                     side_effect=fake_registration,
                 ),
@@ -971,6 +1013,10 @@ class MaintainerBatchProfileIsolationTests(unittest.TestCase):
                 patch("app.maintainer.runner.push_sso_to_api"),
                 patch("app.maintainer.runner.authorize_registered_sso_for_grok_build"),
                 patch("app.maintainer.runner.time.sleep"),
+                patch(
+                    "app.maintainer.runner._adapt_registration_environment_for_retry",
+                    side_effect=["已自动切换到 Xvfb 非 Headless Chromium", ""],
+                ),
                 patch(
                     "app.maintainer.runner.run_single_registration",
                     side_effect=fake_registration,

@@ -950,7 +950,12 @@ def _prewarm_cloudflare_clearance(target_url: str = SIGNUP_URL) -> bool:
         "url": target_url,
         "maxTimeout": timeout_sec * 1000,
     }
-    fs_proxy = os.getenv("MAINTAINER_FLARESOLVERR_PROXY", "").strip()
+    # Cloudflare clearance cookies are bound to the solving egress. Reuse the
+    # browser proxy unless the operator explicitly configured another one.
+    fs_proxy = (
+        os.getenv("MAINTAINER_FLARESOLVERR_PROXY", "").strip()
+        or os.getenv("MAINTAINER_PROXY", "").strip()
+    )
     if fs_proxy:
         payload["proxy"] = {"url": fs_proxy}
 
@@ -1710,6 +1715,16 @@ return { status: 'clicked', text: rawNodeText(target).slice(0, 120) };
                 time.sleep(2)
                 continue
             clearance_prewarmed = True
+
+            # "Attention Required" is an IP/environment block, not an
+            # interactive widget. Clicking and polling it for 90 seconds cannot
+            # make progress; let the batch switch browser/egress immediately.
+            if result.get("status") in {
+                "cloudflare-blocked",
+                "cloudflare-hard-blocked",
+            }:
+                last_result = result
+                break
 
             now = time.monotonic()
             if now - last_cloudflare_click >= 2.0:
@@ -3972,6 +3987,26 @@ def _is_registration_env_retryable_error(error: BaseException) -> bool:
     )
 
 
+def _adapt_registration_environment_for_retry() -> str:
+    """Change a blocked headless browser retry into a headed Xvfb retry."""
+    global co
+
+    if not sys.platform.startswith("linux") or Display is None:
+        return ""
+    if not _browser_effective_headless():
+        return ""
+    if not as_bool(os.getenv("MAINTAINER_AUTO_XVFB_FALLBACK"), default=True):
+        return ""
+    if as_bool(os.getenv("MAINTAINER_XVFB_FALLBACK_APPLIED"), default=False):
+        return ""
+
+    os.environ["MAINTAINER_HEADLESS"] = "false"
+    os.environ["MAINTAINER_USE_XVFB"] = "true"
+    os.environ["MAINTAINER_XVFB_FALLBACK_APPLIED"] = "true"
+    co = _configure_browser_options()
+    return "已自动切换到 Xvfb 非 Headless Chromium"
+
+
 def run_batch(
     *,
     config_path: str | os.PathLike[str],
@@ -4099,18 +4134,32 @@ def run_batch(
             except Exception as error:
                 print(f"[Error] 第 {current_round} 轮失败: {error}")
                 failed_rounds.append(f"round#{current_round}: {type(error).__name__}: {error}")
-                retry_env_failure = (
+                retry_candidate = (
                     count > 0
                     and env_retries_used < env_retry_limit
                     and _is_registration_env_retryable_error(error)
                     and not (stop_check and stop_check())
                 )
+                environment_change = (
+                    _adapt_registration_environment_for_retry()
+                    if retry_candidate
+                    else ""
+                )
+                retry_env_failure = retry_candidate and (
+                    bool(environment_change)
+                    or as_bool(
+                        os.getenv("MAINTAINER_RETRY_SAME_ENV"),
+                        default=False,
+                    )
+                )
                 if retry_env_failure:
                     env_retries_used += 1
                     count += 1
+                    retry_detail = f"；{environment_change}" if environment_change else ""
                     print(
                         "[Warn] 注册入口被环境/Cloudflare 拦截，"
                         f"将重开浏览器重试 ({env_retries_used}/{env_retry_limit})"
+                        f"{retry_detail}"
                     )
                 if run_logger:
                     run_logger.warning(
@@ -4128,6 +4177,7 @@ def run_batch(
                         "retrying": retry_env_failure,
                         "env_retries_used": env_retries_used,
                         "env_retry_limit": env_retry_limit,
+                        "environment_change": environment_change,
                     },
                 )
             finally:

@@ -38,6 +38,8 @@ email----password----client_id----refresh_token
 
 最终注册页出现 Turnstile 时会先自动点击验证，并通过 CDP 注入内置 `turnstilePatch/script.js`，不再依赖 Chrome 扩展加载。`web.turnstile_manual_wait_sec=0` 表示自动模式：只有真实图形桌面默认等待 180 秒供人工完成验证；Headless、Xvfb、无 `DISPLAY` 的 Linux 服务器默认不等待。设置为正数可固定等待秒数。要完全关闭人工等待，可设置 `MAINTAINER_TURNSTILE_MANUAL_WAIT_SEC=off`。
 
+`Attention Required! | Cloudflare` 表示出口环境被硬拦截，页面上没有可点击的 Turnstile。容器默认使用 Xvfb 非 Headless Chromium；硬拦截时首次重试也会自动切换到该模式。生产部署应叠加 `docker-compose.antiban.yml` 或配置稳定的 ISP/住宅代理，并确保 FlareSolverr 与 Chromium 使用相同出口。
+
 ### API 回写
 
 - 兼容旧接口：`/v1/admin/tokens`
