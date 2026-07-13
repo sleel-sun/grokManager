@@ -14,6 +14,12 @@ from app.dataplane.reverse.protocol.grok_build import (
     sanitize_responses_payload,
 )
 from app.dataplane.reverse.protocol.xai_console import split_console_server_tools
+from app.dataplane.translation import (
+    CODEX_RESPONSES,
+    GROK_BUILD_RESPONSES,
+    OPENAI_RESPONSES,
+    get_translation_registry,
+)
 from app.control.model.enums import ModeId
 from app.products.openai.chat import _stream_chat
 from app.products.openai.schemas import ResponsesCreateRequest
@@ -24,6 +30,20 @@ async def _collect_stream(source):
 
 
 class GrokBuildTests(unittest.TestCase):
+    def test_grok_build_translations_are_registered_in_both_directions(self) -> None:
+        registry = get_translation_registry()
+
+        for client_format in (OPENAI_RESPONSES, CODEX_RESPONSES):
+            self.assertTrue(
+                registry.has("request", client_format, GROK_BUILD_RESPONSES)
+            )
+            self.assertTrue(
+                registry.has("nonstream", GROK_BUILD_RESPONSES, client_format)
+            )
+            self.assertTrue(
+                registry.has("stream", GROK_BUILD_RESPONSES, client_format)
+            )
+
     def test_usage_is_extracted_from_response_and_stream_events(self) -> None:
         usage = {"input_tokens": 12, "output_tokens": 8, "total_tokens": 20}
 

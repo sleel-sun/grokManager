@@ -523,8 +523,20 @@
     });
   }
 
-  function init() {
-    if (window.renderAdminHeader) window.renderAdminHeader();
+  function setUsersNavVisible(visible) {
+    if (typeof window.syncAdminHeaderUsersNav === 'function') {
+      window.syncAdminHeaderUsersNav(visible);
+    }
+  }
+
+  async function loadMultiUserEnabled() {
+    if (typeof window.renderAdminHeader === 'function') await window.renderAdminHeader();
+    const link = document.querySelector('#admin-header [data-nav="/admin/users"]');
+    return Boolean(link && !link.hidden && link.style.display !== 'none');
+  }
+
+  async function init() {
+    setUsersNavVisible(await loadMultiUserEnabled());
     if (window.renderSiteFooter) window.renderSiteFooter();
     bindEvents();
     renderSelectionState();

@@ -22,6 +22,13 @@ from app.control.model.registry import resolve as resolve_model
 from app.control.account.enums import FeedbackKind
 from app.dataplane.reverse.protocol.xai_chat import classify_line
 from app.dataplane.reverse.protocol.xai_console import client_function_tool_names
+from app.dataplane.translation import (
+    OPENAI_CHAT_COMPLETIONS,
+    OPENAI_RESPONSES,
+    RequestEnvelope,
+    get_translation_pipeline,
+)
+from app.dataplane.translation.transforms import responses_tools_to_chat
 from app.products._account_selection import reserve_account
 
 from .chat import (
@@ -115,29 +122,7 @@ async def _guard_response_stream(
 # Tool format normalisation
 # ---------------------------------------------------------------------------
 
-def _to_chat_tools(tools: list[dict]) -> list[dict]:
-    """Normalise Responses API tool format → Chat Completions format.
-
-    Responses API:  {type, name, description, parameters}       (flat)
-    Chat Completions: {type, function: {name, description, parameters}}
-
-    Already-wrapped tools are passed through unchanged so this is safe to
-    call regardless of which format the caller used.
-    """
-    normalised = []
-    for tool in tools:
-        if tool.get("type") == "function" and "function" not in tool and "name" in tool:
-            normalised.append({
-                "type": "function",
-                "function": {
-                    "name":        tool.get("name", ""),
-                    "description": tool.get("description", ""),
-                    "parameters":  tool.get("parameters"),
-                },
-            })
-        else:
-            normalised.append(tool)
-    return normalised
+_to_chat_tools = responses_tools_to_chat
 
 
 # ---------------------------------------------------------------------------
@@ -200,88 +185,6 @@ async def _emit_fc_events(items: list[dict], base_idx: int):
 
 
 # ---------------------------------------------------------------------------
-# Input normalisation
-# ---------------------------------------------------------------------------
-
-def _parse_input(input_val: str | list) -> list[dict]:
-    """Convert Responses API input to our internal messages list.
-
-    Handles message, function_call, and function_call_output item types.
-    function_call → assistant message with tool_calls
-    function_call_output → tool result message
-    """
-    if isinstance(input_val, str):
-        return [{"role": "user", "content": input_val}]
-
-    messages: list[dict] = []
-    for item in input_val:
-        if not isinstance(item, dict):
-            continue
-        item_type = item.get("type", "message" if "role" in item else None)
-
-        if item_type == "function_call":
-            # Reconstruct as assistant message with tool_calls (Chat Completions format)
-            call_id = item.get("call_id", "")
-            name    = item.get("name", "")
-            args    = item.get("arguments", "{}")
-            messages.append({
-                "role":    "assistant",
-                "content": None,
-                "tool_calls": [{
-                    "id":   call_id,
-                    "type": "function",
-                    "function": {"name": name, "arguments": args},
-                }],
-            })
-            continue
-
-        if item_type == "function_call_output":
-            # Reconstruct as tool result message
-            call_id = item.get("call_id", "")
-            output  = item.get("output", "")
-            messages.append({
-                "role":         "tool",
-                "tool_call_id": call_id,
-                "content":      output,
-            })
-            continue
-
-        if item_type != "message":
-            continue  # skip reasoning items, etc.
-
-        role    = item.get("role", "user")
-        content = item.get("content", "")
-
-        if isinstance(content, list):
-            normalized: list[dict] = []
-            for part in content:
-                if not isinstance(part, dict):
-                    continue
-                ptype = part.get("type", "")
-                if ptype in ("input_text", "output_text"):
-                    normalized.append({"type": "text", "text": part.get("text", "")})
-                elif ptype == "image":
-                    src = part.get("image_url") or part.get("source") or {}
-                    url = src.get("url", "")
-                    if url:
-                        normalized.append({"type": "image_url", "image_url": {"url": url}})
-                elif ptype == "input_image":
-                    src = part.get("image_url") or part.get("source") or {}
-                    if isinstance(src, dict):
-                        url = src.get("url", "")
-                    else:
-                        url = str(src or "")
-                    if url:
-                        normalized.append({"type": "image_url", "image_url": {"url": url}})
-                else:
-                    normalized.append(part)
-            content = normalized
-
-        messages.append({"role": role, "content": content})
-    return messages
-
-
-# ---------------------------------------------------------------------------
 # Main handler
 # ---------------------------------------------------------------------------
 
@@ -302,10 +205,25 @@ async def create(
 
     cfg     = get_config()
     spec    = resolve_model(model)
-    messages: list[dict] = []
-    if instructions:
-        messages.append({"role": "system", "content": instructions})
-    messages.extend(_parse_input(input_val))
+    translated_request = await get_translation_pipeline().translate_request(
+        OPENAI_RESPONSES,
+        OPENAI_CHAT_COMPLETIONS,
+        RequestEnvelope(
+            OPENAI_RESPONSES,
+            {
+                "input": input_val,
+                "instructions": instructions,
+                "tools": tools,
+                "tool_choice": tool_choice,
+            },
+            model=model,
+            stream=stream,
+        ),
+    )
+    translated_body = translated_request.body
+    if not isinstance(translated_body, dict):
+        raise TypeError("Responses request translation must return a dict")
+    messages = translated_body["messages"]
 
     message, files = _extract_message(messages)
     if not message.strip():

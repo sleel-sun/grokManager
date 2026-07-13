@@ -454,6 +454,11 @@ async def lifespan(app: FastAPI):
 
 
 def create_app() -> FastAPI:
+    from app.dataplane.translation import (
+        get_translation_pipeline,
+        get_translation_registry,
+    )
+
     openapi_tags = [
         {"name": "OpenAI - Models", "description": "Model discovery endpoints."},
         {
@@ -511,6 +516,8 @@ def create_app() -> FastAPI:
         openapi_tags=openapi_tags,
         lifespan=lifespan,
     )
+    app.state.translation_pipeline = get_translation_pipeline()
+    app.state.translation_registry = get_translation_registry()
 
     app.add_middleware(
         CORSMiddleware,

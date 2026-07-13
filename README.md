@@ -159,6 +159,16 @@ docker compose up -d --build
 docker compose up -d --build grokmanager
 ```
 
+Camoufox Cloudflare clearance sidecar 默认不启动。只有将
+`proxy.clearance.mode` 配置为 `camoufox` 时才需要启用对应 profile：
+
+```bash
+docker compose --profile camoufox up -d --build
+```
+
+可通过 `CAMOUFOX_VERSION` 覆盖默认的 `0.4.11`，但指定版本必须已发布到
+PyPI。未启用该 profile 时，Camoufox 不参与主服务构建或启动。
+
 如果需要参考 `jiujiu532/grok2api` 的防 403 / 防封部署方式，可叠加防封版 Compose：
 
 ```bash
@@ -360,6 +370,7 @@ uv run grokmanager-maintainer --count 5 --workers 2  # 2 个并发 worker × 每
 | `SERVER_PORT` | 服务监听端口 | `8000` |
 | `SERVER_WORKERS` | Granian worker 数量 | `1` |
 | `HOST_PORT` | Docker Compose 宿主机映射端口 | `8000` |
+| `CAMOUFOX_VERSION` | 可选 Camoufox sidecar 的 PyPI 版本 | `0.4.11` |
 | `DATA_DIR` | 本地数据根目录（账号库、本地媒体文件、缓存索引统一位于此目录下） | `./data` |
 | `LOG_DIR` | 本地日志目录 | `./logs` |
 | `ACCOUNT_STORAGE` | 账号存储后端 | `local` |
@@ -383,7 +394,7 @@ uv run grokmanager-maintainer --count 5 --workers 2  # 2 个并发 worker × 每
 | `logging` | `file_level`, `max_files` |
 | `features` | `temporary`, `memory`, `stream`, `thinking`, `auto_chat_mode_fallback`, `thinking_summary`, `dynamic_statsig`, `enable_nsfw`, `show_search_sources`, `custom_instruction`, `image_format`, `video_format` |
 | `proxy.egress` | `mode`, `proxy_url`, `proxy_pool`, `resource_proxy_url`, `resource_proxy_pool`, `skip_ssl_verify` |
-| `proxy.clearance` | `mode`, `cf_cookies`, `user_agent`, `browser`, `flaresolverr_url`, `timeout_sec`, `refresh_interval` |
+| `proxy.clearance` | `mode`, `cf_cookies`, `user_agent`, `browser`, `flaresolverr_url`, `camoufox_url`, `timeout_sec`, `refresh_interval` |
 | `retry` | `reset_session_status_codes`, `max_retries`, `on_codes` |
 | `account.refresh` | `basic_interval_sec`, `super_interval_sec`, `heavy_interval_sec`, `usage_concurrency`, `on_demand_min_interval_sec` |
 | `cache.local` | `image_max_mb`, `video_max_mb` |

@@ -101,6 +101,8 @@ class ResponsesCreateRequest(BaseModel):
     Only model/input/instructions/stream/reasoning/temperature/top_p are acted on.
     All other fields are accepted and silently discarded.
     """
+    model_config = {"extra": "allow"}
+
     model:                str
     input:                str | list[Any]
     instructions:         str | None           = None
@@ -120,10 +122,6 @@ class ResponsesCreateRequest(BaseModel):
     parallel_tool_calls:  bool | None           = None
     include:              list[str] | None      = None
     background:           bool | None           = None
-
-    class Config:
-        extra = "allow"
-
 
 __all__ = [
     "MessageItem", "ImageConfig", "VideoConfig", "CompletionRequest",

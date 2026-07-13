@@ -28,6 +28,12 @@ from app.dataplane.reverse.protocol.tool_prompt import (
     build_tool_system_prompt, extract_tool_names, inject_into_message,
 )
 from app.dataplane.reverse.protocol.tool_parser import parse_tool_calls
+from app.dataplane.translation import (
+    ANTHROPIC_MESSAGES,
+    OPENAI_CHAT_COMPLETIONS,
+    RequestEnvelope,
+    get_translation_pipeline,
+)
 
 from app.products.openai.chat import (
     _stream_chat, _extract_message, _resolve_image,
@@ -46,10 +52,6 @@ from app.products.anthropic.compat import resolve_anthropic_model_spec
 
 def _make_msg_id() -> str:
     return f"msg_{int(time.time() * 1000)}{os.urandom(4).hex()}"
-
-
-def _make_tool_id() -> str:
-    return f"toolu_{int(time.time() * 1000)}{os.urandom(3).hex()}"
 
 
 # ---------------------------------------------------------------------------
@@ -118,184 +120,6 @@ class _AnthropicStreamDeltaCoalescer:
             and self.max_delay_s
             and time.monotonic() - self._started_at >= self.max_delay_s
         )
-
-
-# ---------------------------------------------------------------------------
-# Request conversion: Anthropic → internal format
-# ---------------------------------------------------------------------------
-
-def _anthropic_content_to_internal(content: Any, role: str) -> list[dict]:
-    """Convert Anthropic content (string or block list) to internal message list.
-
-    Returns a list of internal messages (may be multiple when tool_result
-    blocks need to become separate tool-role messages).
-    """
-    if isinstance(content, str):
-        return [{"role": role, "content": content}]
-
-    if not isinstance(content, list):
-        return []
-
-    # Check if content contains tool_use blocks (assistant calling tools)
-    has_tool_use = any(
-        isinstance(b, dict) and b.get("type") == "tool_use"
-        for b in content
-    )
-
-    # Check if content contains tool_result blocks (user returning results)
-    tool_result_blocks = [
-        b for b in content
-        if isinstance(b, dict) and b.get("type") == "tool_result"
-    ]
-
-    if tool_result_blocks:
-        # Each tool_result → a separate tool-role message
-        messages = []
-        for block in tool_result_blocks:
-            result_content = block.get("content", "")
-            if isinstance(result_content, list):
-                # array of text blocks → join
-                result_content = "\n".join(
-                    b.get("text", "") for b in result_content
-                    if isinstance(b, dict) and b.get("type") == "text"
-                )
-            messages.append({
-                "role":         "tool",
-                "tool_call_id": block.get("tool_use_id", ""),
-                "content":      result_content or "",
-            })
-        return messages
-
-    if has_tool_use:
-        # Build assistant message with tool_calls
-        text_parts: list[str] = []
-        tool_calls: list[dict] = []
-        for block in content:
-            if not isinstance(block, dict):
-                continue
-            btype = block.get("type")
-            if btype == "text":
-                text_parts.append(block.get("text", ""))
-            elif btype == "tool_use":
-                tool_calls.append({
-                    "id":   block.get("id", _make_tool_id()),
-                    "type": "function",
-                    "function": {
-                        "name":      block.get("name", ""),
-                        "arguments": orjson.dumps(block.get("input") or {}).decode(),
-                    },
-                })
-        msg: dict = {
-            "role":       "assistant",
-            "content":    " ".join(text_parts) if text_parts else None,
-            "tool_calls": tool_calls,
-        }
-        return [msg]
-
-    # Normal content: text + image + document blocks
-    normalized: list[dict] = []
-    for block in content:
-        if not isinstance(block, dict):
-            continue
-        btype = block.get("type")
-        if btype == "text":
-            text = (block.get("text") or "").strip()
-            if text:
-                normalized.append({"type": "text", "text": text})
-        elif btype == "image":
-            source = block.get("source") or {}
-            src_type = source.get("type", "")
-            if src_type == "base64":
-                media = source.get("media_type", "image/jpeg")
-                data  = source.get("data", "")
-                normalized.append({
-                    "type":      "image_url",
-                    "image_url": {"url": f"data:{media};base64,{data}"},
-                })
-            elif src_type == "url":
-                normalized.append({
-                    "type":      "image_url",
-                    "image_url": {"url": source.get("url", "")},
-                })
-        elif btype == "document":
-            source = block.get("source") or {}
-            src_type = source.get("type", "")
-            if src_type == "base64":
-                media = source.get("media_type", "application/pdf")
-                data  = source.get("data", "")
-                normalized.append({
-                    "type": "file",
-                    "file": {"data": f"data:{media};base64,{data}"},
-                })
-
-    if not normalized:
-        return []
-    return [{"role": role, "content": normalized}]
-
-
-def _parse_anthropic_messages(
-    messages: list[dict],
-    system:   str | list | None,
-) -> list[dict]:
-    """Convert Anthropic messages + system prompt to internal format."""
-    internal: list[dict] = []
-
-    # System prompt
-    if system:
-        if isinstance(system, str):
-            system_text = system
-        elif isinstance(system, list):
-            system_text = "\n".join(
-                b.get("text", "") for b in system
-                if isinstance(b, dict) and b.get("type") == "text"
-            )
-        else:
-            system_text = str(system)
-        if system_text.strip():
-            internal.append({"role": "system", "content": system_text})
-
-    for msg in messages:
-        role    = msg.get("role", "user")
-        content = msg.get("content", "")
-        internal.extend(_anthropic_content_to_internal(content, role))
-
-    return internal
-
-
-def _convert_tools(tools: list[dict]) -> list[dict]:
-    """Convert Anthropic tool definitions to internal Chat Completions format.
-
-    Anthropic:  {name, description, input_schema}
-    Internal:   {type:"function", function:{name, description, parameters}}
-    """
-    result = []
-    for tool in tools:
-        result.append({
-            "type": "function",
-            "function": {
-                "name":        tool.get("name", ""),
-                "description": tool.get("description", ""),
-                "parameters":  tool.get("input_schema"),
-            },
-        })
-    return result
-
-
-def _convert_tool_choice(tool_choice: Any) -> Any:
-    """Map Anthropic tool_choice → internal format."""
-    if tool_choice is None:
-        return "auto"
-    if isinstance(tool_choice, str):
-        return tool_choice
-    if isinstance(tool_choice, dict):
-        tc_type = tool_choice.get("type", "auto")
-        if tc_type == "auto":
-            return "auto"
-        if tc_type == "any":
-            return "required"
-        if tc_type == "tool":
-            return {"type": "function", "function": {"name": tool_choice.get("name", "")}}
-    return "auto"
 
 
 # ---------------------------------------------------------------------------
@@ -369,8 +193,25 @@ async def create(
     if spec is None:
         raise ValueError(f"Unknown model: {model!r}")
 
-    # Build internal message list
-    internal_messages = _parse_anthropic_messages(messages, system)
+    translated_request = await get_translation_pipeline().translate_request(
+        ANTHROPIC_MESSAGES,
+        OPENAI_CHAT_COMPLETIONS,
+        RequestEnvelope(
+            ANTHROPIC_MESSAGES,
+            {
+                "messages": messages,
+                "system": system,
+                "tools": tools,
+                "tool_choice": tool_choice,
+            },
+            model=model,
+            stream=stream,
+        ),
+    )
+    translated_body = translated_request.body
+    if not isinstance(translated_body, dict):
+        raise TypeError("Anthropic request translation must return a dict")
+    internal_messages = translated_body["messages"]
     internal_message, files = _extract_message(internal_messages)
     if not internal_message.strip():
         raise UpstreamError("Empty message after extraction", status=400)
@@ -383,8 +224,8 @@ async def create(
     native_tool_names: set[str] = set()
     request_overrides: dict | None = None
     if tools:
-        chat_tools       = _convert_tools(tools)
-        internal_tool_choice = _convert_tool_choice(tool_choice)
+        chat_tools = translated_body["tools"]
+        internal_tool_choice = translated_body["tool_choice"]
         local_tools, request_overrides = _prepare_console_request_tools(
             tools=chat_tools,
             tool_choice=internal_tool_choice,

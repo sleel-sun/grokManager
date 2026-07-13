@@ -12,6 +12,12 @@ from app.platform.errors import AppError, ValidationError
 from app.platform.tokens import estimate_prompt_tokens, estimate_tokens
 from app.products._upstream_headers import build_upstream_response_headers
 from app.products.anthropic.compat import resolve_anthropic_model_spec
+from app.dataplane.translation import (
+    ANTHROPIC_MESSAGES,
+    OPENAI_CHAT_COMPLETIONS,
+    RequestEnvelope,
+    get_translation_pipeline,
+)
 
 
 router = APIRouter(prefix="/v1", dependencies=[Depends(verify_api_key)])
@@ -174,19 +180,35 @@ async def count_tokens_endpoint(req: CountTokensRequest):
     if req.model is not None:
         _message_model_spec(req.model)
 
-    # Lazy import to avoid a top-level dependency on the Messages handler
-    # (which itself imports heavier dataplane modules).
-    from .messages import _parse_anthropic_messages, _convert_tools
+    # Import registers the Anthropic request transform.
+    from . import messages as _messages_module  # noqa: F401
 
     messages_payload = [m.model_dump() for m in req.messages]
-    internal_messages = _parse_anthropic_messages(messages_payload, req.system)
+    translated = await get_translation_pipeline().translate_request(
+        ANTHROPIC_MESSAGES,
+        OPENAI_CHAT_COMPLETIONS,
+        RequestEnvelope(
+            ANTHROPIC_MESSAGES,
+            {
+                "messages": messages_payload,
+                "system": req.system,
+                "tools": req.tools,
+                "tool_choice": req.tool_choice,
+            },
+            model=req.model or "",
+        ),
+    )
+    translated_body = translated.body
+    if not isinstance(translated_body, dict):
+        raise TypeError("Anthropic request translation must return a dict")
+    internal_messages = translated_body["messages"]
 
     total = estimate_prompt_tokens(internal_messages)
 
     if req.tools:
         # Tool schemas are part of the prompt the model sees, so they count
         # against ``input_tokens`` in the same way the messages do.
-        total += estimate_tokens(_convert_tools(req.tools))
+        total += estimate_tokens(translated_body["tools"])
 
     return JSONResponse({"input_tokens": total})
 

@@ -656,7 +656,8 @@ async def verify_api_key(
     if not allowed_keys and not user_api_keys_configured:
         return
 
-    token = _extract_bearer(authorization) or x_api_key or None
+    api_key_header = x_api_key if isinstance(x_api_key, str) else None
+    token = _extract_bearer(authorization) or api_key_header or None
     if token is None:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Missing or invalid Authorization header.")
 

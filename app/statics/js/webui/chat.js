@@ -1286,7 +1286,6 @@
   function enhanceAssistantMessage(card, content, messageIndex) {
     enhanceAssistantImageReferences(card);
     enhanceAttachmentDownloads(card);
-    enhanceCodePreviews(card);
     appendImagePromptAction(card, content, messageIndex);
     appendBoundGeneratedImages(card, messageIndex);
     enhanceImagePreviews(card);
@@ -1508,6 +1507,7 @@
           )).join(''));
         }
         card.innerHTML = parts.join('') || '<p></p>';
+        enhanceCodePreviews(card);
         enhanceAssistantMessage(card, content, messageIndex);
         return;
       }
@@ -1550,6 +1550,7 @@
 
     if (role === 'assistant') {
       card.innerHTML = renderRichMarkdown(content);
+      enhanceCodePreviews(card);
       enhanceAssistantMessage(card, content, messageIndex);
       return;
     }

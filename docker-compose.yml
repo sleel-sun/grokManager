@@ -1,9 +1,12 @@
 services:
   camoufox:
     container_name: grokmanager-camoufox
+    profiles: ["camoufox"]
     build:
       context: .
       dockerfile: deploy/Dockerfile.camoufox
+      args:
+        CAMOUFOX_VERSION: ${CAMOUFOX_VERSION:-0.4.11}
     restart: unless-stopped
     shm_size: "1gb"
     expose:
@@ -68,9 +71,6 @@ services:
       - ./data:/app/data
       - ./logs:/app/logs
     restart: unless-stopped
-    depends_on:
-      - camoufox
-
   maintainer:
     container_name: grokmanager-maintainer
     init: true

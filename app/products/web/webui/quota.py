@@ -65,7 +65,8 @@ def _empty_store(today: str | None = None) -> dict:
     return {"date": today or _today_key(), "users": {}}
 
 
-def _read_store_sync(path: Path = _USAGE_PATH) -> dict:
+def _read_store_sync(path: Path | None = None) -> dict:
+    path = path or _USAGE_PATH
     try:
         parsed = json.loads(path.read_text(encoding="utf-8"))
     except (FileNotFoundError, json.JSONDecodeError, TypeError):
@@ -81,7 +82,8 @@ def _read_store_sync(path: Path = _USAGE_PATH) -> dict:
     return parsed
 
 
-def _write_store_sync(store: dict, path: Path = _USAGE_PATH) -> None:
+def _write_store_sync(store: dict, path: Path | None = None) -> None:
+    path = path or _USAGE_PATH
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=str(path.parent))
     tmp_path = Path(tmp_name)
