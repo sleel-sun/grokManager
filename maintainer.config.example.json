@@ -3,12 +3,25 @@
         "count": 10
     },
     "email": {
+        "provider": "worker",
         "worker_domain": "email.example.com",
         "email_domains": [
             "example.com"
         ],
         "admin_password": "your-worker-admin-password",
-        "verify_ssl": true
+        "verify_ssl": true,
+        "credentials_file": "mail_credentials.txt",
+        "alias_mode": "plus",
+        "alias_random_length": 8,
+        "max_aliases_per_account": 5,
+        "poll_interval": 3,
+        "recent_seconds": 600,
+        "imap_hosts": [
+            "outlook.office365.com",
+            "imap-mail.outlook.com"
+        ],
+        "imap_last_n": 20,
+        "require_recipient_match": true
     },
     "api": {
         "endpoint": "http://127.0.0.1:8000/v1/admin/tokens",
@@ -16,6 +29,13 @@
         "append": true,
         "pool": "basic",
         "verify_ssl": true
+    },
+    "grok_build": {
+        "auto_oauth_after_register": true,
+        "required": false,
+        "delay_sec": 0,
+        "poll_timeout_sec": 90,
+        "proxy": ""
     },
     "web": {
         "registration_env_retry_limit": 2,

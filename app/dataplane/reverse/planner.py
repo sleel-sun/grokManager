@@ -8,7 +8,7 @@ from typing import Any
 
 from app.control.model.spec import ModelSpec
 from app.dataplane.reverse.runtime.endpoint_table import (
-    CHAT, CONSOLE_RESPONSES, MEDIA_POST, WS_IMAGINE,
+    CHAT, CONSOLE_RESPONSES, GROK_BUILD_RESPONSES, MEDIA_POST, WS_IMAGINE,
 )
 from .types import ReversePlan, TransportKind
 
@@ -41,7 +41,12 @@ def build_plan(spec: ModelSpec, request: dict[str, Any] | None = None) -> Revers
     referer = "https://grok.com/"
     extra: dict[str, Any] = {}
 
-    if spec.uses_console_responses():
+    if spec.uses_grok_build_responses():
+        origin = "https://cli-chat-proxy.grok.com"
+        referer = "https://cli-chat-proxy.grok.com/"
+        extra["upstream_profile"] = spec.upstream_profile
+        extra["upstream_model"] = spec.upstream_model_name()
+    elif spec.uses_console_responses():
         origin = "https://console.x.ai"
         referer = "https://console.x.ai/"
         extra["upstream_profile"] = spec.upstream_profile
@@ -71,6 +76,8 @@ def _resolve_endpoint(
     """Determine (endpoint_url, transport_kind) for the given capability."""
 
     if spec.is_chat():
+        if spec.uses_grok_build_responses():
+            return GROK_BUILD_RESPONSES, TransportKind.HTTP_SSE
         if spec.uses_console_responses():
             return CONSOLE_RESPONSES, TransportKind.HTTP_SSE
         return CHAT, TransportKind.HTTP_SSE

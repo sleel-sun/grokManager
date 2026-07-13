@@ -9,6 +9,7 @@ responses.py — only the input/output format conversion differs.
 
 import asyncio
 import os
+import re
 import time
 from typing import Any, AsyncGenerator
 
@@ -20,21 +21,29 @@ from app.platform.errors import RateLimitError, UpstreamError
 from app.platform.runtime.clock import now_s
 from app.platform.tokens import estimate_prompt_tokens, estimate_tokens, estimate_tool_call_tokens
 from app.control.model.enums import ModeId
-from app.control.model.registry import resolve as resolve_model
 from app.control.account.enums import FeedbackKind
-from app.dataplane.reverse.protocol.xai_chat import classify_line, StreamAdapter
+from app.dataplane.reverse.protocol.xai_chat import classify_line
+from app.dataplane.reverse.protocol.xai_console import client_function_tool_names
 from app.dataplane.reverse.protocol.tool_prompt import (
     build_tool_system_prompt, extract_tool_names, inject_into_message,
 )
 from app.dataplane.reverse.protocol.tool_parser import parse_tool_calls
+from app.dataplane.translation import (
+    ANTHROPIC_MESSAGES,
+    OPENAI_CHAT_COMPLETIONS,
+    RequestEnvelope,
+    get_translation_pipeline,
+)
 
 from app.products.openai.chat import (
     _stream_chat, _extract_message, _resolve_image,
-    _quota_sync, _fail_sync, _parse_retry_codes, _feedback_kind, _log_task_exception,
-    _configured_retry_codes, _should_retry_upstream,
+    _quota_sync, _fail_sync, _feedback_kind, _log_task_exception,
+    _configured_retry_codes, _should_retry_upstream, _client_tools_only,
+    _new_stream_adapter, _prepare_console_request_tools,
 )
 from app.products._account_selection import reserve_account, selection_max_retries
 from app.products.openai._tool_sieve import ToolSieve
+from app.products.anthropic.compat import resolve_anthropic_model_spec
 
 
 # ---------------------------------------------------------------------------
@@ -45,10 +54,6 @@ def _make_msg_id() -> str:
     return f"msg_{int(time.time() * 1000)}{os.urandom(4).hex()}"
 
 
-def _make_tool_id() -> str:
-    return f"toolu_{int(time.time() * 1000)}{os.urandom(3).hex()}"
-
-
 # ---------------------------------------------------------------------------
 # SSE encoding (Anthropic event format)
 # ---------------------------------------------------------------------------
@@ -57,182 +62,64 @@ def _sse(event: str, data: dict) -> str:
     return f"event: {event}\ndata: {orjson.dumps(data).decode()}\n\n"
 
 
-# ---------------------------------------------------------------------------
-# Request conversion: Anthropic → internal format
-# ---------------------------------------------------------------------------
+_STREAM_DELTA_MIN_CHARS = 48
+_STREAM_DELTA_MAX_DELAY_S = 0.09
+_STREAM_DELTA_BOUNDARY_RE = re.compile(r"[\n。！？.!?；;：:]$")
 
-def _anthropic_content_to_internal(content: Any, role: str) -> list[dict]:
-    """Convert Anthropic content (string or block list) to internal message list.
 
-    Returns a list of internal messages (may be multiple when tool_result
-    blocks need to become separate tool-role messages).
-    """
-    if isinstance(content, str):
-        return [{"role": role, "content": content}]
+class _AnthropicStreamDeltaCoalescer:
+    """Coalesce tiny Anthropic content_block_delta text payloads."""
 
-    if not isinstance(content, list):
+    def __init__(
+        self,
+        delta_type: str,
+        field_name: str,
+        *,
+        min_chars: int = _STREAM_DELTA_MIN_CHARS,
+        max_delay_s: float = _STREAM_DELTA_MAX_DELAY_S,
+    ) -> None:
+        self.delta_type = delta_type
+        self.field_name = field_name
+        self.min_chars = max(1, min_chars)
+        self.max_delay_s = max(0.0, max_delay_s)
+        self._parts: list[str] = []
+        self._started_at = 0.0
+
+    def add(self, index: int, content: str) -> list[str]:
+        if not content:
+            return []
+        if not self._parts:
+            self._started_at = time.monotonic()
+        self._parts.append(content)
+        if self._should_flush():
+            return self.flush(index)
         return []
 
-    # Check if content contains tool_use blocks (assistant calling tools)
-    has_tool_use = any(
-        isinstance(b, dict) and b.get("type") == "tool_use"
-        for b in content
-    )
-
-    # Check if content contains tool_result blocks (user returning results)
-    tool_result_blocks = [
-        b for b in content
-        if isinstance(b, dict) and b.get("type") == "tool_result"
-    ]
-
-    if tool_result_blocks:
-        # Each tool_result → a separate tool-role message
-        messages = []
-        for block in tool_result_blocks:
-            result_content = block.get("content", "")
-            if isinstance(result_content, list):
-                # array of text blocks → join
-                result_content = "\n".join(
-                    b.get("text", "") for b in result_content
-                    if isinstance(b, dict) and b.get("type") == "text"
-                )
-            messages.append({
-                "role":         "tool",
-                "tool_call_id": block.get("tool_use_id", ""),
-                "content":      result_content or "",
+    def flush(self, index: int) -> list[str]:
+        if not self._parts:
+            return []
+        content = "".join(self._parts)
+        self._parts.clear()
+        self._started_at = 0.0
+        return [
+            _sse("content_block_delta", {
+                "type": "content_block_delta",
+                "index": index,
+                "delta": {"type": self.delta_type, self.field_name: content},
             })
-        return messages
+        ]
 
-    if has_tool_use:
-        # Build assistant message with tool_calls
-        text_parts: list[str] = []
-        tool_calls: list[dict] = []
-        for block in content:
-            if not isinstance(block, dict):
-                continue
-            btype = block.get("type")
-            if btype == "text":
-                text_parts.append(block.get("text", ""))
-            elif btype == "tool_use":
-                tool_calls.append({
-                    "id":   block.get("id", _make_tool_id()),
-                    "type": "function",
-                    "function": {
-                        "name":      block.get("name", ""),
-                        "arguments": orjson.dumps(block.get("input") or {}).decode(),
-                    },
-                })
-        msg: dict = {
-            "role":       "assistant",
-            "content":    " ".join(text_parts) if text_parts else None,
-            "tool_calls": tool_calls,
-        }
-        return [msg]
-
-    # Normal content: text + image + document blocks
-    normalized: list[dict] = []
-    for block in content:
-        if not isinstance(block, dict):
-            continue
-        btype = block.get("type")
-        if btype == "text":
-            text = (block.get("text") or "").strip()
-            if text:
-                normalized.append({"type": "text", "text": text})
-        elif btype == "image":
-            source = block.get("source") or {}
-            src_type = source.get("type", "")
-            if src_type == "base64":
-                media = source.get("media_type", "image/jpeg")
-                data  = source.get("data", "")
-                normalized.append({
-                    "type":      "image_url",
-                    "image_url": {"url": f"data:{media};base64,{data}"},
-                })
-            elif src_type == "url":
-                normalized.append({
-                    "type":      "image_url",
-                    "image_url": {"url": source.get("url", "")},
-                })
-        elif btype == "document":
-            source = block.get("source") or {}
-            src_type = source.get("type", "")
-            if src_type == "base64":
-                media = source.get("media_type", "application/pdf")
-                data  = source.get("data", "")
-                normalized.append({
-                    "type": "file",
-                    "file": {"data": f"data:{media};base64,{data}"},
-                })
-
-    if not normalized:
-        return []
-    return [{"role": role, "content": normalized}]
-
-
-def _parse_anthropic_messages(
-    messages: list[dict],
-    system:   str | list | None,
-) -> list[dict]:
-    """Convert Anthropic messages + system prompt to internal format."""
-    internal: list[dict] = []
-
-    # System prompt
-    if system:
-        if isinstance(system, str):
-            system_text = system
-        elif isinstance(system, list):
-            system_text = "\n".join(
-                b.get("text", "") for b in system
-                if isinstance(b, dict) and b.get("type") == "text"
-            )
-        else:
-            system_text = str(system)
-        if system_text.strip():
-            internal.append({"role": "system", "content": system_text})
-
-    for msg in messages:
-        role    = msg.get("role", "user")
-        content = msg.get("content", "")
-        internal.extend(_anthropic_content_to_internal(content, role))
-
-    return internal
-
-
-def _convert_tools(tools: list[dict]) -> list[dict]:
-    """Convert Anthropic tool definitions to internal Chat Completions format.
-
-    Anthropic:  {name, description, input_schema}
-    Internal:   {type:"function", function:{name, description, parameters}}
-    """
-    result = []
-    for tool in tools:
-        result.append({
-            "type": "function",
-            "function": {
-                "name":        tool.get("name", ""),
-                "description": tool.get("description", ""),
-                "parameters":  tool.get("input_schema"),
-            },
-        })
-    return result
-
-
-def _convert_tool_choice(tool_choice: Any) -> Any:
-    """Map Anthropic tool_choice → internal format."""
-    if tool_choice is None:
-        return "auto"
-    if isinstance(tool_choice, str):
-        return tool_choice
-    if isinstance(tool_choice, dict):
-        tc_type = tool_choice.get("type", "auto")
-        if tc_type == "auto":
-            return "auto"
-        if tc_type == "any":
-            return "required"
-        if tc_type == "tool":
-            return {"type": "function", "function": {"name": tool_choice.get("name", "")}}
-    return "auto"
+    def _should_flush(self) -> bool:
+        content = "".join(self._parts)
+        if len(content) >= self.min_chars:
+            return True
+        if _STREAM_DELTA_BOUNDARY_RE.search(content):
+            return True
+        return bool(
+            self._started_at
+            and self.max_delay_s
+            and time.monotonic() - self._started_at >= self.max_delay_s
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -267,6 +154,22 @@ def _build_message_response(
     }
 
 
+def _tool_calls_to_anthropic_content(calls: list[Any]) -> list[dict]:
+    content: list[dict] = []
+    for call in calls:
+        try:
+            parsed_input = orjson.loads(call.arguments)
+        except (orjson.JSONDecodeError, ValueError, TypeError):
+            parsed_input = {}
+        content.append({
+            "type":  "tool_use",
+            "id":    call.call_id,
+            "name":  call.name,
+            "input": parsed_input,
+        })
+    return content
+
+
 # ---------------------------------------------------------------------------
 # Main handler
 # ---------------------------------------------------------------------------
@@ -282,28 +185,65 @@ async def create(
     top_p:        float,
     tools:        list[dict] | None = None,
     tool_choice:  Any = None,
+    tool_scope:   str | None = None,
 ) -> dict | AsyncGenerator[str, None]:
 
     cfg     = get_config()
-    spec    = resolve_model(model)
-    mode_id = int(spec.mode_id)
+    spec = resolve_anthropic_model_spec(model)
+    if spec is None:
+        raise ValueError(f"Unknown model: {model!r}")
 
-    # Build internal message list
-    internal_messages = _parse_anthropic_messages(messages, system)
+    translated_request = await get_translation_pipeline().translate_request(
+        ANTHROPIC_MESSAGES,
+        OPENAI_CHAT_COMPLETIONS,
+        RequestEnvelope(
+            ANTHROPIC_MESSAGES,
+            {
+                "messages": messages,
+                "system": system,
+                "tools": tools,
+                "tool_choice": tool_choice,
+            },
+            model=model,
+            stream=stream,
+        ),
+    )
+    translated_body = translated_request.body
+    if not isinstance(translated_body, dict):
+        raise TypeError("Anthropic request translation must return a dict")
+    internal_messages = translated_body["messages"]
     internal_message, files = _extract_message(internal_messages)
     if not internal_message.strip():
         raise UpstreamError("Empty message after extraction", status=400)
 
-    # Tool injection
+    client_tools_only = _client_tools_only(tool_scope)
+
+    # Tool routing/injection
     tool_names: list[str] = []
     internal_tool_choice: Any = None
+    native_tool_names: set[str] = set()
+    request_overrides: dict | None = None
     if tools:
-        chat_tools       = _convert_tools(tools)
-        tool_names       = extract_tool_names(chat_tools)
-        internal_tool_choice = _convert_tool_choice(tool_choice)
-        tool_prompt      = build_tool_system_prompt(chat_tools, internal_tool_choice)
-        internal_message = inject_into_message(internal_message, tool_prompt)
-        logger.info("messages tool injection: tool_names={} choice={}", tool_names, internal_tool_choice)
+        chat_tools = translated_body["tools"]
+        internal_tool_choice = translated_body["tool_choice"]
+        local_tools, request_overrides = _prepare_console_request_tools(
+            tools=chat_tools,
+            tool_choice=internal_tool_choice,
+            spec=spec,
+            cfg=cfg,
+            request_overrides=None,
+            client_tools_only=client_tools_only,
+        )
+        native_tool_names = (
+            client_function_tool_names(chat_tools)
+            if not client_tools_only and spec.uses_responses_protocol()
+            else set()
+        )
+        if local_tools:
+            tool_names       = extract_tool_names(local_tools)
+            tool_prompt      = build_tool_system_prompt(local_tools, internal_tool_choice)
+            internal_message = inject_into_message(internal_message, tool_prompt)
+            logger.info("messages tool injection: tool_names={} choice={}", tool_names, internal_tool_choice)
 
     from app.dataplane.account import _directory as _acct_dir
     if _acct_dir is None:
@@ -334,7 +274,7 @@ async def create(
             success = False
             _retry  = False
             fail_exc: BaseException | None = None
-            adapter               = StreamAdapter()
+            adapter               = _new_stream_adapter(spec, files, native_tool_names)
             think_buf:  list[str] = []
             text_buf:   list[str] = []
             think_started         = False
@@ -345,6 +285,14 @@ async def create(
             tool_output_tokens    = 0
             block_index           = 0  # tracks next content_block index
             collected_annotations: list[dict] = []
+            think_delta_coalescer = _AnthropicStreamDeltaCoalescer(
+                "thinking_delta",
+                "thinking",
+            )
+            text_delta_coalescer = _AnthropicStreamDeltaCoalescer(
+                "text_delta",
+                "text",
+            )
 
             try:
                 try:
@@ -370,6 +318,10 @@ async def create(
                         message   = internal_message,
                         files     = files,
                         timeout_s = timeout_s,
+                        client_tools_only=client_tools_only,
+                        messages=internal_messages if native_tool_names else None,
+                        request_overrides=request_overrides,
+                        spec=spec,
                     ):
                         if tool_calls_emitted:
                             break
@@ -391,15 +343,14 @@ async def create(
                                         "content_block": {"type": "thinking", "thinking": ""},
                                     })
                                 think_buf.append(ev.content)
-                                yield _sse("content_block_delta", {
-                                    "type":  "content_block_delta",
-                                    "index": block_index,
-                                    "delta": {"type": "thinking_delta", "thinking": ev.content},
-                                })
+                                for chunk in think_delta_coalescer.add(block_index, ev.content):
+                                    yield chunk
 
                             elif ev.kind == "text":
                                 # Close thinking block if open
                                 if think_started and not think_closed:
+                                    for chunk in think_delta_coalescer.flush(block_index):
+                                        yield chunk
                                     think_closed = True
                                     yield _sse("content_block_stop", {
                                         "type":  "content_block_stop",
@@ -411,6 +362,15 @@ async def create(
                                 if sieve is not None:
                                     safe_text, calls = sieve.feed(ev.content)
                                     if calls is not None:
+                                        if text_started:
+                                            for chunk in text_delta_coalescer.flush(block_index):
+                                                yield chunk
+                                            yield _sse("content_block_stop", {
+                                                "type":  "content_block_stop",
+                                                "index": block_index,
+                                            })
+                                            block_index += 1
+                                            text_started = False
                                         # Emit tool_use blocks
                                         for call in calls:
                                             yield _sse("content_block_start", {
@@ -453,14 +413,62 @@ async def create(
                                             "content_block": {"type": "text", "text": ""},
                                         })
                                     text_buf.append(text_chunk)
-                                    yield _sse("content_block_delta", {
-                                        "type":  "content_block_delta",
-                                        "index": block_index,
-                                        "delta": {"type": "text_delta", "text": text_chunk},
-                                    })
+                                    for chunk in text_delta_coalescer.add(block_index, text_chunk):
+                                        yield chunk
 
                             elif ev.kind == "annotation" and ev.annotation_data:
                                 collected_annotations.append(ev.annotation_data)
+
+                            elif ev.kind == "tool_calls" and ev.tool_calls:
+                                if think_started and not think_closed:
+                                    for chunk in think_delta_coalescer.flush(block_index):
+                                        yield chunk
+                                    think_closed = True
+                                    yield _sse("content_block_stop", {
+                                        "type":  "content_block_stop",
+                                        "index": block_index,
+                                    })
+                                    block_index += 1
+
+                                if text_started:
+                                    for chunk in text_delta_coalescer.flush(block_index):
+                                        yield chunk
+                                    yield _sse("content_block_stop", {
+                                        "type":  "content_block_stop",
+                                        "index": block_index,
+                                    })
+                                    block_index += 1
+                                    text_started = False
+
+                                for call in ev.tool_calls:
+                                    yield _sse("content_block_start", {
+                                        "type":  "content_block_start",
+                                        "index": block_index,
+                                        "content_block": {
+                                            "type":  "tool_use",
+                                            "id":    call.call_id,
+                                            "name":  call.name,
+                                            "input": {},
+                                        },
+                                    })
+                                    yield _sse("content_block_delta", {
+                                        "type":  "content_block_delta",
+                                        "index": block_index,
+                                        "delta": {
+                                            "type":         "input_json_delta",
+                                            "partial_json": call.arguments,
+                                        },
+                                    })
+                                    yield _sse("content_block_stop", {
+                                        "type":  "content_block_stop",
+                                        "index": block_index,
+                                    })
+                                    block_index += 1
+
+                                tool_output_tokens = estimate_tool_call_tokens(ev.tool_calls)
+                                tool_calls_emitted = True
+                                ended = True
+                                break
 
                             elif ev.kind == "soft_stop":
                                 ended = True
@@ -475,6 +483,8 @@ async def create(
                         if calls:
                             # Close text block if open
                             if text_started:
+                                for chunk in text_delta_coalescer.flush(block_index):
+                                    yield chunk
                                 yield _sse("content_block_stop", {
                                     "type":  "content_block_stop",
                                     "index": block_index,
@@ -534,24 +544,20 @@ async def create(
                                 chunk = img_text + "\n"
                                 text_buf.append(chunk)
                                 if text_started:
-                                    yield _sse("content_block_delta", {
-                                        "type":  "content_block_delta",
-                                        "index": block_index,
-                                        "delta": {"type": "text_delta", "text": chunk},
-                                    })
+                                    for item in text_delta_coalescer.add(block_index, chunk):
+                                        yield item
 
                         references = adapter.references_suffix()
                         if references:
                             text_buf.append(references)
                             if text_started:
-                                yield _sse("content_block_delta", {
-                                    "type":  "content_block_delta",
-                                    "index": block_index,
-                                    "delta": {"type": "text_delta", "text": references},
-                                })
+                                for chunk in text_delta_coalescer.add(block_index, references):
+                                    yield chunk
 
                         # Close open blocks
                         if think_started and not think_closed:
+                            for chunk in think_delta_coalescer.flush(block_index):
+                                yield chunk
                             yield _sse("content_block_stop", {
                                 "type":  "content_block_stop",
                                 "index": block_index,
@@ -559,6 +565,8 @@ async def create(
                             block_index += 1
 
                         if text_started:
+                            for chunk in text_delta_coalescer.flush(block_index):
+                                yield chunk
                             yield _sse("content_block_stop", {
                                 "type":  "content_block_stop",
                                 "index": block_index,
@@ -627,7 +635,7 @@ async def create(
     # -------------------------------------------------------------------------
     excluded: list[str] = []
     token    = ""
-    adapter  = StreamAdapter()
+    adapter  = _new_stream_adapter(spec, files, native_tool_names)
 
     for attempt in range(max_retries + 1):
         acct, selected_mode_id = await reserve_account(
@@ -643,7 +651,7 @@ async def create(
         success  = False
         _retry   = False
         fail_exc: BaseException | None = None
-        adapter  = StreamAdapter()
+        adapter  = _new_stream_adapter(spec, files, native_tool_names)
 
         try:
             try:
@@ -654,6 +662,10 @@ async def create(
                     message   = internal_message,
                     files     = files,
                     timeout_s = timeout_s,
+                    client_tools_only=client_tools_only,
+                    messages=internal_messages if native_tool_names else None,
+                    request_overrides=request_overrides,
+                    spec=spec,
                 ):
                     event_type, data = classify_line(line)
                     if event_type == "done":
@@ -723,22 +735,22 @@ async def create(
     if full_think:
         out_tokens += estimate_tokens(full_think)
 
+    if native_tool_names and getattr(adapter, "function_calls", None):
+        calls = list(adapter.function_calls)
+        content = _tool_calls_to_anthropic_content(calls)
+        ct = estimate_tool_call_tokens(calls)
+        logger.info("messages native tool_calls: model={} calls={}", model, len(calls))
+        resp = _build_message_response(msg_id, model, content, "tool_use", in_tokens, ct)
+        sources = adapter.search_sources_list()
+        if sources:
+            resp["search_sources"] = sources
+        return resp
+
     # Check for tool calls
     if tool_names:
         tc_result = parse_tool_calls(full_text, tool_names)
         if tc_result.calls:
-            content: list[dict] = []
-            for call in tc_result.calls:
-                try:
-                    parsed_input = orjson.loads(call.arguments)
-                except (orjson.JSONDecodeError, ValueError):
-                    parsed_input = {}
-                content.append({
-                    "type":  "tool_use",
-                    "id":    call.call_id,
-                    "name":  call.name,
-                    "input": parsed_input,
-                })
+            content = _tool_calls_to_anthropic_content(tc_result.calls)
             ct = estimate_tool_call_tokens(tc_result.calls)
             logger.info("messages tool_calls: model={} calls={}", model, len(tc_result.calls))
             resp = _build_message_response(msg_id, model, content, "tool_use", in_tokens, ct)

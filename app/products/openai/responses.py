@@ -5,6 +5,7 @@ Streaming emits standard Responses API SSE events.
 """
 
 import asyncio
+import re
 from typing import Any, AsyncGenerator
 
 from app.platform.logging.logger import logger
@@ -21,10 +22,18 @@ from app.control.model.registry import resolve as resolve_model
 from app.control.account.enums import FeedbackKind
 from app.dataplane.reverse.protocol.xai_chat import classify_line
 from app.dataplane.reverse.protocol.xai_console import client_function_tool_names
+from app.dataplane.translation import (
+    OPENAI_CHAT_COMPLETIONS,
+    OPENAI_RESPONSES,
+    RequestEnvelope,
+    get_translation_pipeline,
+)
+from app.dataplane.translation.transforms import responses_tools_to_chat
 from app.products._account_selection import reserve_account
 
 from .chat import (
     _chat_max_retries,
+    _client_tools_only,
     _extract_message,
     _fail_sync,
     _feedback_kind,
@@ -51,33 +60,69 @@ from app.dataplane.reverse.protocol.tool_parser import parse_tool_calls
 from ._tool_sieve import ToolSieve
 
 
+async def _guard_response_stream(
+    source: AsyncGenerator[str, None],
+    *,
+    response_id: str,
+    model: str,
+) -> AsyncGenerator[str, None]:
+    """Ensure a Responses stream always emits a terminal protocol event."""
+    terminal_emitted = False
+    scan_tail = ""
+
+    def failed_event(message: str, code: str = "server_error") -> str:
+        response = make_resp_object(response_id, model, "failed", [])
+        response["error"] = {"code": code, "message": message}
+        return format_sse("response.failed", {
+            "type": "response.failed",
+            "response": response,
+        })
+
+    try:
+        async for chunk in source:
+            scan_text = scan_tail + chunk
+            if (
+                any(
+                    marker in scan_text
+                    for marker in (
+                        "event: response.completed",
+                        "event: response.failed",
+                        "event: response.incomplete",
+                    )
+                )
+                or re.search(
+                    r'"type"\s*:\s*"response\.(?:completed|failed|incomplete)"',
+                    scan_text,
+                )
+            ):
+                terminal_emitted = True
+            scan_tail = scan_text[-512:]
+            yield chunk
+    except Exception as exc:
+        if terminal_emitted:
+            logger.warning(
+                "responses stream raised after terminal event: model={} error={}",
+                model,
+                exc,
+            )
+            return
+        logger.exception("responses stream terminated unexpectedly: model={}", model)
+        code = "upstream_error" if isinstance(exc, UpstreamError) else "server_error"
+        yield failed_event(str(exc) or exc.__class__.__name__, code)
+        yield "data: [DONE]\n\n"
+        return
+
+    if not terminal_emitted:
+        logger.error("responses stream ended without terminal event: model={}", model)
+        yield failed_event("Stream ended before a terminal response event was emitted.")
+        yield "data: [DONE]\n\n"
+
+
 # ---------------------------------------------------------------------------
 # Tool format normalisation
 # ---------------------------------------------------------------------------
 
-def _to_chat_tools(tools: list[dict]) -> list[dict]:
-    """Normalise Responses API tool format → Chat Completions format.
-
-    Responses API:  {type, name, description, parameters}       (flat)
-    Chat Completions: {type, function: {name, description, parameters}}
-
-    Already-wrapped tools are passed through unchanged so this is safe to
-    call regardless of which format the caller used.
-    """
-    normalised = []
-    for tool in tools:
-        if tool.get("type") == "function" and "function" not in tool and "name" in tool:
-            normalised.append({
-                "type": "function",
-                "function": {
-                    "name":        tool.get("name", ""),
-                    "description": tool.get("description", ""),
-                    "parameters":  tool.get("parameters"),
-                },
-            })
-        else:
-            normalised.append(tool)
-    return normalised
+_to_chat_tools = responses_tools_to_chat
 
 
 # ---------------------------------------------------------------------------
@@ -140,88 +185,6 @@ async def _emit_fc_events(items: list[dict], base_idx: int):
 
 
 # ---------------------------------------------------------------------------
-# Input normalisation
-# ---------------------------------------------------------------------------
-
-def _parse_input(input_val: str | list) -> list[dict]:
-    """Convert Responses API input to our internal messages list.
-
-    Handles message, function_call, and function_call_output item types.
-    function_call → assistant message with tool_calls
-    function_call_output → tool result message
-    """
-    if isinstance(input_val, str):
-        return [{"role": "user", "content": input_val}]
-
-    messages: list[dict] = []
-    for item in input_val:
-        if not isinstance(item, dict):
-            continue
-        item_type = item.get("type", "message" if "role" in item else None)
-
-        if item_type == "function_call":
-            # Reconstruct as assistant message with tool_calls (Chat Completions format)
-            call_id = item.get("call_id", "")
-            name    = item.get("name", "")
-            args    = item.get("arguments", "{}")
-            messages.append({
-                "role":    "assistant",
-                "content": None,
-                "tool_calls": [{
-                    "id":   call_id,
-                    "type": "function",
-                    "function": {"name": name, "arguments": args},
-                }],
-            })
-            continue
-
-        if item_type == "function_call_output":
-            # Reconstruct as tool result message
-            call_id = item.get("call_id", "")
-            output  = item.get("output", "")
-            messages.append({
-                "role":         "tool",
-                "tool_call_id": call_id,
-                "content":      output,
-            })
-            continue
-
-        if item_type != "message":
-            continue  # skip reasoning items, etc.
-
-        role    = item.get("role", "user")
-        content = item.get("content", "")
-
-        if isinstance(content, list):
-            normalized: list[dict] = []
-            for part in content:
-                if not isinstance(part, dict):
-                    continue
-                ptype = part.get("type", "")
-                if ptype in ("input_text", "output_text"):
-                    normalized.append({"type": "text", "text": part.get("text", "")})
-                elif ptype == "image":
-                    src = part.get("image_url") or part.get("source") or {}
-                    url = src.get("url", "")
-                    if url:
-                        normalized.append({"type": "image_url", "image_url": {"url": url}})
-                elif ptype == "input_image":
-                    src = part.get("image_url") or part.get("source") or {}
-                    if isinstance(src, dict):
-                        url = src.get("url", "")
-                    else:
-                        url = str(src or "")
-                    if url:
-                        normalized.append({"type": "image_url", "image_url": {"url": url}})
-                else:
-                    normalized.append(part)
-            content = normalized
-
-        messages.append({"role": role, "content": content})
-    return messages
-
-
-# ---------------------------------------------------------------------------
 # Main handler
 # ---------------------------------------------------------------------------
 
@@ -236,15 +199,31 @@ async def create(
     top_p:        float,
     tools:        list[dict] | None = None,
     tool_choice:  Any = None,
+    tool_scope:   str | None = None,
     request_overrides: dict | None = None,
 ) -> dict | AsyncGenerator[str, None]:
 
     cfg     = get_config()
     spec    = resolve_model(model)
-    messages: list[dict] = []
-    if instructions:
-        messages.append({"role": "system", "content": instructions})
-    messages.extend(_parse_input(input_val))
+    translated_request = await get_translation_pipeline().translate_request(
+        OPENAI_RESPONSES,
+        OPENAI_CHAT_COMPLETIONS,
+        RequestEnvelope(
+            OPENAI_RESPONSES,
+            {
+                "input": input_val,
+                "instructions": instructions,
+                "tools": tools,
+                "tool_choice": tool_choice,
+            },
+            model=model,
+            stream=stream,
+        ),
+    )
+    translated_body = translated_request.body
+    if not isinstance(translated_body, dict):
+        raise TypeError("Responses request translation must return a dict")
+    messages = translated_body["messages"]
 
     message, files = _extract_message(messages)
     if not message.strip():
@@ -253,14 +232,20 @@ async def create(
     # Tool prompt injection — only modify the message text, never the Grok payload
     # Normalise to Chat Completions format first (Responses API uses a flat structure)
     tool_names: list[str] = []
+    client_tools_only = _client_tools_only(tool_scope)
     local_tools, request_overrides = _prepare_console_request_tools(
         tools=tools,
         tool_choice=tool_choice,
         spec=spec,
         cfg=cfg,
         request_overrides=request_overrides,
+        client_tools_only=client_tools_only,
     )
-    native_tool_names = client_function_tool_names(tools) if spec.uses_console_responses() else set()
+    native_tool_names = (
+        client_function_tool_names(tools)
+        if not client_tools_only and spec.uses_responses_protocol()
+        else set()
+    )
     if local_tools:
         chat_tools = _to_chat_tools(local_tools)
         tool_names = extract_tool_names(chat_tools)
@@ -329,6 +314,7 @@ async def create(
                         request_overrides=request_overrides,
                         messages  = messages if native_tool_names else None,
                         timeout_s = timeout_s,
+                        client_tools_only=client_tools_only,
                     ):
                         if tool_calls_emitted:
                             break
@@ -686,7 +672,11 @@ async def create(
                 excluded.append(token)
 
     if stream:
-        return _run_stream()
+        return _guard_response_stream(
+            _run_stream(),
+            response_id=response_id,
+            model=model,
+        )
 
     # -------------------------------------------------------------------------
     # Non-streaming
@@ -722,6 +712,7 @@ async def create(
                     request_overrides=request_overrides,
                     messages  = messages if native_tool_names else None,
                     timeout_s = timeout_s,
+                    client_tools_only=client_tools_only,
                 ):
                     event_type, data = classify_line(line)
                     if event_type == "done":

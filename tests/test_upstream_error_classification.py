@@ -15,6 +15,15 @@ class UpstreamErrorClassificationTests(unittest.TestCase):
 
         self.assertEqual(feedback_kind_for_error(exc), FeedbackKind.SERVER_ERROR)
 
+    def test_plain_waf_block_403_is_not_account_forbidden(self) -> None:
+        exc = UpstreamError(
+            "Image-generation upstream returned 403",
+            status=403,
+            body="403 Your request was blocked.",
+        )
+
+        self.assertEqual(feedback_kind_for_error(exc), FeedbackKind.SERVER_ERROR)
+
     def test_generic_403_still_counts_as_account_forbidden(self) -> None:
         exc = UpstreamError("Image-generation upstream returned 403", status=403)
 

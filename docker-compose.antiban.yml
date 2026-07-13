@@ -29,9 +29,19 @@ services:
     image: caomingjun/warp:latest
     restart: unless-stopped
     cap_add:
+      - MKNOD
+      - AUDIT_WRITE
       - NET_ADMIN
+    device_cgroup_rules:
+      - "c 10:200 rwm"
     environment:
       WARP_SLEEP: ${WARP_SLEEP:-2}
+      BETA_FIX_HOST_CONNECTIVITY: ${WARP_BETA_FIX_HOST_CONNECTIVITY:-1}
+    sysctls:
+      net.ipv6.conf.all.disable_ipv6: "0"
+      net.ipv4.conf.all.src_valid_mark: "1"
+    volumes:
+      - ./data/warp:/var/lib/cloudflare-warp
     ports:
       - "${WARP_SOCKS_HOST:-127.0.0.1}:${WARP_SOCKS_PORT:-1080}:1080"
 
@@ -43,7 +53,7 @@ services:
     restart: unless-stopped
     depends_on:
       warp:
-        condition: service_started
+        condition: service_healthy
     volumes:
       - ./deploy/anti-ban/privoxy/config:/etc/privoxy/config:ro
     ports:

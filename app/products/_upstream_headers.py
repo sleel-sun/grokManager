@@ -13,6 +13,7 @@ from app.control.model.spec import ModelSpec
 from app.dataplane.reverse.runtime.endpoint_table import (
     CHAT,
     CONSOLE_RESPONSES,
+    GROK_BUILD_RESPONSES,
     WS_IMAGINE,
 )
 
@@ -20,6 +21,8 @@ from app.dataplane.reverse.runtime.endpoint_table import (
 def _endpoint_for(spec: ModelSpec) -> str:
     if spec.uses_console_responses():
         return CONSOLE_RESPONSES
+    if spec.uses_grok_build_responses():
+        return GROK_BUILD_RESPONSES
     if spec.is_image():
         return WS_IMAGINE
     return CHAT

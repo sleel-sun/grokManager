@@ -15,7 +15,7 @@ from app.platform.auth.middleware import (
     webui_user_allows_nsfw,
 )
 from app.platform.config.snapshot import get_config
-from app.platform.errors import UpstreamError
+from app.platform.errors import RateLimitError, UpstreamError
 from app.platform.logging.logger import logger
 from app.platform.runtime.clock import now_s
 from app.control.account.enums import FeedbackKind
@@ -29,6 +29,7 @@ from app.products.openai.images import (
     _should_retry_image_upstream,
     resolve_aspect_ratio,
 )
+from .quota import consume_user_quota
 
 router = APIRouter()
 
@@ -397,6 +398,15 @@ async def imagine_ws(websocket: WebSocket):
                 except (TypeError, ValueError):
                     count = 6
                 count = max(1, min(count, 6))
+                try:
+                    consume_user_quota(user, "grok", amount=count)
+                except RateLimitError as exc:
+                    await _send({
+                        "type": "error",
+                        "message": exc.message,
+                        "code": exc.code,
+                    })
+                    continue
                 await _stop_run()
                 run_task = asyncio.create_task(_run(prompt, aspect_ratio, nsfw, count, quality))
                 continue

@@ -84,6 +84,16 @@ docker compose up -d --build
 docker compose up -d --build grokmanager
 ```
 
+Camoufox Cloudflare clearance sidecar 默认不启动。只有将
+`proxy.clearance.mode` 配置为 `camoufox` 时才需要启用对应 profile：
+
+```bash
+docker compose --profile camoufox up -d --build
+```
+
+可通过 `CAMOUFOX_VERSION` 覆盖默认的 `0.4.11`，但指定版本必须已发布到
+PyPI。未启用该 profile 时，Camoufox 不参与主服务构建或启动。
+
 如果需要参考 `jiujiu532/grok2api` 的防 403 / 防封部署方式，可叠加防封版 Compose：
 
 ```bash
@@ -188,6 +198,8 @@ uv run grokmanager-maintainer --count 5 --workers 2  # 2 个并发 worker × 每
 
 最终注册页如果出现 Turnstile，maintainer 会先尝试现有真人化点击逻辑，并把内置 `turnstilePatch/script.js` 通过 CDP 注入到新页面，避免依赖 Chrome 扩展加载。`web.turnstile_manual_wait_sec` 控制自动点击失败后的人工等待时间：`0` 表示自动模式（只有真实图形桌面默认等待 180 秒；Headless、Xvfb、无 `DISPLAY` 的 Linux 服务器默认不等待），大于 0 表示固定等待秒数；如需完全关闭人工等待，可设置环境变量 `MAINTAINER_TURNSTILE_MANUAL_WAIT_SEC=off`。
 
+容器部署默认使用 Xvfb 非 Headless Chromium，降低 Headless 浏览器直接触发入口风控的概率。若注册页显示 `Attention Required! | Cloudflare`，这是出口 IP/ASN 硬拦截而不是 Turnstile；请使用 `docker compose -f docker-compose.yml -f docker-compose.antiban.yml up -d --build` 启用同出口的 Privoxy、WARP 和 FlareSolverr。FlareSolverr 未单独设置 `MAINTAINER_FLARESOLVERR_PROXY` 时会继承 `MAINTAINER_PROXY`，避免 clearance cookie 与注册浏览器出口不一致。
+
 ### 多进程并发注册
 
 - CLI 新增 `--workers N`（`N≥1`，**无上限**；按机器内存 / CPU / 上游配额自行控制），`N>1` 时以 `multiprocessing.spawn` 拉起 **恰好 `N`** 个子进程并行注册，每个子进程独立跑 `count` 轮迭代
@@ -242,8 +254,13 @@ uv run grokmanager-maintainer --count 5 --workers 2  # 2 个并发 worker × 每
 | 缓存管理 | `/admin/cache` |
 | WebUI 登录页 | `/webui/login` |
 | Web Chat | `/webui/chat` |
+| 画图工作台 | `/webui/image-studio` |
 | Masonry | `/webui/masonry` |
 | ChatKit | `/webui/chatkit` |
+
+### 画图工作台
+
+`/webui/image-studio` 提供面向图片生成与图片编辑的对话式工作台，支持历史会话、参考图上传、服务端历史同步和结果图片管理。生成结果中的图片点击后会在当前页面弹窗预览，不会默认打开图片链接；下载和引用编辑操作仍在图片卡片下方保留。
 
 ### 鉴权规则
 
@@ -280,6 +297,7 @@ uv run grokmanager-maintainer --count 5 --workers 2  # 2 个并发 worker × 每
 | `SERVER_PORT` | 服务监听端口 | `8000` |
 | `SERVER_WORKERS` | Granian worker 数量 | `1` |
 | `HOST_PORT` | Docker Compose 宿主机映射端口 | `8000` |
+| `CAMOUFOX_VERSION` | 可选 Camoufox sidecar 的 PyPI 版本 | `0.4.11` |
 | `DATA_DIR` | 本地数据根目录（账号库、本地媒体文件、缓存索引统一位于此目录下） | `./data` |
 | `LOG_DIR` | 本地日志目录 | `./logs` |
 | `ACCOUNT_STORAGE` | 账号存储后端 | `local` |
@@ -303,7 +321,7 @@ uv run grokmanager-maintainer --count 5 --workers 2  # 2 个并发 worker × 每
 | `logging` | `file_level`, `max_files` |
 | `features` | `temporary`, `memory`, `stream`, `thinking`, `auto_chat_mode_fallback`, `thinking_summary`, `dynamic_statsig`, `enable_nsfw`, `show_search_sources`, `custom_instruction`, `image_format`, `video_format` |
 | `proxy.egress` | `mode`, `proxy_url`, `proxy_pool`, `resource_proxy_url`, `resource_proxy_pool`, `skip_ssl_verify` |
-| `proxy.clearance` | `mode`, `cf_cookies`, `user_agent`, `browser`, `flaresolverr_url`, `timeout_sec`, `refresh_interval` |
+| `proxy.clearance` | `mode`, `cf_cookies`, `user_agent`, `browser`, `flaresolverr_url`, `camoufox_url`, `timeout_sec`, `refresh_interval` |
 | `retry` | `reset_session_status_codes`, `max_retries`, `on_codes` |
 | `account.refresh` | `basic_interval_sec`, `super_interval_sec`, `heavy_interval_sec`, `usage_concurrency`, `on_demand_min_interval_sec` |
 | `cache.local` | `image_max_mb`, `video_max_mb` |
@@ -345,7 +363,10 @@ uv run grokmanager-maintainer --count 5 --workers 2  # 2 个并发 worker × 每
 | `grok-4.20-auto` | `auto` | `super`，优先使用 heavy 后回退 super |
 | `grok-4.20-expert` | `expert` | `super`，优先使用 heavy 后回退 super |
 | `grok-4.20-heavy` | `heavy` | `heavy` |
-| `grok-4.3` | `auto` | `basic`（走 xAI Console Responses 上游，命中 `https://console.x.ai`） |
+| `grok-4.5` | `build` | 独立 Grok Build CLI OAuth 上游 |
+| `grok-4.3-build` | `build` | 面向 OpenClaw/Codex 等 Agent，使用 Build OAuth 号池 |
+| `grok-composer-2.5-fast` | `build` | Grok Build CLI OAuth，上游账号需要 Composer 权限/额度 |
+| `grok-4.3` | `console` | `basic`（走 xAI Console Responses 上游，命中 `https://console.x.ai`） |
 | `grok-4.3-beta` | `grok-420-computer-use-sa` | `super` |
 
 #### Console 免费账号模型
@@ -367,6 +388,20 @@ uv run grokmanager-maintainer --count 5 --workers 2  # 2 个并发 worker × 每
 | `grok-4.20-multi-agent-high` | `grok-4.20-multi-agent` | 固定 `high` | 免费账号，多智能体，16 agents |
 | `grok-4.20-multi-agent-xhigh` | `grok-4.20-multi-agent` | 固定 `xhigh` | 免费账号，多智能体，16 agents |
 | `grok-build-console` | `grok-build-0.1` | 默认 | 免费账号，Grok Build 0.1 |
+
+#### Grok 4.5 Build OAuth
+
+`grok-4.5`、`grok-4.5-low`、`grok-4.5-medium` 和 `grok-4.5-high`
+使用 Grok Build CLI 专用上游，不使用普通 Grok SSO/Console 账号池。
+
+将 Grok CLI 生成的 `~/.grok/auth.json` 放到项目的
+`data/grok_auth.json`，然后重启服务。文件会通过 Docker 的 `/app/data`
+挂载读取；access token 到期时服务会使用 `refresh_token` 自动刷新并原子写回。
+
+```bash
+install -m 600 ~/.grok/auth.json data/grok_auth.json
+docker compose up -d --build grokmanager
+```
 
 ### Image
 

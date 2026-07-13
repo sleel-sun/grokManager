@@ -11,14 +11,14 @@ from pathlib import Path
 from typing import Annotated, Any
 from urllib.parse import parse_qs, urlparse
 
-from fastapi import APIRouter, Depends, File, Form, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from app.control.model import registry as model_registry
 from app.platform.auth.middleware import WebUIUser, verify_webui_key
 from app.platform.config.snapshot import get_config
-from app.platform.errors import ValidationError
+from app.platform.errors import AppError, ErrorKind, ValidationError
 from app.platform.paths import data_path
 from app.platform.storage import image_files_dir
 from app.products.openai.router import (
@@ -28,6 +28,7 @@ from app.products.openai.router import (
     _validate_image_edit_n,
     _validate_image_n,
 )
+from .quota import consume_user_quota, quota_status_for_user
 
 router = APIRouter(prefix="/webui/api", tags=["WebUI - Images"])
 
@@ -38,6 +39,8 @@ _IMAGE_EDIT_REFERENCE_LIMIT = 5
 _LOCAL_IMAGE_ID_RE = re.compile(r"^[0-9a-fA-F\-]{16,36}$")
 _QUALITY_VALUES = {"1k", "2k", "4k"}
 _QUALITY_RANK = {"1k": 1, "2k": 2, "4k": 3}
+_IMAGE_TASK_TTL_S = 60 * 60
+_IMAGE_TASKS: dict[str, dict[str, Any]] = {}
 
 
 class WebUIImageGenerationRequest(BaseModel):
@@ -121,6 +124,12 @@ def _allowed_gpt_models(user: WebUIUser) -> set[str]:
 
 
 def _ensure_gpt_model_access(model: str, user: WebUIUser) -> None:
+    if model not in _GPT_WORKSPACE_MODELS:
+        raise ValidationError(
+            f"WebUI image studio only supports GPT image models; got {model!r}",
+            param="model",
+            code="model_not_allowed",
+        )
     if model in _GPT_WORKSPACE_MODELS and model not in _allowed_gpt_models(user):
         raise ValidationError(
             f"WebUI user {user.username!r} does not have access to GPT image model {model!r}",
@@ -391,10 +400,8 @@ async def list_webui_image_models(user: WebUIUser = Depends(verify_webui_key)):
         _model_payload(spec)
         for spec in model_registry.list_enabled()
         if spec.is_image()
-        and (
-            spec.model_name not in _GPT_WORKSPACE_MODELS
-            or spec.model_name in _allowed_gpt_models(user)
-        )
+        and spec.model_name in _GPT_WORKSPACE_MODELS
+        and spec.model_name in _allowed_gpt_models(user)
     ]
     edits = [
         _model_payload(spec)
@@ -412,21 +419,22 @@ async def list_webui_image_models(user: WebUIUser = Depends(verify_webui_key)):
                 "gpt_models": sorted(_allowed_gpt_models(user)),
                 "quality": _quality_payload(user),
                 "history_limit": _HISTORY_LIMIT,
+                "quota": quota_status_for_user(user),
             },
         }
     )
 
 
-@router.post("/images/generations")
-async def webui_image_generations(
+async def _run_webui_image_generation(
     req: WebUIImageGenerationRequest,
-    user: WebUIUser = Depends(verify_webui_key),
-):
+    user: WebUIUser,
+) -> dict[str, Any]:
     spec = model_registry.get(req.model)
     if spec is None or not spec.enabled or not spec.is_image():
         raise ValidationError(f"Model {req.model!r} is not an image model", param="model")
     _ensure_gpt_model_access(req.model, user)
     _validate_image_n(req.model, req.n or 1, param="n")
+    consume_user_quota(user, "gpt", amount=req.n or 1)
     quality = _quality_for_user(getattr(req, "quality", None), user)
     prompt = _quality_prompt(req.prompt, quality) if req.model in _GPT_WORKSPACE_MODELS else req.prompt
 
@@ -454,7 +462,91 @@ async def webui_image_generations(
     if isinstance(result, dict):
         result["studio_session"] = session
         result["quality"] = quality
-    return JSONResponse(result)
+        return result
+    return {"data": [], "studio_session": session, "quality": quality}
+
+
+def _image_task_error(exc: BaseException) -> dict[str, Any]:
+    if isinstance(exc, AppError):
+        return {
+            "message": exc.message,
+            "type": str(exc.kind),
+            "code": exc.code,
+            "status": exc.status,
+        }
+    return {
+        "message": str(exc) or "Image generation failed",
+        "type": str(ErrorKind.SERVER),
+        "code": "internal_error",
+        "status": 500,
+    }
+
+
+def _cleanup_image_tasks() -> None:
+    now = time.time()
+    expired = [
+        task_id
+        for task_id, task in _IMAGE_TASKS.items()
+        if task.get("status") in {"completed", "failed"} and now - float(task.get("updated_at") or 0) > _IMAGE_TASK_TTL_S
+    ]
+    for task_id in expired:
+        _IMAGE_TASKS.pop(task_id, None)
+
+
+async def _execute_image_generation_task(task_id: str, req: WebUIImageGenerationRequest, user: WebUIUser) -> None:
+    task = _IMAGE_TASKS.get(task_id)
+    if not task:
+        return
+    task.update({"status": "running", "updated_at": time.time()})
+    try:
+        result = await _run_webui_image_generation(req, user)
+    except Exception as exc:
+        task.update({
+            "status": "failed",
+            "error": _image_task_error(exc),
+            "updated_at": time.time(),
+        })
+        return
+    task.update({
+        "status": "completed",
+        "result": result,
+        "updated_at": time.time(),
+    })
+
+
+@router.post("/images/generations")
+async def webui_image_generations(
+    req: WebUIImageGenerationRequest,
+    user: WebUIUser = Depends(verify_webui_key),
+):
+    return JSONResponse(await _run_webui_image_generation(req, user))
+
+
+@router.post("/images/generations/tasks")
+async def create_webui_image_generation_task(
+    req: WebUIImageGenerationRequest,
+    user: WebUIUser = Depends(verify_webui_key),
+):
+    _cleanup_image_tasks()
+    task_id = uuid.uuid4().hex
+    now = time.time()
+    _IMAGE_TASKS[task_id] = {
+        "task_id": task_id,
+        "status": "queued",
+        "created_at": now,
+        "updated_at": now,
+    }
+    asyncio.create_task(_execute_image_generation_task(task_id, req, user))
+    return JSONResponse(_IMAGE_TASKS[task_id], status_code=202)
+
+
+@router.get("/images/tasks/{task_id}")
+async def get_webui_image_task(task_id: str, _user: WebUIUser = Depends(verify_webui_key)):
+    _cleanup_image_tasks()
+    task = _IMAGE_TASKS.get(task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Image task not found")
+    return JSONResponse(task)
 
 
 @router.post("/images/edits")
@@ -478,6 +570,7 @@ async def webui_image_edits(
         raise ValidationError(f"Model {model!r} is not an image-edit model", param="model")
     _ensure_gpt_model_access(model, user)
     _validate_image_edit_n(n, param="n")
+    consume_user_quota(user, "gpt", amount=n)
     quality_value = _quality_for_user(quality, user)
     edit_size = _IMAGE_EDIT_SIZE
 

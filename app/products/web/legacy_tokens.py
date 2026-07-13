@@ -7,11 +7,17 @@ import asyncio
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
 
-from app.control.account.commands import AccountUpsert, BulkReplacePoolCommand, ListAccountsQuery
+from app.control.account.commands import AccountUpsert, ListAccountsQuery
 from app.platform.auth.middleware import verify_admin_key
 from app.platform.logging.logger import logger
 from .admin import get_refresh_svc, get_repo
-from .admin.tokens import _json, _sanitize
+from .admin.tokens import (
+    _is_external_gpt_import,
+    _is_external_gpt_record,
+    _json,
+    _replace_grok_pool,
+    _sanitize,
+)
 
 
 router = APIRouter(tags=["Admin - Tokens"], dependencies=[Depends(verify_admin_key)])
@@ -54,7 +60,7 @@ async def list_legacy_tokens(repo=Depends(get_repo)):
     payload = [
         {"token": record.token, "tags": record.tags or []}
         for record in items
-        if not record.is_deleted()
+        if not record.is_deleted() and not _is_external_gpt_record(record)
     ]
     return _json({"ssoBasic": payload})
 
@@ -70,18 +76,19 @@ async def replace_legacy_tokens(
     for item in req.ssoBasic:
         data = {"token": item} if isinstance(item, str) else item.model_dump()
         token = _sanitize(data.get("token", ""))
-        if not token or token in seen:
+        tags = data.get("tags") or []
+        if not token or token in seen or _is_external_gpt_import(token, tags):
             continue
         seen.add(token)
         upserts.append(
             AccountUpsert(
                 token=token,
                 pool="basic",
-                tags=data.get("tags") or [],
+                tags=tags,
             )
         )
 
-    await repo.replace_pool(BulkReplacePoolCommand(pool="basic", upserts=upserts))
+    await _replace_grok_pool(repo, "basic", upserts)
     logger.info("legacy admin pool replaced: pool=basic token_count={}", len(upserts))
     if upserts:
         asyncio.create_task(_refresh_imported(refresh_svc, [item.token for item in upserts]))

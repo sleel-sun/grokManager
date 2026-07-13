@@ -622,6 +622,7 @@ async def _model_pass_stream(
         emit_think=None if req.reasoning_effort is None else req.reasoning_effort != "none",
         tools=tools,
         tool_choice=tool_choice,
+        tool_scope="client_only",
         temperature=req.temperature or 0.8,
         top_p=req.top_p or 0.95,
         request_overrides=_request_overrides(req),

@@ -17,6 +17,7 @@ CHAT              = f"{BASE}/rest/app-chat/conversations/new"
 
 # ── xAI Console Responses (SSE streaming, SSO-authenticated) ─────────────
 CONSOLE_RESPONSES = f"{CONSOLE_BASE}/v1/responses"
+GROK_BUILD_RESPONSES = "https://cli-chat-proxy.grok.com/v1/responses"
 
 # ── Asset management ─────────────────────────────────────────────────────
 ASSETS_UPLOAD     = f"{BASE}/rest/app-chat/upload-file"        # POST (base64 upload)
@@ -49,7 +50,7 @@ LIVEKIT_TOKENS    = f"{BASE}/rest/livekit/tokens"              # POST
 
 __all__ = [
     "BASE", "ASSETS_CDN", "CONSOLE_BASE",
-    "CHAT", "CONSOLE_RESPONSES",
+    "CHAT", "CONSOLE_RESPONSES", "GROK_BUILD_RESPONSES",
     "ASSETS_UPLOAD", "ASSETS_LIST", "ASSETS_DELETE", "ASSETS_DOWNLOAD",
     "RATE_LIMITS",
     "ACCEPT_TOS", "NSFW_MGMT", "SET_BIRTH",

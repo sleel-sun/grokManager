@@ -10,10 +10,13 @@ api_key = ""
 webui_enabled = false
 # WebUI 访问密码
 webui_key = ""
+# 启用 WebUI 多用户管理；关闭时即使保留 webui_users，也使用上面的单密码/匿名模式
+webui_multi_user_enabled = false
 # WebUI 多用户列表；配置后 WebUI 使用用户名 + 独立 key 登录，并按用户隔离浏览器端会话与 MCP 配置
 # allow_nsfw 可独立控制该用户是否允许 NSFW 生成；全局 features.enable_nsfw=false 时所有用户都禁用
 # gpt_enabled 可控制该用户是否允许使用 GPT 画图/编辑；勾选后包含全部 GPT 图片模型；gpt_image_quality 可限制最高 1k/2k/4k
-# 示例：[{ username = "alice", key = "secret", display_name = "Alice", enabled = true, allow_nsfw = true, gpt_enabled = true, gpt_image_quality = "1k" }]
+# grok_daily_quota / gpt_daily_quota 为 WebUI 用户每日请求额度；0 表示不限额
+# 示例：[{ username = "alice", key = "secret", display_name = "Alice", enabled = true, allow_nsfw = true, gpt_enabled = true, gpt_image_quality = "1k", grok_daily_quota = 100, gpt_daily_quota = 20 }]
 webui_users = []
 
 
@@ -74,6 +77,23 @@ video_format = "grok_url"
 # 加输入触发词实现；如账号明确具备 multi-agent 权限，可改为 grok-4.20-multi-agent。
 composer_fast_upstream_model = "grok-4.3"
 
+[grok_build]
+auth_file = "data/grok_auth.json"
+job_dir = "data/grok_build_jobs"
+usage_db = "data/grok_build_usage.db"
+base_url = "https://cli-chat-proxy.grok.com/v1"
+client_version = "0.2.93"
+client_identifier = "grok-pager"
+token_auth = "xai-grok-cli"
+user_agent = "grok-pager/0.2.93 grok-shell/0.2.93 (linux; x86_64)"
+oauth_client_id = "b1a00492-073a-47ea-816f-4c329264a828"
+oauth_token_url = "https://auth.x.ai/oauth2/token"
+oauth_scope = "openid profile email offline_access grok-cli:access api:access conversations:read conversations:write"
+refresh_skew_seconds = 180
+auto_refresh_enabled = true
+auto_refresh_interval_s = 300
+auto_refresh_before_expiry_s = 900
+
 
 # ==================== 本地缓存 ====================
 [cache.local]
@@ -99,7 +119,7 @@ resource_proxy_pool = []
 skip_ssl_verify = false
 
 [proxy.clearance]
-# Cloudflare clearance 模式：none | manual | flaresolverr
+# Cloudflare clearance 模式：none | manual | flaresolverr | camoufox
 mode = "none"
 # 手动模式：Cloudflare Cookie 字符串
 cf_cookies = ""
@@ -109,6 +129,8 @@ user_agent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36
 browser = "chrome136"
 # FlareSolverr 服务地址
 flaresolverr_url = ""
+# Camoufox sidecar 服务地址
+camoufox_url = "http://camoufox:8193"
 # 挑战等待超时（秒）
 timeout_sec = 60
 # Clearance 刷新间隔（秒）
@@ -166,6 +188,16 @@ registration_attempts_per_account = 2
 otp_timeout_s = 90
 # 注册后补登录阶段等待 ChatGPT 邮箱验证码的秒数。
 login_otp_timeout_s = 90
+# 定时从 ChatGPT 远端拉取账号资料、套餐和图片额度，并更新 GPT 账号列表展示。
+remote_refresh_enabled = true
+# GPT 账号远端资料刷新扫描间隔秒数。
+remote_refresh_interval_s = 3600
+# 单个 GPT 账号远端资料超过多久视为过期；默认与扫描间隔一致。
+remote_refresh_stale_after_s = 3600
+# GPT 远端资料刷新并发数；启动时会限制在 1-10。
+remote_refresh_concurrency = 3
+# 每轮最多刷新账号数；0 = 不限制。
+remote_refresh_limit = 0
 
 
 [gpt_image]
@@ -181,6 +213,8 @@ timeout_repair_after_s = 1800
 timeout_repair_interval_s = 300
 # ChatGPT GPT 图片生成总超时秒数；上游经常异步出图，默认给足轮询窗口
 timeout = 360
+# 单个 GPT 图片账号一次尝试最多等待秒数；超时后换下一个账号，避免单号卡死耗尽总超时
+account_attempt_timeout_s = 120
 # 每张 GPT 图片在同一个 HTTP 请求内最多尝试的账号数；调高会增加客户端等待时间
 max_account_attempts_per_image = 4
 

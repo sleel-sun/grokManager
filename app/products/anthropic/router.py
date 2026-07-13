@@ -1,6 +1,6 @@
 """Anthropic Messages API router (/v1/messages)."""
 
-from typing import Any
+from typing import Any, Literal
 
 import orjson
 from fastapi import APIRouter, Depends
@@ -10,8 +10,14 @@ from pydantic import BaseModel
 from app.platform.auth.middleware import verify_api_key
 from app.platform.errors import AppError, ValidationError
 from app.platform.tokens import estimate_prompt_tokens, estimate_tokens
-from app.control.model import registry as model_registry
 from app.products._upstream_headers import build_upstream_response_headers
+from app.products.anthropic.compat import resolve_anthropic_model_spec
+from app.dataplane.translation import (
+    ANTHROPIC_MESSAGES,
+    OPENAI_CHAT_COMPLETIONS,
+    RequestEnvelope,
+    get_translation_pipeline,
+)
 
 
 router = APIRouter(prefix="/v1", dependencies=[Depends(verify_api_key)])
@@ -21,7 +27,7 @@ _SSE_HEADERS = {"Cache-Control": "no-cache", "Connection": "keep-alive", "X-Acce
 
 
 def _message_model_spec(model: str):
-    spec = model_registry.get(model)
+    spec = resolve_anthropic_model_spec(model)
     if spec is None or not spec.enabled or not spec.is_chat():
         raise ValidationError(
             f"Model {model!r} does not exist or you do not have access to it.",
@@ -57,6 +63,7 @@ class MessagesRequest(BaseModel):
     top_p:       float | None = None
     tools:       list[dict] | None = None
     tool_choice: Any = None
+    tool_scope:  Literal["auto", "client_only"] | None = None
     thinking:    Any = None          # {type:"enabled", budget_tokens:N} — used to enable thinking output
 
 
@@ -119,6 +126,7 @@ async def messages_endpoint(req: MessagesRequest):
         top_p        = req.top_p or 0.95,
         tools        = req.tools or None,
         tool_choice  = req.tool_choice,
+        tool_scope   = req.tool_scope,
     )
 
     upstream_headers = build_upstream_response_headers(spec)
@@ -172,19 +180,35 @@ async def count_tokens_endpoint(req: CountTokensRequest):
     if req.model is not None:
         _message_model_spec(req.model)
 
-    # Lazy import to avoid a top-level dependency on the Messages handler
-    # (which itself imports heavier dataplane modules).
-    from .messages import _parse_anthropic_messages, _convert_tools
+    # Import registers the Anthropic request transform.
+    from . import messages as _messages_module  # noqa: F401
 
     messages_payload = [m.model_dump() for m in req.messages]
-    internal_messages = _parse_anthropic_messages(messages_payload, req.system)
+    translated = await get_translation_pipeline().translate_request(
+        ANTHROPIC_MESSAGES,
+        OPENAI_CHAT_COMPLETIONS,
+        RequestEnvelope(
+            ANTHROPIC_MESSAGES,
+            {
+                "messages": messages_payload,
+                "system": req.system,
+                "tools": req.tools,
+                "tool_choice": req.tool_choice,
+            },
+            model=req.model or "",
+        ),
+    )
+    translated_body = translated.body
+    if not isinstance(translated_body, dict):
+        raise TypeError("Anthropic request translation must return a dict")
+    internal_messages = translated_body["messages"]
 
     total = estimate_prompt_tokens(internal_messages)
 
     if req.tools:
         # Tool schemas are part of the prompt the model sees, so they count
         # against ``input_tokens`` in the same way the messages do.
-        total += estimate_tokens(_convert_tools(req.tools))
+        total += estimate_tokens(translated_body["tools"])
 
     return JSONResponse({"input_tokens": total})
 

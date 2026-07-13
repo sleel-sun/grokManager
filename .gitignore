@@ -27,6 +27,13 @@ venv/
 ENV/
 env/
 
+# Tooling caches
+.ruff_cache/
+.mypy_cache/
+.hypothesis/
+.tox/
+.nox/
+
 # IDE
 .vscode/
 .idea/
@@ -37,6 +44,8 @@ env/
 
 # Environment Variables
 .env
+.env.*
+!.env.example
 maintainer.config.json
 
 # Logs
@@ -50,6 +59,8 @@ app/data/
 # Testing
 .pytest_cache/
 .coverage
+.coverage.*
+coverage.xml
 htmlcov/
 
 # Project specific

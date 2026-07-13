@@ -22,10 +22,10 @@ from app.platform.runtime.clock import now_ms
 from app.control.account.commands import (
     AccountPatch,
     AccountUpsert,
-    BulkReplacePoolCommand,
     ListAccountsQuery,
 )
 from app.control.account.enums import AccountStatus
+from app.control.account.models import AccountMutationResult
 from app.control.account.state_machine import is_manageable
 
 if TYPE_CHECKING:
@@ -103,6 +103,8 @@ class SaveTokensRequest(RootModel[dict[str, list[str | TokenImportItem]]]):
 # ---------------------------------------------------------------------------
 
 _QUOTA_MODES = ("auto", "fast", "expert", "heavy", "grok_4_3", "console")
+_EXTERNAL_GPT_TAGS = {"gpt", "gpt-image"}
+_EXTERNAL_GPT_TOKEN_PREFIXES = ("gpt_", "gptcred_", "gptimg_", "gptimgcred_")
 
 
 def _quota_int(value, default: int = 0) -> int:
@@ -152,6 +154,84 @@ def _serialize_record(r) -> dict:
     }
 
 
+def _is_external_gpt_record(record) -> bool:
+    tags = set(record.tags or [])
+    if tags.intersection(_EXTERNAL_GPT_TAGS):
+        return True
+    token = str(record.token or "")
+    if token.startswith(_EXTERNAL_GPT_TOKEN_PREFIXES):
+        return True
+    ext = record.ext or {}
+    return bool(
+        ext.get("gpt")
+        or ext.get("gpt_access_token")
+        or ext.get("gpt_image")
+        or ext.get("gpt_image_access_token")
+    )
+
+
+def _is_external_gpt_import(token: str, tags: list[str] | None = None) -> bool:
+    tag_set = set(tags or [])
+    return (
+        str(token or "").startswith(_EXTERNAL_GPT_TOKEN_PREFIXES)
+        or bool(tag_set.intersection(_EXTERNAL_GPT_TAGS))
+    )
+
+
+async def _list_active_pool_records(
+    repo: "AccountRepository",
+    pool: str,
+) -> list:
+    records: list = []
+    page_num = 1
+    while True:
+        page = await repo.list_accounts(
+            ListAccountsQuery(
+                page=page_num,
+                page_size=2000,
+                pool=pool,
+                include_deleted=False,
+            )
+        )
+        records.extend(page.items)
+        if page_num * 2000 >= page.total:
+            break
+        page_num += 1
+    return records
+
+
+async def _replace_grok_pool(
+    repo: "AccountRepository",
+    pool: str,
+    upserts: list[AccountUpsert],
+) -> AccountMutationResult:
+    records = await _list_active_pool_records(repo, pool)
+    delete_tokens = [
+        record.token
+        for record in records
+        if not _is_external_gpt_record(record)
+    ]
+
+    deleted = 0
+    revision = 0
+    if delete_tokens:
+        deleted_result = await repo.delete_accounts(delete_tokens)
+        deleted = deleted_result.deleted
+        revision = deleted_result.revision
+
+    upserted = 0
+    if upserts:
+        upserted_result = await repo.upsert_accounts(upserts)
+        upserted = upserted_result.upserted
+        revision = upserted_result.revision or revision
+
+    return AccountMutationResult(
+        upserted=upserted,
+        deleted=deleted,
+        revision=revision,
+    )
+
+
 def _json(data) -> Response:
     """orjson fast-path response."""
     return Response(content=orjson.dumps(data), media_type="application/json")
@@ -199,7 +279,15 @@ async def list_tokens(repo: "AccountRepository" = Depends(get_repo)):
             break
         page_num += 1
 
-    return _json({"tokens": [_serialize_record(r) for r in all_items]})
+    return _json(
+        {
+            "tokens": [
+                _serialize_record(record)
+                for record in all_items
+                if not _is_external_gpt_record(record)
+            ]
+        }
+    )
 
 
 @router.post("/tokens")
@@ -218,11 +306,12 @@ async def save_tokens(
         for item in items:
             td = {"token": item} if isinstance(item, str) else item.model_dump()
             token_val = _sanitize(td.get("token", ""))
-            if not token_val:
+            tags = td.get("tags") or []
+            if not token_val or _is_external_gpt_import(token_val, tags):
                 continue
-            upserts.append(AccountUpsert(token=token_val, pool=pool_name, tags=td.get("tags") or []))
+            upserts.append(AccountUpsert(token=token_val, pool=pool_name, tags=tags))
         if upserts:
-            await repo.replace_pool(BulkReplacePoolCommand(pool=pool_name, upserts=upserts))
+            await _replace_grok_pool(repo, pool_name, upserts)
             all_tokens.extend(u.token for u in upserts)
             total_upserted += len(upserts)
 
@@ -441,9 +530,12 @@ async def replace_pool(
     repo: "AccountRepository" = Depends(get_repo),
     refresh_svc: "AccountRefreshService" = Depends(get_refresh_svc),
 ):
-    cleaned = [t for t in (_sanitize(t) for t in req.tokens) if t]
+    cleaned = [
+        t for t in (_sanitize(t) for t in req.tokens)
+        if t and not _is_external_gpt_import(t, req.tags)
+    ]
     upserts = [AccountUpsert(token=t, pool=req.pool, tags=req.tags) for t in cleaned]
-    await repo.replace_pool(BulkReplacePoolCommand(pool=req.pool, upserts=upserts))
+    await _replace_grok_pool(repo, req.pool, upserts)
     logger.info("admin pool replaced: pool={} token_count={}", req.pool, len(cleaned))
     if cleaned:
         _fire_and_forget(

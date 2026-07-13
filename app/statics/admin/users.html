@@ -1,0 +1,174 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title data-i18n="users.pageTitle">grokManager - WebUI 用户管理</title>
+  <link rel="icon" href="/favicon.ico?v={{APP_VERSION}}">
+  <link href="https://cdn.jsdelivr.net/npm/geist@1.0.0/dist/fonts/geist-sans/style.css" rel="stylesheet">
+  <link href="/static/css/app.css?v={{APP_VERSION}}" rel="stylesheet">
+  <style>
+    body { background:#FAF9F5 }
+    .page-hd { display:flex; align-items:flex-start; justify-content:space-between; gap:18px; margin-bottom:20px }
+    .page-title { font-size:22px; font-weight:700; line-height:1.2 }
+    .page-sub { font-size:13px; color:var(--fg-muted); margin-top:5px; max-width:760px }
+    .page-actions { display:flex; align-items:center; gap:8px; flex-wrap:wrap; justify-content:flex-end }
+    .page-action-btn {
+      height:32px; padding:0 14px; border-radius:999px; display:inline-flex; align-items:center; justify-content:center; gap:6px;
+      font-size:13px; font-weight:600; border:1px solid #e6e6e6; background:#fafafa; color:#444;
+    }
+    .page-action-btn:hover { background:#f3f3f3; border-color:#dcdcdc }
+    .page-action-btn-primary { background:#111; border-color:#111; color:#fff }
+    .page-action-btn-primary:hover { background:#222; border-color:#222 }
+    .page-action-btn-danger:hover { color:#b91c1c; border-color:#f1d6d6; background:#fff7f7 }
+    .page-action-btn:disabled { opacity:.42; pointer-events:none }
+    .user-status { margin-bottom:14px; padding:12px 14px; border-radius:12px; background:#fff; color:#666; font-size:12px; display:flex; gap:8px; align-items:center; justify-content:space-between; flex-wrap:wrap }
+    .user-status strong { color:#222 }
+    .user-status-pill { height:24px; padding:0 10px; border-radius:999px; display:inline-flex; align-items:center; background:#f6f2ea; color:#6f675a; font-weight:600 }
+    .stat-grid { display:grid; grid-template-columns:repeat(7,minmax(0,1fr)); gap:12px; margin-bottom:18px }
+    .stat-cell { min-height:88px; padding:14px 16px; border-radius:12px; background:#fff; display:grid; align-content:space-between; gap:10px }
+    .stat-label { font-size:11px; color:#8a8a8a; white-space:nowrap }
+    .stat-num { font-size:24px; font-weight:700; line-height:1; letter-spacing:-.03em }
+    .toolbar { display:flex; align-items:center; justify-content:space-between; gap:12px; margin:8px 0 10px; flex-wrap:wrap }
+    .toolbar-left, .toolbar-actions { display:flex; align-items:center; gap:8px; flex-wrap:wrap }
+    .search-input {
+      width:min(320px,72vw); height:32px; padding:0 12px; border-radius:999px; border:1px solid transparent; background:#fff;
+      font-size:13px;
+    }
+    .search-input:focus { border-color:#ddd; background:#fff }
+    .select-input {
+      height:32px; padding:0 30px 0 12px; border-radius:999px; border:1px solid transparent; background:#fff; font-size:12px;
+      appearance:none; background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24'%3E%3Cpath d='M6 9l6 6 6-6' stroke='%23666' stroke-width='2' fill='none'/%3E%3C/svg%3E");
+      background-repeat:no-repeat; background-position:right 10px center;
+    }
+    .table-card { background:#fff; border-radius:14px; overflow:auto }
+    table { width:100%; border-collapse:collapse; min-width:1180px }
+    th { background:#fff; color:#9a9a9a; font-size:11px; font-weight:600; text-align:left; padding:11px 12px; white-space:nowrap }
+    td { padding:11px 12px; font-size:13px; color:#333; vertical-align:middle }
+    tr:hover td { background:#fdfdfd }
+    .cb { width:14px; height:14px; accent-color:#111 }
+    .cell-input, .cell-select {
+      width:100%; height:32px; padding:0 10px; border-radius:8px; border:1px solid #eee; background:#fbfbfb; font-size:13px;
+    }
+    .cell-input:focus, .cell-select:focus { border-color:#d7d7d7; background:#fff }
+    .cell-key { font-family:'Geist Mono','Courier New',monospace; font-size:12px }
+    .cell-input-action { display:flex; align-items:center; gap:6px; min-width:190px }
+    .cell-input-action .cell-input { min-width:0 }
+    .toggle-label { display:inline-flex; align-items:center; gap:7px; color:#555; font-size:12px; white-space:nowrap }
+    .toggle-label input { accent-color:#111 }
+    .row-actions { display:flex; align-items:center; gap:6px; white-space:nowrap }
+    .icon-btn { width:28px; height:28px; display:inline-flex; align-items:center; justify-content:center; border-radius:8px; color:#8a8a8a }
+    .icon-btn:hover { background:#f4f4f4; color:#222 }
+    .icon-btn-danger:hover { color:#b91c1c; background:#fff1f1 }
+    .icon-btn svg { width:14px; height:14px; stroke:currentColor; stroke-width:2; stroke-linecap:round; stroke-linejoin:round; fill:none }
+    .empty { padding:46px 18px; text-align:center; color:#aaa; font-size:13px }
+    .import-panel { display:none; margin:10px 0; padding:14px; border-radius:14px; background:#fff; gap:10px }
+    .import-panel.open { display:grid }
+    .import-area {
+      min-height:120px; padding:10px 12px; border:1px solid #eee; border-radius:10px; background:#fbfbfb; resize:vertical;
+      font-family:'Geist Mono','Courier New',monospace; font-size:12px; line-height:1.55;
+    }
+    .import-help { color:#888; font-size:12px }
+    .toast-space { min-height:0 }
+    @media (max-width: 880px) {
+      .page-hd { display:grid }
+      .page-actions { justify-content:flex-start }
+      .stat-grid { grid-template-columns:repeat(2,minmax(0,1fr)) }
+      .admin-main { padding-left:16px; padding-right:16px }
+    }
+  </style>
+</head>
+<body>
+  <div id="admin-header"></div>
+  <main class="admin-main">
+    <div class="page-hd">
+      <div>
+        <h1 class="page-title" data-i18n="users.pageHeading">WebUI 用户管理</h1>
+        <p class="page-sub" data-i18n="users.pageSubtitle">独立管理 WebUI 登录用户、访问 Key、API 调用密钥、权限与图像能力。保存后新会话与兼容 API 调用立即按最新用户配置鉴权。</p>
+      </div>
+      <div class="page-actions">
+        <button type="button" class="page-action-btn" id="reloadBtn" data-i18n="users.reload">刷新</button>
+        <button type="button" class="page-action-btn" id="exportBtn" data-i18n="users.export">导出 JSON</button>
+        <button type="button" class="page-action-btn" id="importToggleBtn" data-i18n="users.import">导入</button>
+        <button type="button" class="page-action-btn page-action-btn-primary" id="saveBtn" data-i18n="users.save">保存更改</button>
+      </div>
+    </div>
+
+    <div class="user-status" id="modeStatus">
+      <span data-i18n="users.loading">正在加载用户配置...</span>
+    </div>
+
+    <section class="stat-grid" aria-label="WebUI user summary">
+      <div class="stat-cell"><span class="stat-label" data-i18n="users.stats.total">用户总数</span><span class="stat-num" id="statTotal">0</span></div>
+      <div class="stat-cell"><span class="stat-label" data-i18n="users.stats.enabled">启用</span><span class="stat-num" id="statEnabled">0</span></div>
+      <div class="stat-cell"><span class="stat-label" data-i18n="users.stats.disabled">禁用</span><span class="stat-num" id="statDisabled">0</span></div>
+      <div class="stat-cell"><span class="stat-label" data-i18n="users.stats.nsfw">允许 NSFW</span><span class="stat-num" id="statNsfw">0</span></div>
+      <div class="stat-cell"><span class="stat-label" data-i18n="users.stats.gpt">GPT 图片</span><span class="stat-num" id="statGpt">0</span></div>
+      <div class="stat-cell"><span class="stat-label" data-i18n="users.stats.grokUsage">Grok 已用</span><span class="stat-num" id="statGrokUsage">0</span></div>
+      <div class="stat-cell"><span class="stat-label" data-i18n="users.stats.gptUsage">GPT 已用</span><span class="stat-num" id="statGptUsage">0</span></div>
+    </section>
+
+    <section class="import-panel" id="importPanel">
+      <textarea class="import-area" id="importText" spellcheck="false" placeholder='[{"username":"alice","key":"secret"}]&#10;bob=another-secret'></textarea>
+      <div class="toolbar">
+        <span class="import-help" data-i18n="users.importHelp">支持 JSON 数组、对象映射或每行 username=key。导入会追加并跳过重复用户名。</span>
+        <div class="toolbar-actions">
+          <button type="button" class="page-action-btn" id="importAppendBtn" data-i18n="users.importAppend">追加导入</button>
+          <button type="button" class="page-action-btn page-action-btn-danger" id="importReplaceBtn" data-i18n="users.importReplace">替换为导入内容</button>
+        </div>
+      </div>
+    </section>
+
+    <div class="toolbar">
+      <div class="toolbar-left">
+        <input class="search-input" id="searchInput" type="search" placeholder="搜索用户名 / 显示名" data-i18n-placeholder="users.search">
+        <select class="select-input" id="statusFilter">
+          <option value="all" data-i18n="users.filters.all">全部状态</option>
+          <option value="enabled" data-i18n="users.filters.enabled">仅启用</option>
+          <option value="disabled" data-i18n="users.filters.disabled">仅禁用</option>
+          <option value="gpt" data-i18n="users.filters.gpt">GPT 图片</option>
+          <option value="nsfwBlocked" data-i18n="users.filters.nsfwBlocked">禁用 NSFW</option>
+        </select>
+      </div>
+      <div class="toolbar-actions">
+        <button type="button" class="page-action-btn" id="addBtn" data-i18n="users.add">添加用户</button>
+        <button type="button" class="page-action-btn" id="enableSelectedBtn" data-i18n="users.enableSelected">启用所选</button>
+        <button type="button" class="page-action-btn" id="disableSelectedBtn" data-i18n="users.disableSelected">禁用所选</button>
+        <button type="button" class="page-action-btn page-action-btn-danger" id="deleteSelectedBtn" data-i18n="users.deleteSelected">删除所选</button>
+      </div>
+    </div>
+
+    <section class="table-card">
+      <table>
+        <thead>
+          <tr>
+            <th><input type="checkbox" class="cb" id="selectAll" aria-label="Select all"></th>
+            <th data-i18n="users.columns.username">用户名</th>
+            <th data-i18n="users.columns.key">访问 Key</th>
+            <th data-i18n="users.columns.apiKey">API 调用密钥</th>
+            <th data-i18n="users.columns.displayName">显示名</th>
+            <th data-i18n="users.columns.enabled">启用</th>
+            <th data-i18n="users.columns.nsfw">NSFW</th>
+            <th data-i18n="users.columns.gpt">GPT 图片</th>
+            <th data-i18n="users.columns.quality">最高质量</th>
+            <th data-i18n="users.columns.grokQuota">Grok 日额度</th>
+            <th data-i18n="users.columns.gptQuota">GPT 日额度</th>
+            <th data-i18n="users.columns.usage">今日用量</th>
+            <th data-i18n="users.columns.actions">操作</th>
+          </tr>
+        </thead>
+        <tbody id="usersBody"></tbody>
+      </table>
+      <div class="empty" id="emptyState" hidden data-i18n="users.empty">尚未配置 WebUI 用户。添加用户后 WebUI 将使用用户名 + Key 登录。</div>
+    </section>
+  </main>
+
+  <div id="toastContainer" class="toast-container"></div>
+  <script src="/static/js/i18n.js?v={{APP_VERSION}}"></script>
+  <script src="/static/js/auth.js?v={{APP_VERSION}}-usernsfw1"></script>
+  <script src="/static/js/toast.js?v={{APP_VERSION}}"></script>
+  <script src="/static/js/admin-header.js?v={{APP_VERSION}}-usersnav1"></script>
+  <script src="/static/js/footer.js?v={{APP_VERSION}}"></script>
+  <script src="/static/js/admin-users.js?v={{APP_VERSION}}-v2"></script>
+</body>
+</html>

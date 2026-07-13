@@ -26,6 +26,7 @@ from .models import (
 )
 from .providers.manual import ManualClearanceProvider
 from .providers.flaresolverr import FlareSolverrClearanceProvider
+from .providers.camoufox import CamoufoxClearanceProvider
 
 _DEFAULT_CLEARANCE_ORIGIN = "https://grok.com"
 BundleKey = tuple[str, str]
@@ -52,6 +53,7 @@ class ProxyDirectory:
         self._refresh_events: dict[BundleKey, asyncio.Event] = {}
         self._manual = ManualClearanceProvider()
         self._flare = FlareSolverrClearanceProvider()
+        self._camoufox = CamoufoxClearanceProvider()
         self._egress_mode: EgressMode = EgressMode.DIRECT
         self._clearance_mode: ClearanceMode = ClearanceMode.NONE
         self._config_sig: tuple | None = None
@@ -276,6 +278,12 @@ class ProxyDirectory:
                     affinity_key=affinity_key,
                     clearance_host=clearance_host,
                 )
+            elif self._clearance_mode == ClearanceMode.CAMOUFOX:
+                bundle = await self._camoufox.refresh_bundle(
+                    affinity_key=affinity_key,
+                    proxy_url=proxy_url,
+                    target_url=clearance_origin,
+                )
             else:
                 bundle = await self._flare.refresh_bundle(
                     affinity_key=affinity_key,
@@ -368,6 +376,12 @@ class ProxyDirectory:
                 new_bundle = self._manual.build_bundle(
                     affinity_key=affinity,
                     clearance_host=clearance_host,
+                )
+            elif self._clearance_mode == ClearanceMode.CAMOUFOX:
+                new_bundle = await self._camoufox.refresh_bundle(
+                    affinity_key=affinity,
+                    proxy_url=proxy_url,
+                    target_url=clearance_origin,
                 )
             else:
                 new_bundle = await self._flare.refresh_bundle(

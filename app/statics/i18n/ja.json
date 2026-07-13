@@ -413,6 +413,7 @@
         "apiKey": { "label": "API アクセスキー" },
         "webuiEnabled": { "label": "WebUI を有効化" },
         "webuiKey": { "label": "WebUI アクセスパスワード" },
+        "webuiMultiUser": { "label": "Enable Multi-User Management", "desc": "Show the User Management tab and use username + independent key login." },
         "webuiUsers": { "label": "WebUI ユーザー", "desc": "設定すると WebUI はユーザー名 + 個別 key でログインし、ブラウザー側のチャット、検索設定、MCP 設定をユーザーごとに分離します。ユーザーごとに NSFW 生成を個別に許可できます。空の場合は単一パスワードモードを維持します。" },
         "temporary": { "label": "一時セッション" },
         "memory": { "label": "会話メモリ" },

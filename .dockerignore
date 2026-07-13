@@ -1,16 +1,50 @@
-__pycache__
-*.pyc
-*.pyo
-*.pyd
-.Python
-.env
-.env.*
+# Version control and local automation
 .git
 .gitignore
-.logs
-logs
-/data
-/data/*
-/data/tmp
-/data/tmp/*
-/tests
+.github
+.agents
+.antiban
+.codex
+
+# Python environments and caches
+__pycache__/
+*.py[cod]
+*$py.class
+.Python
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.hypothesis/
+.tox/
+.nox/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+
+# Local configuration and runtime state
+.env
+.env.*
+maintainer.config.json
+data/
+logs/
+*.log
+
+# Local build and editor artifacts
+build/
+dist/
+*.egg-info/
+*.deb
+*.deb.*
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Not required by either production image
+docs/
+tests/

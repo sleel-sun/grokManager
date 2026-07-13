@@ -2,12 +2,23 @@
   const VERIFY_ENDPOINT = '/webui/api/verify';
   const MODELS_ENDPOINT = '/webui/api/images/models';
   const GENERATE_ENDPOINT = '/webui/api/images/generations';
+  const GENERATE_TASKS_ENDPOINT = '/webui/api/images/generations/tasks';
+  const IMAGE_TASK_ENDPOINT = '/webui/api/images/tasks';
   const EDIT_ENDPOINT = '/webui/api/images/edits';
   const HISTORY_ENDPOINT = '/webui/api/images/history';
   const HISTORY_KEY = 'grokmanager.image_studio.history.v1';
   const PENDING_REFERENCE_KEY = 'grokmanager.image_studio.pending_reference.v1';
+  const PENDING_PROMPT_KEY = 'grokmanager.image_studio.pending_prompt.v1';
   const HISTORY_LIMIT = 24;
+  const CHAT_BINDING_IMAGE_LIMIT = 24;
+  const IMAGE_TASK_POLL_MS = 3000;
+  const IMAGE_TASK_MAX_WAIT_MS = 20 * 60 * 1000;
   const GPT_MODELS = new Set(['gpt-image-1', 'gpt-image-2', 'codex-gpt-image-2']);
+  const GENERATION_MODEL_ORDER = [
+    'gpt-image-2',
+    'gpt-image-1',
+    'codex-gpt-image-2',
+  ];
   const EDIT_SIZE = '1024x1024';
   const QUALITY_RANK = { '1k': 1, '2k': 2, '4k': 3 };
 
@@ -53,6 +64,7 @@
   let referencePreviewUrls = [];
   let referenceUrls = [];
   let lastGenerateSize = EDIT_SIZE;
+  let pendingChatPromptBinding = null;
   let qualityConfig = { premium: false, default: '1k', max: '1k', options: [{ id: '1k', label: '1K', enabled: true }] };
 
   function escapeHtml(value) {
@@ -604,6 +616,140 @@
     addReferenceUrl(pending.url, pending.name);
   }
 
+  function normalizeChatPromptBinding(value) {
+    if (!value || typeof value !== 'object') return null;
+    const storeKey = String(value.store_key || value.storeKey || '').trim();
+    const sessionId = String(value.session_id || value.sessionId || '').trim();
+    if (!storeKey || !sessionId) return null;
+    const rawMessageIndex = Object.prototype.hasOwnProperty.call(value, 'message_index')
+      ? value.message_index
+      : value.messageIndex;
+    const messageIndex = Number(rawMessageIndex);
+    return {
+      store_key: storeKey,
+      storage_scope: String(value.storage_scope || value.storageScope || ''),
+      session_id: sessionId,
+      message_id: String(value.message_id || value.messageId || ''),
+      message_index: Number.isInteger(messageIndex) ? messageIndex : -1,
+      message_created_at: Number(value.message_created_at || value.messageCreatedAt || 0) || 0,
+    };
+  }
+
+  function beginChatPromptDraft(prompt) {
+    draftMode = true;
+    selectedSessionId = '';
+    referenceUrls = [];
+    revokeReferencePreviewUrls();
+    if (imageInput) imageInput.value = '';
+    setMode('generate');
+    if (promptInput) {
+      promptInput.value = String(prompt || '').trim();
+      promptInput.focus();
+    }
+    syncPromptCount();
+    syncImageCount();
+    syncReferencePreview();
+    renderHistory();
+  }
+
+  function clearPendingChatPromptBinding() {
+    pendingChatPromptBinding = null;
+  }
+
+  function consumePendingPrompt() {
+    let pending = null;
+    try {
+      pending = JSON.parse(sessionStorage.getItem(PENDING_PROMPT_KEY) || 'null');
+      sessionStorage.removeItem(PENDING_PROMPT_KEY);
+    } catch {
+      pending = null;
+    }
+    if (!pending || typeof pending !== 'object') return false;
+    const createdAt = Number(pending.created_at || pending.createdAt || 0);
+    if (createdAt && Date.now() - createdAt > 10 * 60 * 1000) return false;
+    const prompt = String(pending.prompt || '').trim();
+    if (!prompt) return false;
+
+    pendingChatPromptBinding = normalizeChatPromptBinding(pending.bind || pending.binding);
+    beginChatPromptDraft(prompt);
+    const shouldAutoGenerate = pending.auto_generate !== false && pending.autoGenerate !== false;
+    setStatus(shouldAutoGenerate ? '正在使用聊天提示词生成图片...' : '已填入聊天提示词', shouldAutoGenerate ? 'running' : 'idle');
+    if (shouldAutoGenerate) {
+      window.setTimeout(() => {
+        if (!running) void submit();
+      }, 80);
+    }
+    return true;
+  }
+
+  function chatStoreSessions(parsed) {
+    if (Array.isArray(parsed)) return parsed;
+    return Array.isArray(parsed && parsed.sessions) ? parsed.sessions : [];
+  }
+
+  function findBoundChatMessage(session, binding) {
+    const messages = Array.isArray(session && session.messages) ? session.messages : [];
+    if (!messages.length) return null;
+    if (binding.message_id) {
+      const byId = messages.find((message) => message && String(message.id || '') === binding.message_id);
+      if (byId) return byId;
+    }
+    if (binding.message_created_at) {
+      const byCreatedAt = messages.find((message) => (
+        message
+        && message.role === 'assistant'
+        && Number(message.createdAt || message.created_at || 0) === binding.message_created_at
+      ));
+      if (byCreatedAt) return byCreatedAt;
+    }
+    const index = binding.message_index;
+    const byIndex = Number.isInteger(index) && index >= 0 ? messages[index] : null;
+    return byIndex && byIndex.role === 'assistant' ? byIndex : null;
+  }
+
+  function bindGeneratedImagesToChat(binding, payload) {
+    if (!binding || !payload || !Array.isArray(payload.images) || !payload.images.length) return false;
+    let parsed = null;
+    try {
+      parsed = JSON.parse(localStorage.getItem(binding.store_key) || 'null');
+    } catch {
+      parsed = null;
+    }
+    const sessions = chatStoreSessions(parsed);
+    const session = sessions.find((item) => item && String(item.id || '') === binding.session_id);
+    const message = findBoundChatMessage(session, binding);
+    if (!session || !message) return false;
+
+    const existing = Array.isArray(message.generated_images) ? message.generated_images : [];
+    const seen = new Set(existing.map((item) => String((typeof item === 'string' ? item : item && item.url) || '').trim()).filter(Boolean));
+    const createdAt = Date.now();
+    const additions = payload.images
+      .map((url) => String(url || '').trim())
+      .filter((url) => url && !seen.has(url))
+      .map((url) => {
+        seen.add(url);
+        return {
+          url,
+          prompt: payload.prompt,
+          model: payload.model,
+          size: payload.size,
+          quality: payload.quality,
+          studio_session_id: payload.studio_session_id,
+          created_at: createdAt,
+        };
+      });
+    if (!additions.length) return false;
+
+    message.generated_images = [...existing, ...additions].slice(-CHAT_BINDING_IMAGE_LIMIT);
+    session.updatedAt = createdAt;
+
+    const nextStore = Array.isArray(parsed)
+      ? { sessions, currentSessionId: binding.session_id }
+      : { ...(parsed || {}), sessions, currentSessionId: (parsed && parsed.currentSessionId) || binding.session_id };
+    localStorage.setItem(binding.store_key, JSON.stringify(nextStore));
+    return true;
+  }
+
   function syncQualityAccess() {
     if (!qualitySelect) return;
     const max = String((qualityConfig && qualityConfig.max) || '1k').toLowerCase();
@@ -651,6 +797,11 @@
     return `<option value="${escapeHtml(model.id)}">${escapeHtml(label)}</option>`;
   }
 
+  function generationModelRank(modelId) {
+    const index = GENERATION_MODEL_ORDER.indexOf(String(modelId || ''));
+    return index >= 0 ? index : GENERATION_MODEL_ORDER.length;
+  }
+
   async function loadModels() {
     const res = await fetch(MODELS_ENDPOINT, {
       headers: await webuiAuthHeaders(),
@@ -658,7 +809,9 @@
     });
     if (!res.ok) throw new Error(await responseError(res));
     const payload = await res.json();
-    const generation = Array.isArray(payload.generation) ? payload.generation : [];
+    const generation = Array.isArray(payload.generation)
+      ? payload.generation.filter((item) => GPT_MODELS.has(String(item.id || '')))
+      : [];
     const edits = Array.isArray(payload.edits)
       ? payload.edits.filter((item) => GPT_MODELS.has(String(item.id || '')))
       : [];
@@ -666,18 +819,18 @@
     const workspace = payload.workspace && typeof payload.workspace === 'object' ? payload.workspace : {};
     qualityConfig = workspace.quality || qualityConfig;
     const gptModels = generation.filter((item) => GPT_MODELS.has(String(item.id || '')));
-    const gptFirst = (gptModels.length ? gptModels : generation).sort((a, b) => {
-      const order = ['gpt-image-2', 'gpt-image-1', 'codex-gpt-image-2'];
-      const ai = order.indexOf(String(a.id || ''));
-      const bi = order.indexOf(String(b.id || ''));
-      return (ai === -1 ? 99 : ai) - (bi === -1 ? 99 : bi);
-    });
+    const orderedGeneration = generation.slice().sort((a, b) => (
+      generationModelRank(a && a.id) - generationModelRank(b && b.id)
+    ));
     if (modelSelect) {
-      modelSelect.innerHTML = gptFirst.length
-        ? gptFirst.map(optionHtml).join('')
+      const previousModel = modelSelect.value;
+      modelSelect.innerHTML = orderedGeneration.length
+        ? orderedGeneration.map(optionHtml).join('')
         : '<option value="">无可用模型</option>';
-      const preferred = gptFirst.find((item) => item.id === 'gpt-image-2') || gptFirst[0];
-      if (preferred) modelSelect.value = preferred.id;
+      const selected = orderedGeneration.find((item) => item.id === previousModel)
+        || orderedGeneration.find((item) => item.id === 'gpt-image-2')
+        || orderedGeneration[0];
+      if (selected) modelSelect.value = selected.id;
     }
     if (editModelSelect) {
       editModelSelect.innerHTML = edits.length
@@ -688,7 +841,7 @@
     }
     const total = generation.length + edits.length;
     if (modelCount) modelCount.textContent = String(total);
-    if (modelHint) modelHint.textContent = `GPT 工作台 ${gptFirst.length} 个模型，编辑 ${edits.length} 个`;
+    if (modelHint) modelHint.textContent = `文生图 GPT ${gptModels.length} 个模型，编辑 ${edits.length} 个`;
     if (qualitySelect && qualityConfig.options) {
       qualitySelect.innerHTML = qualityConfig.options.map((item) => (
         `<option value="${escapeHtml(item.id)}">${escapeHtml(item.label || String(item.id || '').toUpperCase())}</option>`
@@ -712,13 +865,41 @@
     return false;
   }
 
+  function sleep(ms) {
+    return new Promise((resolve) => window.setTimeout(resolve, ms));
+  }
+
+  async function pollImageTask(taskId) {
+    const startedAt = Date.now();
+    while (Date.now() - startedAt <= IMAGE_TASK_MAX_WAIT_MS) {
+      const res = await fetch(`${IMAGE_TASK_ENDPOINT}/${encodeURIComponent(taskId)}`, {
+        headers: await webuiAuthHeaders(),
+        cache: 'no-store',
+      });
+      if (!res.ok) throw new Error(await responseError(res));
+      const payload = await res.json();
+      const status = String((payload && payload.status) || '');
+      if (status === 'completed') return (payload && payload.result) || {};
+      if (status === 'failed') {
+        const error = payload && payload.error && payload.error.message
+          ? payload.error.message
+          : '图片任务失败';
+        throw new Error(error);
+      }
+      const elapsed = Math.max(0, Math.round((Date.now() - startedAt) / 1000));
+      setStatus(`图片任务处理中，已等待 ${elapsed}s...`, 'running');
+      await sleep(IMAGE_TASK_POLL_MS);
+    }
+    throw new Error('图片任务等待超时，请稍后重试');
+  }
+
   async function generateImages(prompt) {
     const model = (modelSelect && modelSelect.value) || 'gpt-image-2';
     const n = Number((countSelect && countSelect.value) || 1);
     const size = (sizeSelect && sizeSelect.value) || '1024x1024';
     const quality = (qualitySelect && qualitySelect.value) || '1k';
     const sessionId = activeAppendSessionId();
-    const res = await fetch(GENERATE_ENDPOINT, {
+    const res = await fetch(GENERATE_TASKS_ENDPOINT, {
       method: 'POST',
       headers: await webuiAuthHeaders(true),
       body: JSON.stringify({
@@ -732,7 +913,11 @@
       }),
     });
     if (!res.ok) throw new Error(await responseError(res));
-    const payload = await res.json();
+    const task = await res.json();
+    const taskId = String((task && task.task_id) || '');
+    if (!taskId) throw new Error('图片任务创建失败');
+    setStatus('图片任务已提交，等待生成结果...', 'running');
+    const payload = await pollImageTask(taskId);
     return { images: normalizeImages(payload), model, size, quality: payload.quality || quality, session: payload.studio_session };
   }
 
@@ -795,8 +980,17 @@
           quality: result.quality,
         });
       }
-      setStatus(`完成，返回 ${result.images.length} 张图片`, 'completed');
-      toast('图片任务完成', 'success');
+      const boundToChat = bindGeneratedImagesToChat(pendingChatPromptBinding, {
+        images: result.images,
+        prompt,
+        model: result.model,
+        size: result.size,
+        quality: result.quality,
+        studio_session_id: result.session && result.session.id ? String(result.session.id) : '',
+      });
+      if (pendingChatPromptBinding) pendingChatPromptBinding = null;
+      setStatus(`完成，返回 ${result.images.length} 张图片${boundToChat ? '，已绑定到聊天' : ''}`, 'completed');
+      toast(boundToChat ? '图片任务完成，已绑定到聊天' : '图片任务完成', 'success');
       if (resultsViewport) resultsViewport.scrollTo({ top: resultsViewport.scrollHeight, behavior: 'smooth' });
     } catch (error) {
       restorePromptInput(prompt);
@@ -809,6 +1003,7 @@
   }
 
   function startDraft() {
+    clearPendingChatPromptBinding();
     draftMode = true;
     selectedSessionId = '';
     if (promptInput) {
@@ -837,8 +1032,11 @@
     try {
       await loadModels();
       await loadHistory();
-      consumePendingReference();
-      if (!referenceCount()) setStatus('就绪', 'idle');
+      const consumedPrompt = consumePendingPrompt();
+      if (!consumedPrompt) {
+        consumePendingReference();
+        if (!referenceCount()) setStatus('就绪', 'idle');
+      }
     } catch (error) {
       const message = (error && error.message) || String(error);
       setStatus(`模型加载失败: ${message}`, 'failed');
@@ -924,6 +1122,7 @@
           headers: await webuiAuthHeaders(),
         });
         if (!res.ok) throw new Error(await responseError(res));
+        clearPendingChatPromptBinding();
         history = [];
         selectedSessionId = '';
         draftMode = true;
@@ -941,6 +1140,7 @@
     sessionList.addEventListener('click', (event) => {
       const button = event.target instanceof Element ? event.target.closest('[data-select-session]') : null;
       if (!(button instanceof HTMLButtonElement)) return;
+      clearPendingChatPromptBinding();
       selectedSessionId = button.dataset.selectSession || '';
       draftMode = false;
       renderHistory();

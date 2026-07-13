@@ -573,6 +573,34 @@ button{cursor:pointer}
   padding:5px 10px;font-size:11px;font-weight:800;line-height:1.2;transition:background .16s ease,color .16s ease
 }
 .msg-media-reference-btn:hover{background:#e5e0d4;color:#171511}
+.msg-image-prompt-action{
+  display:flex;align-items:center;justify-content:space-between;gap:10px;width:min(100%,520px);
+  margin:6px 0 14px;padding:10px 12px;border:1px solid #e5e0d5;border-radius:16px;
+  background:linear-gradient(135deg,#fffdf8,#f2eee5);box-shadow:0 1px 0 rgba(20,18,15,.03)
+}
+.msg-image-prompt-label{
+  color:#746d61;font-size:12px;font-weight:800;letter-spacing:.03em
+}
+.msg-image-prompt-btn{
+  flex:0 0 auto;height:30px;padding:0 12px;border-radius:999px;background:#171511;color:#fffaf2;
+  font-size:12px;font-weight:850;line-height:1;transition:background .16s ease,transform .16s ease
+}
+.msg-image-prompt-btn:hover{background:#000;transform:translateY(-1px)}
+.msg-bound-images{
+  display:grid;gap:8px;margin:8px 0 14px
+}
+.msg-bound-images-title{
+  color:#746d61;font-size:12px;font-weight:850
+}
+.msg-bound-images-grid{
+  display:flex;flex-wrap:wrap;gap:12px;align-items:flex-start
+}
+.msg-bound-image{
+  padding:8px;border:1px solid #e5e0d5;border-radius:18px;background:#fffdf9;box-shadow:0 10px 24px rgba(38,33,24,.06)
+}
+.msg-bound-image img{
+  max-width:min(100%,220px);max-height:220px
+}
 .msg-download-attachment{
   display:flex;align-items:center;gap:10px;width:min(100%,420px);margin:10px 0;padding:10px 12px;
   border:1px solid #e5e1d8;border-radius:14px;background:#fbfaf7;color:#171511;text-decoration:none;

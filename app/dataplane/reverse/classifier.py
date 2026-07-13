@@ -38,7 +38,13 @@ def classify_result(
         if is_invalid_credentials_body(body):
             return ResultCategory.AUTH_FAILURE
         # Check if the body indicates a Cloudflare challenge.
-        if body and ("cf-challenge" in body.lower() or "cloudflare" in body.lower()):
+        text = (body or "").lower()
+        if text and (
+            "cf-challenge" in text
+            or "cloudflare" in text
+            or "request was blocked" in text
+            or "you have been blocked" in text
+        ):
             return ResultCategory.FORBIDDEN
         # Generic 403 (suspension, WAF, etc.) — not a credential issue.
         return ResultCategory.FORBIDDEN

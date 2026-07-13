@@ -1,11 +1,19 @@
 import base64
+import os
+from pathlib import Path
+import tempfile
 import unittest
+from unittest.mock import patch
 
 from app.maintainer.mailbox import (
     extract_verification_code,
     extract_verification_code_from_mail,
     fetch_emails,
+    create_hotmail_alias,
+    load_hotmail_credentials,
     normalise_mail_rows,
+    rewrite_hotmail_refresh_token,
+    wait_for_hotmail_code,
     wait_for_verification_code,
 )
 
@@ -48,6 +56,68 @@ class SequencedMailSession:
 
 
 class MaintainerMailboxTests(unittest.TestCase):
+    def setUp(self) -> None:
+        from app.maintainer import mailbox
+        mailbox._hotmail_alias_counts.clear()
+        mailbox._hotmail_sessions.clear()
+
+    def test_hotmail_credentials_and_plus_alias_use_project_relative_path(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "mail.txt"
+            path.write_text("owner@outlook.com----pw----client----refresh\n", encoding="utf-8")
+            conf = {"email": {"credentials_file": "mail.txt", "alias_mode": "plus", "alias_random_length": 6}}
+            with patch("app.maintainer.mailbox.project_root", return_value=Path(directory)):
+                first, first_token = create_hotmail_alias(conf)
+                second, second_token = create_hotmail_alias(conf)
+
+            self.assertEqual(first, "owner@outlook.com")
+            self.assertRegex(second or "", r"^owner\+[a-z0-9]{6}@outlook\.com$")
+            self.assertTrue(first_token.startswith("hotmail:"))
+            self.assertTrue(second_token.startswith("hotmail:"))
+
+    def test_hotmail_alias_reservation_survives_process_state_reset(self) -> None:
+        from app.maintainer import mailbox
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "mail.txt"
+            path.write_text("owner@outlook.com----pw----client----refresh\n", encoding="utf-8")
+            conf = {"email": {"credentials_file": "mail.txt", "alias_random_length": 6}}
+            with patch("app.maintainer.mailbox.project_root", return_value=Path(directory)):
+                first, _ = create_hotmail_alias(conf)
+                mailbox._hotmail_alias_counts.clear()
+                mailbox._hotmail_sessions.clear()
+                second, _ = create_hotmail_alias(conf)
+
+            self.assertEqual(first, "owner@outlook.com")
+            self.assertRegex(second or "", r"^owner\+[a-z0-9]{6}@outlook\.com$")
+
+    def test_rewrite_hotmail_refresh_token_is_atomic_and_private(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "mail.txt"
+            path.write_text("owner@outlook.com----pw----client----old\n", encoding="utf-8")
+            credential = load_hotmail_credentials(path)[0]
+            rewrite_hotmail_refresh_token(path, credential, "new")
+
+            self.assertEqual(path.read_text(encoding="utf-8"), "owner@outlook.com----pw----client----new\n")
+            self.assertEqual(os.stat(path).st_mode & 0o777, 0o600)
+            self.assertEqual(list(Path(directory).glob(".mail.txt.*")), [])
+
+    def test_wait_for_hotmail_code_requires_alias_recipient_match(self) -> None:
+        from app.maintainer import mailbox
+        token = "hotmail:test"
+        mailbox._hotmail_sessions[token] = {
+            "email": "owner@outlook.com", "password": "pw", "client_id": "client",
+            "refresh_token": "refresh", "credentials_file": "/tmp/mail.txt",
+        }
+        rows = [
+            {"id": "1", "raw": "To: other@outlook.com\nSubject: verification code\n\ncode is 111222"},
+            {"id": "2", "raw": "To: owner+alias@outlook.com\nSubject: verification code\n\ncode is 333444"},
+        ]
+        conf = {"email": {"imap_hosts": ["imap.test"], "recent_seconds": 0, "require_recipient_match": True}}
+        with patch("app.maintainer.mailbox.fetch_hotmail_messages", return_value=rows):
+            code = wait_for_hotmail_code(conf, token, "owner+alias@outlook.com", 0)
+        self.assertEqual(code, "333444")
+
     def test_wait_for_verification_code_uses_code_for_target_email(self) -> None:
         session = FakeMailSession(
             [

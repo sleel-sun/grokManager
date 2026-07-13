@@ -68,7 +68,10 @@ _X_USER_ID_RE = re.compile(r"(?:^|;\s*)x-userid=([^;]+)")
 _CLOUDFLARE_CHALLENGE_MARKERS = (
     "just a moment",
     "cf-challenge",
+    "cf-mitigated",
     "cloudflare",
+    "request was blocked",
+    "you have been blocked",
 )
 
 

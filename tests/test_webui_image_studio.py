@@ -6,7 +6,8 @@ from pathlib import Path
 
 from app.platform.auth.middleware import WebUIUser
 from app.platform.errors import ValidationError
-from app.products.openai.schemas import ImageGenerationRequest
+from app.products.openai.schemas import ChatCompletionRequest, ImageGenerationRequest
+from app.products.web.webui import chat as webui_chat_api
 from app.products.web.webui import images as image_studio_api
 
 
@@ -32,11 +33,12 @@ def test_image_studio_page_route_and_header_entry_exist() -> None:
     assert "/static/js/auth.js?v={{APP_VERSION}}-usernsfw1" in html
     assert 'id="studioQuality"' in html
     assert 'id="studioReferencePreview"' in html
-    assert "/static/js/webui/image-studio.js?v={{APP_VERSION}}-studio4" in html
-    assert "fetch(GENERATE_ENDPOINT" in js
+    assert "/static/js/webui/image-studio.js?v={{APP_VERSION}}-chatbind3" in html
+    assert "fetch(GENERATE_TASKS_ENDPOINT" in js
     assert "fetch(EDIT_ENDPOINT" in js
     assert "HISTORY_ENDPOINT" in js
     assert "|| 'gpt-image-2'" in js
+    assert "payload.generation.filter((item) => GPT_MODELS.has" in js
     assert "payload.edits.filter((item) => GPT_MODELS.has" in js
     assert "data-reference-image" in js
     assert "reference_url" in js
@@ -211,6 +213,8 @@ def test_webui_image_models_are_filtered_by_user_gpt_permissions() -> None:
 
     assert "codex-gpt-image-2" in ids
     assert "gpt-image-2" not in ids
+    assert "grok-imagine-image" not in ids
+    assert "grok-imagine-image-pro" not in ids
     assert "codex-gpt-image-2" in edit_ids
     assert "gpt-image-2" not in edit_ids
     assert "grok-imagine-image-edit" not in edit_ids
@@ -218,6 +222,39 @@ def test_webui_image_models_are_filtered_by_user_gpt_permissions() -> None:
     assert edits_by_id["codex-gpt-image-2"]["capability"] == "image"
     assert body["workspace"]["gpt_models"] == ["codex-gpt-image-2"]
     assert body["workspace"]["quality"]["max"] == "2k"
+
+
+def test_webui_chat_models_keep_grok_image_models_but_hide_gpt_image_models() -> None:
+    response = asyncio.run(
+        webui_chat_api.list_webui_models(
+            _user=WebUIUser(id="alice", username="alice", gpt_models=("gpt-image-2",)),
+        )
+    )
+    body = orjson.loads(response.body)
+    ids = {item["id"] for item in body["data"]}
+
+    assert "grok-imagine-image" in ids
+    assert "grok-imagine-image-pro" in ids
+    assert "gpt-image-2" not in ids
+    assert "codex-gpt-image-2" not in ids
+
+
+def test_webui_chat_rejects_gpt_image_model() -> None:
+    try:
+        asyncio.run(
+            webui_chat_api.webui_chat_completions(
+                ChatCompletionRequest(
+                    model="gpt-image-2",
+                    messages=[{"role": "user", "content": "draw a cat"}],
+                ),
+                user=WebUIUser(id="alice", username="alice", gpt_models=("gpt-image-2",)),
+            )
+        )
+    except ValidationError as exc:
+        assert exc.code == "model_not_allowed"
+        assert exc.param == "model"
+    else:
+        raise AssertionError("expected ValidationError")
 
 
 def test_webui_image_generation_rejects_disallowed_gpt_model(monkeypatch, tmp_path) -> None:
@@ -244,6 +281,35 @@ def test_webui_image_generation_rejects_disallowed_gpt_model(monkeypatch, tmp_pa
         )
     except ValidationError as exc:
         assert exc.code == "model_not_allowed"
+    else:
+        raise AssertionError("expected ValidationError")
+
+
+def test_webui_image_generation_rejects_non_gpt_image_model(monkeypatch, tmp_path) -> None:
+    async def fake_generate(**kwargs):
+        raise AssertionError("non-GPT model should fail before upstream")
+
+    monkeypatch.setattr("app.products.openai.images.generate", fake_generate)
+    monkeypatch.setattr("app.products.web.webui.images.data_path", lambda *parts: tmp_path.joinpath(*parts))
+
+    try:
+        asyncio.run(
+            image_studio_api.webui_image_generations(
+                image_studio_api.WebUIImageGenerationRequest(
+                    model="grok-imagine-image",
+                    prompt="draw a cat",
+                    n=1,
+                ),
+                user=WebUIUser(
+                    id="alice",
+                    username="alice",
+                    gpt_models=("gpt-image-2",),
+                ),
+            )
+        )
+    except ValidationError as exc:
+        assert exc.code == "model_not_allowed"
+        assert exc.param == "model"
     else:
         raise AssertionError("expected ValidationError")
 

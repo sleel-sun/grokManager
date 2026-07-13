@@ -543,6 +543,27 @@ def _record_last_remote_refresh_at(ext: dict[str, Any]) -> Any:
     return ext.get("gpt_last_remote_refresh_at") or ext.get("gpt_image_last_remote_refresh_at")
 
 
+def _remote_refresh_age_ms(record: "AccountRecord", now_ms: int) -> int | None:
+    value = _record_last_remote_refresh_at(record.ext or {})
+    try:
+        ts = int(value)
+    except (TypeError, ValueError):
+        return None
+    return max(0, now_ms - ts)
+
+
+def _should_refresh_remote_detail(
+    record: "AccountRecord",
+    *,
+    now_ms: int,
+    max_age_ms: int,
+) -> bool:
+    if not _record_access_token(record.ext or {}):
+        return False
+    age_ms = _remote_refresh_age_ms(record, now_ms)
+    return age_ms is None or max_age_ms <= 0 or age_ms >= max_age_ms
+
+
 def _record_identity(record: "AccountRecord") -> str:
     ext = record.ext or {}
     access_token = _record_access_token(ext)
@@ -893,6 +914,47 @@ async def _refresh_gpt_record_remote_detail(
             ext_merge=ext_merge,
         )
         return {"refreshed": False, "error": message, "account": _serialize(refreshed)}
+
+
+async def refresh_stale_gpt_account_remote_details(
+    repo: "AccountRepository",
+    *,
+    max_age_ms: int,
+    concurrency: int = 3,
+    limit: int = 0,
+) -> dict[str, Any]:
+    """Refresh saved GPT account remote details that are missing or stale."""
+    records = await _list_all_gpt_records(repo)
+    now_ms = _now_ms()
+    eligible = [record for record in records if _record_access_token(record.ext or {})]
+    due = [
+        record
+        for record in eligible
+        if _should_refresh_remote_detail(record, now_ms=now_ms, max_age_ms=max_age_ms)
+    ]
+    due.sort(
+        key=lambda record: (
+            _remote_refresh_age_ms(record, now_ms) is not None,
+            _record_last_remote_refresh_at(record.ext or {}) or 0,
+        )
+    )
+    if limit > 0:
+        due = due[:limit]
+
+    async def _one(record: "AccountRecord") -> dict[str, Any]:
+        return await _refresh_gpt_record_remote_detail(repo, record)
+
+    results = await run_batch(due, _one, concurrency=max(1, concurrency))
+    refreshed = sum(1 for item in results if item.get("refreshed"))
+    failed = len(results) - refreshed
+    return {
+        "checked": len(records),
+        "eligible": len(eligible),
+        "due": len(due),
+        "refreshed": refreshed,
+        "failed": failed,
+        "skipped": max(0, len(records) - len(due)),
+    }
 
 
 @router.get("/accounts")
@@ -1417,6 +1479,7 @@ __all__ = [
     "_summary",
     "_export_record",
     "_delete_record_tokens",
+    "refresh_stale_gpt_account_remote_details",
     "get_gpt_account_token",
     "gpt_account_record_token",
     "gpt_account_credential_record_token",

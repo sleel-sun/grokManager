@@ -1,10 +1,45 @@
 import json
 import unittest
+from unittest.mock import patch
 
-from app.dataplane.reverse.protocol.xai_chat import StreamAdapter
+from app.control.model.enums import ModeId
+from app.dataplane.reverse.protocol.xai_chat import StreamAdapter, build_chat_payload
+from app.products.openai.chat import (
+    _client_only_app_chat_request_overrides,
+    _client_only_tool_overrides,
+)
+
+
+class _FakeConfig:
+    def get_bool(self, _key, default=False):
+        return default
+
+    def get_str(self, _key, default=""):
+        return default
 
 
 class XaiChatStreamAdapterImageTests(unittest.TestCase):
+    def test_client_only_app_chat_payload_disables_upstream_tools(self) -> None:
+        with patch(
+            "app.dataplane.reverse.protocol.xai_chat.get_config",
+            return_value=_FakeConfig(),
+        ):
+            payload = build_chat_payload(
+                message="hello",
+                mode_id=ModeId.FAST,
+                tool_overrides=_client_only_tool_overrides({"webSearch": True}),
+                request_overrides=_client_only_app_chat_request_overrides(
+                    {"deepsearchPreset": "default", "disableSearch": False}
+                ),
+            )
+
+        self.assertTrue(payload["disableSearch"])
+        self.assertFalse(payload["enableImageGeneration"])
+        self.assertFalse(payload["enableImageStreaming"])
+        self.assertNotIn("deepsearchPreset", payload)
+        self.assertFalse(payload["toolOverrides"]["webSearch"])
+        self.assertFalse(payload["toolOverrides"]["imageGen"])
+
     def test_image_chunk_keeps_absolute_asset_url(self) -> None:
         adapter = StreamAdapter()
         payload = {

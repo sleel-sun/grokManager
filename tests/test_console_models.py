@@ -103,6 +103,13 @@ async def _fake_prepare_file_attachments(*_args, **_kwargs):
 
 class ConsoleModelRoutingTests(unittest.TestCase):
     AVAILABLE_CHAT_MODELS = (
+        "grok-4.5",
+        "grok-4.5-console",
+        "grok-4.5-high",
+        "grok-4.5-medium",
+        "grok-4.5-low",
+        "grok-4.3-build",
+        "grok-composer-2.5-fast",
         "grok-4.3",
         "grok-4.20-0309-non-reasoning",
         "grok-4.20-0309",
@@ -187,6 +194,21 @@ class ConsoleModelRoutingTests(unittest.TestCase):
         self.assertEqual(plan.referer, "https://console.x.ai/")
         self.assertEqual(plan.extra["upstream_model"], "grok-4.3")
 
+    def test_grok_45_uses_build_cli_responses_route(self) -> None:
+        spec = resolve("grok-4.5")
+
+        self.assertEqual(spec.tier, Tier.BASIC)
+        self.assertEqual(spec.mode_id, ModeId.CONSOLE)
+        self.assertTrue(spec.uses_grok_build_responses())
+        self.assertEqual(spec.upstream_model_name(), "grok-4.5")
+
+        plan = build_plan(spec, {})
+        self.assertEqual(
+            plan.endpoint,
+            "https://cli-chat-proxy.grok.com/v1/responses",
+        )
+        self.assertEqual(plan.extra["upstream_model"], "grok-4.5")
+
     def test_grok_420_auto_and_expert_require_paid_pools(self) -> None:
         for model, mode in (
             ("grok-4.20-auto", ModeId.AUTO),
@@ -219,6 +241,12 @@ class ConsoleModelRoutingTests(unittest.TestCase):
             "grok-4.20-multi-agent-high": "grok-4.20-multi-agent",
             "grok-4.20-multi-agent-medium": "grok-4.20-multi-agent",
             "grok-4.20-multi-agent-low": "grok-4.20-multi-agent",
+            "grok-4.5-console": "grok-4.5",
+            "grok-4.5-high": "grok-4.5",
+            "grok-4.5-medium": "grok-4.5",
+            "grok-4.5-low": "grok-4.5",
+            "grok-4.3-build": "grok-4.3",
+            "grok-composer-2.5-fast": "grok-composer-2.5-fast",
             "grok-4.3-console": "grok-4.3",
             "grok-4.3-high": "grok-4.3",
             "grok-4.3-medium": "grok-4.3",
@@ -231,7 +259,10 @@ class ConsoleModelRoutingTests(unittest.TestCase):
             with self.subTest(model=public_model):
                 spec = resolve(public_model)
 
-                self.assertTrue(spec.uses_console_responses())
+                self.assertTrue(
+                    spec.uses_console_responses()
+                    or spec.uses_grok_build_responses()
+                )
                 self.assertEqual(spec.upstream_model_name(), upstream_model)
 
     def test_composer_uses_text_trigger_alias(self) -> None:
@@ -277,6 +308,12 @@ class ConsoleModelRoutingTests(unittest.TestCase):
 
     def test_console_reasoning_effort_payload_policy(self) -> None:
         cases = (
+            ("grok-4.5-console", None, "medium"),
+            ("grok-4.5-console", "high", "high"),
+            ("grok-4.5-console", "none", None),
+            ("grok-4.5-low", "high", "low"),
+            ("grok-4.5-medium", None, "medium"),
+            ("grok-4.5-high", "low", "high"),
             ("grok-4.3-console", None, "medium"),
             ("grok-4.3-console", "high", "high"),
             ("grok-4.3-console", "none", None),
@@ -624,6 +661,29 @@ class ConsoleModelRoutingTests(unittest.TestCase):
             ["web_search", "x_search", "function"],
         )
 
+    def test_chat_completions_client_only_keeps_console_tools_local(self) -> None:
+        capture = self._run_console_chat_capture(
+            tools=[
+                {"type": "web_search"},
+                {
+                    "type": "function",
+                    "function": {"name": "lookup", "parameters": {"type": "object"}},
+                },
+            ],
+            tool_choice="auto",
+            request_overrides={"deepsearchPreset": "default"},
+            config_values={"features.console_default_search": True},
+            tool_scope="client_only",
+        )
+
+        self.assertEqual(capture["endpoint"], CONSOLE_RESPONSES)
+        self.assertNotIn("tools", capture["payload"])
+        self.assertNotIn("tool_choice", capture["payload"])
+        self.assertIsInstance(capture["payload"]["input"], str)
+        self.assertIn("AVAILABLE TOOLS", capture["payload"]["input"])
+        self.assertIn("Tool: lookup", capture["payload"]["input"])
+        self.assertNotIn("Tool: web_search", capture["payload"]["input"])
+
     def test_console_native_adapter_filters_internal_tool_calls(self) -> None:
         adapter = ConsoleResponsesStreamAdapter(function_tool_names={"lookup"})
 
@@ -649,16 +709,20 @@ class ConsoleModelRoutingTests(unittest.TestCase):
                 "arguments": '{"id":"A1"}',
             },
         }).decode())
+        completed = adapter.feed(orjson.dumps({
+            "type": "response.completed",
+            "response": {},
+        }).decode())
 
         self.assertEqual(ignored, [])
         self.assertEqual(client_function_tool_names([
             {"type": "function", "function": {"name": "lookup"}},
             {"type": "function", "function": {"name": "web_search"}},
         ]), {"lookup"})
-        self.assertEqual(len(emitted), 1)
-        self.assertEqual(emitted[0].kind, "tool_calls")
-        self.assertEqual(emitted[0].tool_calls[0].name, "lookup")
-        self.assertEqual(emitted[0].tool_calls[0].arguments, '{"id":"A1"}')
+        self.assertEqual(emitted, [])
+        tool_event = next(ev for ev in completed if ev.kind == "tool_calls")
+        self.assertEqual(tool_event.tool_calls[0].name, "lookup")
+        self.assertEqual(tool_event.tool_calls[0].arguments, '{"id":"A1"}')
 
     def test_console_native_adapter_keeps_arguments_delta_before_item_id(self) -> None:
         adapter = ConsoleResponsesStreamAdapter(function_tool_names={"lookup"})
@@ -684,9 +748,39 @@ class ConsoleModelRoutingTests(unittest.TestCase):
                 "arguments": '{"id":"A1"}',
             },
         }).decode())
+        completed = adapter.feed(orjson.dumps({
+            "type": "response.completed",
+            "response": {},
+        }).decode())
 
-        self.assertEqual(len(emitted), 1)
-        self.assertEqual(emitted[0].tool_calls[0].arguments, '{"id":"A1"}')
+        self.assertEqual(emitted, [])
+        tool_event = next(ev for ev in completed if ev.kind == "tool_calls")
+        self.assertEqual(tool_event.tool_calls[0].arguments, '{"id":"A1"}')
+
+    def test_console_native_adapter_waits_for_all_parallel_tool_calls(self) -> None:
+        adapter = ConsoleResponsesStreamAdapter(function_tool_names={"lookup", "notify"})
+
+        for index, name in enumerate(("lookup", "notify")):
+            emitted = adapter.feed(orjson.dumps({
+                "type": "response.output_item.done",
+                "output_index": index,
+                "item": {
+                    "id": f"fc_{index}",
+                    "type": "function_call",
+                    "call_id": f"call_{index}",
+                    "name": name,
+                    "arguments": "{}",
+                },
+            }).decode())
+            self.assertEqual(emitted, [])
+
+        completed = adapter.feed(orjson.dumps({
+            "type": "response.completed",
+            "response": {},
+        }).decode())
+
+        tool_event = next(ev for ev in completed if ev.kind == "tool_calls")
+        self.assertEqual([call.name for call in tool_event.tool_calls], ["lookup", "notify"])
 
     def test_chat_completions_function_named_search_tools_reach_console_payload(self) -> None:
         capture = self._run_console_chat_capture(
@@ -744,6 +838,39 @@ class ConsoleModelRoutingTests(unittest.TestCase):
         self.assertNotIn("_reasoning_effort", capture["payload"])
         self.assertNotIn("tools", capture["payload"])
 
+    def test_anthropic_messages_console_model_uses_console_transport(self) -> None:
+        result, capture = self._run_anthropic_messages_capture()
+
+        self.assertEqual(capture["endpoint"], CONSOLE_RESPONSES)
+        self.assertEqual(capture["payload"]["model"], "grok-4.3")
+        self.assertEqual(result["content"], [{"type": "text", "text": "ok"}])
+
+    def test_anthropic_messages_tools_reach_console_payload(self) -> None:
+        _result, capture = self._run_anthropic_messages_capture(
+            tools=[
+                {
+                    "name": "lookup",
+                    "description": "Lookup an order.",
+                    "input_schema": {"type": "object"},
+                }
+            ],
+            tool_choice={"type": "auto"},
+        )
+
+        self.assertEqual(capture["endpoint"], CONSOLE_RESPONSES)
+        self.assertEqual(
+            capture["payload"]["tools"],
+            [
+                {
+                    "type": "function",
+                    "name": "lookup",
+                    "description": "Lookup an order.",
+                    "parameters": {"type": "object"},
+                }
+            ],
+        )
+        self.assertEqual(capture["payload"]["tool_choice"], "auto")
+
     def _run_console_chat_capture(
         self,
         *,
@@ -752,6 +879,7 @@ class ConsoleModelRoutingTests(unittest.TestCase):
         tool_choice=None,
         request_overrides: dict | None = None,
         config_values: dict[str, object] | None = None,
+        tool_scope: str | None = None,
     ) -> dict[str, object]:
         from app.products.openai import chat
 
@@ -777,6 +905,7 @@ class ConsoleModelRoutingTests(unittest.TestCase):
                 emit_think=False,
                 tools=tools,
                 tool_choice=tool_choice,
+                tool_scope=tool_scope,
                 request_overrides=request_overrides,
             )
 
@@ -812,6 +941,68 @@ class ConsoleModelRoutingTests(unittest.TestCase):
             "ok",
         )
         return capture
+
+    def _run_anthropic_messages_capture(
+        self,
+        *,
+        tools: list[dict] | None = None,
+        tool_choice=None,
+        tool_scope: str | None = None,
+        config_values: dict[str, object] | None = None,
+    ) -> tuple[dict[str, object], dict[str, object]]:
+        from app.products.anthropic import messages as anthropic_messages
+        from app.products.openai import chat
+
+        capture: dict[str, object] = {}
+        account = AccountLease(
+            lease_id=1,
+            idx=0,
+            token="test-sso-token",
+            pool_id=int(Tier.BASIC),
+            mode_id=int(ModeId.CONSOLE),
+            selected_at=0,
+        )
+
+        async def fake_reserve_account(*_args, **_kwargs):
+            return account, int(ModeId.CONSOLE)
+
+        async def run():
+            return await anthropic_messages.create(
+                model="grok-4.3",
+                messages=[{"role": "user", "content": "hi"}],
+                system=None,
+                stream=False,
+                emit_think=False,
+                temperature=0.8,
+                top_p=0.95,
+                tools=tools,
+                tool_choice=tool_choice,
+                tool_scope=tool_scope,
+            )
+
+        with (
+            patch("app.dataplane.account._directory", _FakeAccountDirectory()),
+            patch.object(anthropic_messages, "get_config", return_value=_FakeConfig(config_values)),
+            patch.object(anthropic_messages, "selection_max_retries", return_value=0),
+            patch.object(anthropic_messages, "reserve_account", side_effect=fake_reserve_account),
+            patch.object(chat, "get_proxy_runtime", return_value=_FakeProxyRuntime()),
+            patch.object(chat, "build_session_kwargs", return_value={}),
+            patch.object(
+                chat,
+                "build_http_headers",
+                return_value={"authorization": "Bearer test"},
+            ),
+            patch.object(
+                chat,
+                "ResettableSession",
+                side_effect=lambda **kwargs: _CaptureSession(capture, **kwargs),
+            ),
+            patch.object(anthropic_messages, "_quota_sync", side_effect=_noop_quota_sync),
+            patch.object(anthropic_messages, "_fail_sync", side_effect=_noop_quota_sync),
+        ):
+            result = asyncio.run(run())
+
+        return result, capture
 
     def test_build_console_responses_payload_pins_public_model_identity(self) -> None:
         payload = build_console_responses_payload(

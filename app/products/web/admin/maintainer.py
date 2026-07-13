@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any, Callable, Literal
 
 from fastapi import APIRouter, Request
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from app.platform.config.snapshot import config
 from app.platform.errors import AppError, ErrorKind, ValidationError
@@ -65,9 +65,15 @@ class MaintainerRunRequest(BaseModel):
     # silent clamping is no longer needed as a guardrail.
     count: int = Field(default=1, ge=1)
     workers: int = Field(default=1, ge=1)
-    email_worker_domain: str = Field(min_length=1, max_length=253)
-    email_domains: list[str] = Field(min_length=1, max_length=20)
+    email_provider: Literal["worker", "cloudmail", "hotmail", "outlook", "outlookmail"] = "worker"
+    email_worker_domain: str = Field(default="", max_length=253)
+    email_domains: list[str] = Field(default_factory=list, max_length=20)
     email_admin_password: str = Field(default="", max_length=4096)
+    hotmail_credentials_file: str = Field(default="", max_length=4096)
+    hotmail_max_aliases_per_account: int = Field(default=5, ge=1, le=1000)
+    grok_build_auto_oauth_after_register: bool = True
+    grok_build_required: bool = False
+    grok_build_delay_sec: float = Field(default=0, ge=0, le=3600)
     pool: Literal["basic", "super", "heavy"] = "basic"
     headless: bool = False
     use_xvfb: bool = False
@@ -87,6 +93,8 @@ class MaintainerRunRequest(BaseModel):
     @classmethod
     def _validate_worker_domain(cls, value: str) -> str:
         value = str(value or "").strip()
+        if not value:
+            return ""
         if not _DOMAIN_RE.match(value):
             raise ValueError("email_worker_domain must be a hostname, optionally with port")
         return value
@@ -99,12 +107,19 @@ class MaintainerRunRequest(BaseModel):
         if not isinstance(value, list):
             raise ValueError("email_domains must be a list or comma-separated string")
         domains = [str(item or "").strip() for item in value if str(item or "").strip()]
-        if not domains:
-            raise ValueError("email_domains cannot be empty")
         for domain in domains:
             if ":" in domain or not _DOMAIN_RE.match(domain):
                 raise ValueError("email_domains must contain hostnames only")
         return domains
+
+    @model_validator(mode="after")
+    def _validate_email_provider_config(self):
+        if self.email_provider in {"worker", "cloudmail"}:
+            if not self.email_worker_domain:
+                raise ValueError("email_worker_domain is required for Worker email")
+            if not self.email_domains:
+                raise ValueError("email_domains is required for Worker email")
+        return self
 
     @field_validator("window_size")
     @classmethod
@@ -215,12 +230,22 @@ def build_runtime_config(
         if isinstance(existing_config, dict) and isinstance(existing_config.get("email"), dict)
         else {}
     )
+    provider = str(req.email_provider or email_conf.get("provider") or "worker").strip().lower()
     saved_password = str(email_conf.get("admin_password") or "")
     email_admin_password = req.email_admin_password or saved_password
-    if not email_admin_password:
+    if provider in {"worker", "cloudmail"} and not email_admin_password:
         raise ValidationError(
             "Email Worker admin password is required",
             param="email_admin_password",
+        )
+    credentials_file = (
+        req.hotmail_credentials_file
+        or str(email_conf.get("credentials_file") or "")
+    ).strip()
+    if provider in {"hotmail", "outlook", "outlookmail"} and not credentials_file:
+        raise ValidationError(
+            "Hotmail credentials file is required",
+            param="hotmail_credentials_file",
         )
 
     web_conf = (
@@ -237,14 +262,30 @@ def build_runtime_config(
         if isinstance(existing_config, dict) and isinstance(existing_config.get("gpt"), dict)
         else {}
     )
+    saved_grok_build = (
+        existing_config.get("grok_build", {})
+        if isinstance(existing_config, dict)
+        and isinstance(existing_config.get("grok_build"), dict)
+        else {}
+    )
+    try:
+        grok_build_poll_timeout = max(
+            30.0,
+            float(saved_grok_build.get("poll_timeout_sec", 90) or 90),
+        )
+    except (TypeError, ValueError):
+        grok_build_poll_timeout = 90.0
     gpt_fixed_password = req.gpt_fixed_password or str(saved_gpt.get("fixed_password") or "")
 
     runtime_config = {
         "email": {
+            "provider": provider,
             "worker_domain": req.email_worker_domain,
             "email_domains": list(req.email_domains),
             "admin_password": email_admin_password,
             "verify_ssl": req.verify_ssl,
+            "credentials_file": credentials_file,
+            "max_aliases_per_account": req.hotmail_max_aliases_per_account,
         },
         "api": {
             "endpoint": f"{base_url.rstrip('/')}/admin/api/tokens/add",
@@ -266,6 +307,13 @@ def build_runtime_config(
             "turnstile_solver_timeout_sec": req.turnstile_solver_timeout_sec,
             "turnstile_solver_poll_sec": req.turnstile_solver_poll_sec,
             "extract_numbers": req.extract_numbers,
+        },
+        "grok_build": {
+            "auto_oauth_after_register": req.grok_build_auto_oauth_after_register,
+            "required": req.grok_build_required,
+            "delay_sec": req.grok_build_delay_sec,
+            "poll_timeout_sec": grok_build_poll_timeout,
+            "proxy": str(saved_grok_build.get("proxy") or "").strip(),
         },
     }
     if gpt_fixed_password:
@@ -365,6 +413,11 @@ def build_saved_config_response(payload: dict[str, Any]) -> dict[str, Any]:
     run_conf = payload.get("run") if isinstance(payload.get("run"), dict) else {}
     web_conf = payload.get("web") if isinstance(payload.get("web"), dict) else {}
     gpt_conf = payload.get("gpt") if isinstance(payload.get("gpt"), dict) else {}
+    grok_build_conf = (
+        payload.get("grok_build")
+        if isinstance(payload.get("grok_build"), dict)
+        else {}
+    )
 
     domains = email_conf.get("email_domains", email_conf.get("domains", []))
     if isinstance(domains, str):
@@ -414,11 +467,26 @@ def build_saved_config_response(payload: dict[str, Any]) -> dict[str, Any]:
     except (TypeError, ValueError):
         turnstile_solver_poll_sec = 5
     turnstile_solver_poll_sec = min(max(turnstile_solver_poll_sec, 1), 60)
+    try:
+        hotmail_max_aliases = max(
+            1, int(email_conf.get("max_aliases_per_account", 5) or 5)
+        )
+    except (TypeError, ValueError):
+        hotmail_max_aliases = 5
+    try:
+        grok_build_delay_sec = max(
+            0.0, float(grok_build_conf.get("delay_sec", 0) or 0)
+        )
+    except (TypeError, ValueError):
+        grok_build_delay_sec = 0.0
 
     return {
+        "email_provider": str(email_conf.get("provider") or "worker"),
         "email_worker_domain": str(email_conf.get("worker_domain") or ""),
         "email_domains": domains,
         "has_email_admin_password": bool(email_conf.get("admin_password")),
+        "hotmail_credentials_file": str(email_conf.get("credentials_file") or ""),
+        "hotmail_max_aliases_per_account": hotmail_max_aliases,
         "verify_ssl": bool(email_conf.get("verify_ssl", True)),
         "pool": pool,
         "count": count,
@@ -435,6 +503,11 @@ def build_saved_config_response(payload: dict[str, Any]) -> dict[str, Any]:
         "turnstile_solver_poll_sec": turnstile_solver_poll_sec,
         "extract_numbers": bool(web_conf.get("extract_numbers", False)),
         "has_gpt_fixed_password": bool(gpt_conf.get("fixed_password")),
+        "grok_build_auto_oauth_after_register": bool(
+            grok_build_conf.get("auto_oauth_after_register", True)
+        ),
+        "grok_build_required": bool(grok_build_conf.get("required", False)),
+        "grok_build_delay_sec": grok_build_delay_sec,
     }
 
 

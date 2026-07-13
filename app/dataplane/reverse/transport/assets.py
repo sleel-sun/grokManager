@@ -7,8 +7,23 @@ give feedback, and return results to the caller.
 import asyncio
 from typing import Any, AsyncGenerator, Dict, Optional
 
-from app.platform.logging.logger import logger
+from app.control.proxy.models import ProxyFeedback, ProxyFeedbackKind, ProxyScope, RequestKind
+from app.dataplane.proxy import get_proxy_runtime
+from app.dataplane.reverse.protocol.xai_assets import (
+    ASSETS_LIST_URL,
+    asset_delete_url,
+    infer_content_type,
+    resolve_download_url,
+)
+from app.dataplane.reverse.transport._proxy_feedback import upstream_feedback
+from app.dataplane.reverse.transport.http import (
+    delete_json,
+    get_bytes_stream,
+    get_json,
+)
 from app.platform.config.snapshot import get_config
+from app.platform.errors import UpstreamError
+from app.platform.logging.logger import logger
 
 # Global semaphores — limit concurrent transport calls across all callers.
 # Lazily initialised so the event loop is guaranteed to be running on first use.
@@ -28,21 +43,6 @@ def _get_delete_sem() -> asyncio.Semaphore:
         n = max(1, int(get_config("batch.asset_delete_concurrency", 50)))
         _delete_sem = asyncio.Semaphore(n)
     return _delete_sem
-from app.platform.errors import UpstreamError
-from app.control.proxy.models import ProxyFeedback, ProxyFeedbackKind, ProxyScope, RequestKind
-from app.dataplane.reverse.transport._proxy_feedback import upstream_feedback
-from app.dataplane.proxy import get_proxy_runtime
-from app.dataplane.reverse.protocol.xai_assets import (
-    ASSETS_LIST_URL,
-    asset_delete_url,
-    infer_content_type,
-    resolve_download_url,
-)
-from app.dataplane.reverse.transport.http import (
-    delete_json,
-    get_bytes_stream,
-    get_json,
-)
 
 
 # ------------------------------------------------------------------

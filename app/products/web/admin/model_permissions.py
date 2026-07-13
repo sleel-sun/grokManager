@@ -25,7 +25,14 @@ router = APIRouter(prefix="/model-permissions", tags=["Admin - Model Permissions
 
 _POOL_ID_TO_NAME = {0: "basic", 1: "super", 2: "heavy"}
 _VALID_POOLS = {"basic", "super", "heavy"}
-_CLOUDFLARE_MARKERS = ("just a moment", "cf-challenge", "cf-mitigated", "cloudflare")
+_CLOUDFLARE_MARKERS = (
+    "just a moment",
+    "cf-challenge",
+    "cf-mitigated",
+    "cloudflare",
+    "request was blocked",
+    "you have been blocked",
+)
 
 PermissionStatus = Literal[
     "supported",

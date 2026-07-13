@@ -33,6 +33,8 @@ _CLOUDFLARE_MARKERS = (
     "cf-challenge",
     "cf-mitigated",
     "cloudflare",
+    "request was blocked",
+    "you have been blocked",
 )
 _UPLOAD_V2_SUCCESS_STATUSES = {
     "success",

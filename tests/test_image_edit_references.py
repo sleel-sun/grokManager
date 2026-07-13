@@ -140,6 +140,17 @@ class ImageGenerationErrorTests(unittest.TestCase):
         self.assertIn("Cloudflare challenge", message)
         self.assertIn("proxy.clearance", message)
 
+    def test_plain_waf_block_403_error_mentions_clearance_configuration(self) -> None:
+        from app.products.openai import images
+
+        message = images._image_generation_upstream_error_message(
+            403,
+            "403 Your request was blocked.",
+        )
+
+        self.assertIn("Cloudflare challenge", message)
+        self.assertIn("proxy.clearance", message)
+
     def test_non_cloudflare_403_error_keeps_plain_status(self) -> None:
         from app.products.openai import images
 
@@ -186,6 +197,24 @@ class ImageGenerationOutputTests(unittest.TestCase):
         body = json.loads(response.body)
         self.assertEqual(captured["response_format"], "url")
         self.assertEqual(body["data"][0]["url"], "/v1/files/image?id=abc")
+
+    def test_standalone_generation_routes_grok_image_model_to_gpt_backend(self) -> None:
+        router_module = importlib.import_module("app.products.openai.router")
+
+        captured: dict[str, object] = {}
+
+        async def fake_generate(**kwargs):
+            captured.update(kwargs)
+            return {"created": 1, "data": [{"b64_json": "aW1hZ2U="}]}
+
+        req = ImageGenerationRequest(model="grok-imagine-image", prompt="draw a cat")
+        with patch("app.products.openai.images.generate", side_effect=fake_generate):
+            response = asyncio.run(router_module.image_generations(req))
+
+        body = json.loads(response.body)
+        self.assertEqual(captured["model"], "gpt-image-2")
+        self.assertEqual(captured["response_format"], "b64_json")
+        self.assertEqual(body["data"][0]["b64_json"], "aW1hZ2U=")
 
     def test_standalone_generation_accepts_camel_case_response_format(self) -> None:
         req = ImageGenerationRequest.model_validate(

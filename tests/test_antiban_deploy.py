@@ -7,6 +7,24 @@ from unittest.mock import patch
 
 
 class AntiBanComposeTests(unittest.TestCase):
+    def test_camoufox_is_optional_and_uses_available_version(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        compose = (root / "docker-compose.yml").read_text()
+        dockerfile = (root / "deploy" / "Dockerfile.camoufox").read_text()
+
+        camoufox_service = compose.split("  camoufox:", 1)[1].split(
+            "  grokmanager:", 1
+        )[0]
+        grokmanager_service = compose.split("  grokmanager:", 1)[1].split(
+            "  maintainer:", 1
+        )[0]
+
+        self.assertIn('profiles: ["camoufox"]', camoufox_service)
+        self.assertIn("CAMOUFOX_VERSION: ${CAMOUFOX_VERSION:-0.4.11}", camoufox_service)
+        self.assertNotIn("depends_on:", grokmanager_service)
+        self.assertIn("ARG CAMOUFOX_VERSION=0.4.11", dockerfile)
+        self.assertIn('camoufox==${CAMOUFOX_VERSION}', dockerfile)
+
     def test_antiban_compose_wires_warp_privoxy_flaresolverr(self) -> None:
         root = Path(__file__).resolve().parents[1]
         compose = (root / "docker-compose.antiban.yml").read_text()
