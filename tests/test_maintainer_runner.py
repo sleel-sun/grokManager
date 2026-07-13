@@ -328,6 +328,63 @@ class MaintainerRunnerTests(unittest.TestCase):
                 "123456",
             )
 
+    def test_fill_code_waits_for_delayed_profile_transition(self) -> None:
+        mock_page = MagicMock()
+        mock_page.run_js.side_effect = ["filled", "clicked"]
+        mock_page.url = "https://accounts.x.ai/email-verification"
+
+        with (
+            patch("app.maintainer.runner.page", mock_page),
+            patch("app.maintainer.runner.get_oai_code", return_value="123456"),
+            patch(
+                "app.maintainer.runner.has_profile_form",
+                side_effect=[False, False, True],
+            ),
+            patch(
+                "app.maintainer.runner._auth_token_candidate_available",
+                return_value=False,
+            ),
+            patch("app.maintainer.runner.refresh_active_page", return_value=mock_page),
+            patch(
+                "app.maintainer.runner.time.time",
+                side_effect=[0.0, 0.0, 1.0],
+            ),
+            patch("app.maintainer.runner.time.sleep"),
+        ):
+            self.assertEqual(
+                fill_code_and_submit("user@example.test", "mail-token", timeout=5),
+                "123456",
+            )
+
+        self.assertEqual(mock_page.run_js.call_count, 2)
+
+    def test_fill_code_uses_real_input_and_click_when_available(self) -> None:
+        mock_page = MagicMock()
+        mock_page.run_js.return_value = "filled"
+
+        with (
+            patch("app.maintainer.runner.page", mock_page),
+            patch("app.maintainer.runner.get_oai_code", return_value="A3FF0A"),
+            patch(
+                "app.maintainer.runner._type_verification_code_like_user",
+                return_value=True,
+            ),
+            patch(
+                "app.maintainer.runner._click_verification_confirm_like_user",
+                return_value=True,
+            ),
+            patch("app.maintainer.runner.has_profile_form", return_value=True),
+            patch("app.maintainer.runner.refresh_active_page", return_value=mock_page),
+            patch("app.maintainer.runner.time.time", side_effect=[0.0, 0.0]),
+            patch("app.maintainer.runner.time.sleep"),
+        ):
+            self.assertEqual(
+                fill_code_and_submit("user@example.test", "mail-token", timeout=5),
+                "A3FF0A",
+            )
+
+        self.assertEqual(mock_page.run_js.call_count, 1)
+
     def test_browser_debug_port_falls_back_when_default_is_busy(self) -> None:
         with (
             patch("app.maintainer.runner._is_tcp_port_available", side_effect=[False, True]),
@@ -370,6 +427,28 @@ class MaintainerRunnerTests(unittest.TestCase):
 
         self.assertEqual(profile["given_name"], "Ava")
         mock_button.click.assert_called_once()
+
+    def test_fill_profile_accepts_token_before_profile_form_appears(self) -> None:
+        mock_page = MagicMock()
+        mock_page.run_js.return_value = "not-ready"
+
+        with (
+            patch("app.maintainer.runner.page", mock_page),
+            patch(
+                "app.maintainer.runner.build_profile",
+                return_value=("Ava", "Chen", "Nabc!a7#def"),
+            ),
+            patch("app.maintainer.runner._profile_page_snapshot", return_value={}),
+            patch(
+                "app.maintainer.runner._auth_token_candidate_available",
+                return_value=True,
+            ),
+            patch("app.maintainer.runner.time.time", side_effect=[0.0, 0.0]),
+            patch("app.maintainer.runner.time.sleep"),
+        ):
+            profile = fill_profile_and_submit(timeout=1)
+
+        self.assertEqual(profile["password"], "Nabc!a7#def")
 
     def test_fill_profile_retries_after_turnstile_solver_failure(self) -> None:
         mock_page = MagicMock()

@@ -2056,6 +2056,65 @@ return 'email-resubmitted';
         return f"recovery-error:{str(exc)[:160]}"
 
 
+def _type_verification_code_like_user(code: str) -> bool:
+    """Prefer real browser input so React receives trusted keyboard events."""
+    for locator in (
+        "css:input[name='code']",
+        "css:input[autocomplete='one-time-code']",
+        "css:input[data-input-otp='true']",
+    ):
+        try:
+            code_input = page.ele(locator)
+            if not code_input:
+                continue
+            code_input.input(code, clear=True)
+            value = str(code_input.attr("value") or "").strip()
+            if value == code:
+                return True
+        except Exception:
+            continue
+    return False
+
+
+def _click_verification_confirm_like_user() -> bool:
+    for locator in (
+        "tag:button@@text()=Confirm email",
+        "tag:button@@text()=确认邮箱",
+    ):
+        try:
+            button = page.ele(locator)
+            if button:
+                button.click()
+                return True
+        except Exception:
+            continue
+    return False
+
+
+def _verification_page_error_text() -> str:
+    try:
+        result = page.run_js(
+            r"""
+const visible = (node) => {
+    if (!node) return false;
+    const style = getComputedStyle(node);
+    const rect = node.getBoundingClientRect();
+    return style.display !== 'none' && style.visibility !== 'hidden'
+        && style.opacity !== '0' && rect.width > 0 && rect.height > 0;
+};
+const candidates = Array.from(document.querySelectorAll(
+    '[role="alert"], [aria-live], [data-testid*="error"], .error, [class*="error"]'
+)).filter(visible);
+const text = candidates.map((node) => String(node.innerText || node.textContent || '').trim())
+    .filter(Boolean).join(' | ');
+return text.slice(0, 800);
+            """
+        )
+        return str(result or "").strip()
+    except Exception:
+        return ""
+
+
 def fill_code_and_submit(email: str, dev_token: str, timeout: int = 180) -> str:
     code = get_oai_code(dev_token, email)
     if not code:
@@ -2064,6 +2123,7 @@ def fill_code_and_submit(email: str, dev_token: str, timeout: int = 180) -> str:
     deadline = time.time() + timeout
     confirm_retry_count = 0
     while time.time() < deadline:
+        typed_like_user = _type_verification_code_like_user(code)
         try:
             filled = page.run_js(
                 """
@@ -2207,8 +2267,9 @@ return merged === code ? 'filled' : 'box-mismatch';
             continue
 
         time.sleep(1.2)
+        clicked_like_user = typed_like_user and _click_verification_confirm_like_user()
         try:
-            clicked = page.run_js(
+            clicked = "clicked" if clicked_like_user else page.run_js(
                 r"""
 function isVisible(node) {
     if (!node) {
@@ -2275,42 +2336,10 @@ if (!confirmButton) {
     return 'no-button';
 }
 
+// A native click already runs the button and form handlers. Dispatching click,
+// requestSubmit, and Enter together can submit the same OTP several times.
 confirmButton.focus();
-for (const eventType of ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click']) {
-    confirmButton.dispatchEvent(new MouseEvent(eventType, {
-        bubbles: true,
-        cancelable: true,
-        view: window,
-    }));
-}
-confirmButton.click?.();
-
-const form = confirmButton.closest('form');
-if (form) {
-    try {
-        if (typeof form.requestSubmit === 'function') {
-            form.requestSubmit(confirmButton);
-        } else {
-            form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
-        }
-    } catch (e) {
-        try {
-            form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
-        } catch (ignored) {}
-    }
-}
-
-const activeInput = aggregateInput || document.activeElement;
-if (activeInput) {
-    for (const eventType of ['keydown', 'keypress', 'keyup']) {
-        activeInput.dispatchEvent(new KeyboardEvent(eventType, {
-            bubbles: true,
-            cancelable: true,
-            key: 'Enter',
-            code: 'Enter',
-        }));
-    }
-}
+confirmButton.click();
 return 'clicked';
                 """
             )
@@ -2323,11 +2352,26 @@ return 'clicked';
 
         if clicked == "clicked":
             print(f"[*] 已填写验证码并点击确认邮箱: {code}")
-            time.sleep(2)
-            refresh_active_page()
-            if has_profile_form():
-                print("[*] 验证码确认完成，最终注册页已就绪。")
-                return code
+            for _ in range(12):
+                time.sleep(1.0)
+                refresh_active_page()
+                if has_profile_form():
+                    print("[*] 验证码确认完成，最终注册页已就绪。")
+                    return code
+                if _auth_token_candidate_available():
+                    print("[*] 验证码确认后已检测到认证 token，继续注册后流程。")
+                    return code
+                current_url = str(getattr(page, "url", "") or "").lower()
+                if "grok.com" in current_url or "post-signup" in current_url:
+                    print(f"[*] 验证码确认后已进入注册后页面: {current_url}")
+                    return code
+            page_error = _verification_page_error_text()
+            if page_error:
+                raise RuntimeError(f"确认邮箱后验证码页返回错误: {page_error}")
+            if typed_like_user:
+                raise RuntimeError(
+                    "验证码已通过真实键盘输入并单次点击确认邮箱，但页面仍停留在验证码页"
+                )
             recovery = _recover_verification_page(email)
             if recovery == "confirm-email-clicked":
                 confirm_retry_count += 1
@@ -3159,7 +3203,6 @@ def fill_profile_and_submit(timeout: int = 120) -> dict[str, str]:
     external_turnstile_notice_printed = False
     last_turnstile_error = ""
     manual_turnstile_wait = _turnstile_manual_wait_seconds()
-    profile_filled_once = False
 
     while time.time() < deadline:
         filled = page.run_js(
@@ -3253,15 +3296,14 @@ return [
         )
 
         if filled == "not-ready":
-            if profile_filled_once:
-                snapshot = _profile_page_snapshot()
-                if _profile_snapshot_indicates_submitted(snapshot) or _auth_token_candidate_available():
-                    print("[*] 最终注册表单已离开，继续进入 sso cookie 采集阶段。")
-                    return {
-                        "given_name": given_name,
-                        "family_name": family_name,
-                        "password": password,
-                    }
+            snapshot = _profile_page_snapshot()
+            if _profile_snapshot_indicates_submitted(snapshot) or _auth_token_candidate_available():
+                print("[*] 已进入注册后阶段，继续采集 sso cookie。")
+                return {
+                    "given_name": given_name,
+                    "family_name": family_name,
+                    "password": password,
+                }
             time.sleep(0.5)
             continue
 
@@ -3269,8 +3311,6 @@ return [
             print(f"[Debug] 最终注册页输入框已出现，但姓名/密码写入失败: {filled}")
             time.sleep(0.5)
             continue
-
-        profile_filled_once = True
 
         values_ok = page.run_js(
             """
